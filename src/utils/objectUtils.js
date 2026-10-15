@@ -1,5 +1,18 @@
 import { isReactive, toRaw } from 'vue'
 
+const unsafeKeys = new Set(['__proto__', 'constructor', 'prototype'])
+
+function assertSafeKeys(value, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object' || seen.has(value)) return
+  seen.add(value)
+  Object.keys(value).forEach((key) => {
+    if (unsafeKeys.has(key)) {
+      throw new TypeError(`Unsafe object key: ${key}`)
+    }
+    assertSafeKeys(value[key], seen)
+  })
+}
+
 function isPlainObject(value) {
   return Object.prototype.toString.call(value) === '[object Object]'
 }
@@ -16,6 +29,7 @@ export function cloneDeep(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+/** 原地合并对象和替换数组；先拒绝原型字段，避免不可信配置污染状态。 */
 export function mergeDeep(target, source) {
   if (!isPlainObject(target) && !Array.isArray(target)) {
     throw new TypeError('mergeDeep target must be an object or array')
@@ -23,6 +37,7 @@ export function mergeDeep(target, source) {
   if (!isPlainObject(source) && !Array.isArray(source)) {
     throw new TypeError('mergeDeep source must be an object or array')
   }
+  assertSafeKeys(source)
 
   const output = target
 
@@ -54,6 +69,7 @@ export function mergeDeep(target, source) {
   return output
 }
 
+/** 保持响应式对象引用并替换其内容，在删除旧字段前验证全部输入。 */
 export function replaceReactive(target, source) {
   if (!isPlainObject(target) && !Array.isArray(target)) {
     throw new TypeError('replaceReactive target must be an object or array')
@@ -61,11 +77,12 @@ export function replaceReactive(target, source) {
   if (!isPlainObject(source) && !Array.isArray(source)) {
     throw new TypeError('replaceReactive source must be an object or array')
   }
+  assertSafeKeys(source)
 
   const rawTarget = isReactive(target) ? toRaw(target) : target
 
   Object.keys(rawTarget).forEach((key) => {
-    if (!(key in source)) {
+    if (!Object.prototype.hasOwnProperty.call(source, key)) {
       delete target[key]
     }
   })

@@ -12,17 +12,17 @@ dist
 dist-ssr
 dist-electron
 *.local
+.env
+.env.*
+!.env.example
+.agent/
+/log/
 
 # Electron
 out
 release
 .webpack
 *.tsbuildinfo
-
-# 忽略 backend 文件夹
-backend/
-# 忽略 resources 文件夹
-resources/
 
 # Electron cache and data
 .cache

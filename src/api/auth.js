@@ -1,5 +1,6 @@
 // 酷狗音乐 API 请求封装
 import axios from 'axios'
+import { logger } from '../utils/logger.js'
 
 // API 基础地址
 const API_BASE_URL = 'http://localhost:6500'
@@ -32,7 +33,7 @@ apiClient.interceptors.response.use(
     return response.data
   },
   (error) => {
-    console.error('API Error:', error)
+    logger.error('auth-api', 'API请求失败', error)
     return Promise.reject(error)
   }
 )
@@ -130,14 +131,24 @@ export const saveLoginInfo = (data) => {
  * @returns {object|null}
  */
 export const getLoginInfo = () => {
-  const token = localStorage.getItem('kugou_token')
-  const userInfo = localStorage.getItem('kugou_userinfo')
-  
-  if (token && userInfo) {
-    return {
-      token,
-      userInfo: JSON.parse(userInfo)
+  try {
+    const token = localStorage.getItem('kugou_token')
+    const rawUserInfo = localStorage.getItem('kugou_userinfo')
+    if (!token && !rawUserInfo) return null
+
+    const userInfo = rawUserInfo ? JSON.parse(rawUserInfo) : null
+    if (token && userInfo && typeof userInfo === 'object' && !Array.isArray(userInfo)) {
+      return { token, userInfo }
     }
+  } catch (error) {
+    // JSON 解析错误可能包含原始用户信息，只记录错误类型。
+    logger.warn('auth-api', '读取登录缓存失败', { name: error?.name })
+  }
+
+  try {
+    clearLoginInfo()
+  } catch (error) {
+    logger.warn('auth-api', '清理失效登录缓存失败', { name: error?.name })
   }
   return null
 }
@@ -157,7 +168,7 @@ export const clearLoginInfo = () => {
  * @returns {boolean}
  */
 export const isLoggedIn = () => {
-  return !!localStorage.getItem('kugou_token')
+  return getLoginInfo() !== null
 }
 
 export default apiClient

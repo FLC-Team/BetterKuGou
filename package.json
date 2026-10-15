@@ -9,47 +9,48 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "check": "node scripts/check.cjs",
+    "test": "node --test",
     "preview": "vite preview",
-    "electron:dev": "electron .",
-    "electron:build": "npm run build && npm run copy-backend && electron-builder",
-    "copy-backend": "node scripts/copy-backend.js",
-    "copy-backend-simple": "node scripts/copy-backend-simple.js",
-    "create-portable-backend": "node scripts/create-portable-backend.js",
-    "setup-self-contained": "node scripts/setup-self-contained.js",
-    "install-backend-deps": "cd backend && npm install --production",
+    "electron:dev": "vite",
+    "electron:build": "npm run build && electron-builder",
+    "install-backend-deps": "npm --prefix KuGouMusicApi install --omit=dev",
+    "postinstall": "npm run install-backend-deps",
     "dist": "npm run electron:build",
-  "dist:win": "npm run build && npm run setup-self-contained && electron-builder --win --x64 --ia32 --arm64",
-  "dist:linux": "npm run build && npm run setup-self-contained && electron-builder --linux",
-  "dist:mac": "npm run build && npm run setup-self-contained && electron-builder --mac",
-  "dist:all": "npm run dist:win && npm run dist:linux && npm run dist:mac",
-  "dist:portable": "npm run build && npm run setup-self-contained && electron-builder --win portable",
-  "build:win": "npm run build && npm run setup-self-contained && electron-builder --win",
-  "build:self-contained": "npm run build && npm run setup-self-contained && electron-builder --win"
+    "dist:win": "npm run build && electron-builder --win --x64 --ia32 --arm64",
+    "dist:linux": "npm run build && electron-builder --linux",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:portable": "npm run build && electron-builder --win portable",
+    "build:win": "npm run build && electron-builder --win"
   },
   "build": {
     "appId": "com.betterkugou.app",
     "productName": "BetterKuGou",
     "directories": {
-      "output": "dist-electron"
+      "output": "release"
     },
     "files": [
       "dist/**/*",
       "electron/**/*",
-      "!backend"
+      "src/themes/**/*"
     ],
     "extraResources": [
       {
-        "from": "backend",
+        "from": "KuGouMusicApi",
         "to": "backend",
-        "filter": ["**/*"]
-      },
-      {
-        "from": "resources/nodejs",
-        "to": "nodejs",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*",
+          "!docs{,/**/*}",
+          "!.github{,/**/*}",
+          "!*.md",
+          "!Dockerfile",
+          "!tsconfig.json",
+          "!pnpm-lock.yaml"
+        ]
       }
     ],
     "win": {
+      "signAndEditExecutable": false,
       "target": [
         {
           "target": "nsis",
@@ -61,7 +62,6 @@
         }
       ],
       "icon": "public/logo.ico",
-      "publisherName": "鸢夏",
       "verifyUpdateCodeSignature": false
     },
     "linux": {
@@ -97,12 +97,9 @@
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.1.4",
     "@vue/compiler-sfc": "^3.5.12",
-    "adm-zip": "^0.5.10",
     "electron": "^32.1.2",
     "electron-builder": "^25.1.8",
-    "fs-extra": "^11.2.0",
     "vite": "^6.0.11",
-    "vite-plugin-electron": "^0.28.7",
-    "vite-plugin-electron-renderer": "^0.14.5"
+    "vite-plugin-electron": "^0.28.7"
   }
 }

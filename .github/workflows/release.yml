@@ -22,9 +22,9 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
-      - run: npm install
-      - run: npm run build
-      - run: npm run setup-self-contained
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
       - run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
             npm run dist:win
@@ -40,12 +40,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist-electron/BetterKugou-*.exe
-            dist-electron/BetterKugou-*.AppImage
-            dist-electron/BetterKugou-*.deb
-            dist-electron/BetterKugou-*.rpm
-            dist-electron/BetterKugou-*.dmg
-            dist-electron/BetterKugou-*.zip
+            release/BetterKuGou-*.exe
+            release/BetterKuGou-*.AppImage
+            release/BetterKuGou-*.deb
+            release/BetterKuGou-*.rpm
+            release/BetterKuGou-*.dmg
+            release/BetterKuGou-*.zip
           body_path: updata_log.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

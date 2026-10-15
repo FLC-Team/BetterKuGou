@@ -21,7 +21,7 @@
 
 .btn-primary {
   background-color: var(--color-primary);
-  color: var(--color-text);
+  color: var(--color-on-primary);
 }
 
 .btn-primary:hover:not(:disabled) {
@@ -115,4 +115,20 @@
 
 .fade-out {
   animation: fadeOut var(--transition-base);
+}
+/* 通用加载状态，替代体积较大的逐页 GIF 资源 */
+.loading-spinner {
+  display: inline-block;
+  width: 32px;
+  height: 32px;
+  border: 3px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: loading-spinner-rotate 0.8s linear infinite;
+}
+
+@keyframes loading-spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
 }

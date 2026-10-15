@@ -1,23 +1,31 @@
 // preload.js
 const { contextBridge, ipcRenderer } = require('electron')
 
+/** 仅订阅白名单频道，隐藏 Electron event 并返回成对的解绑函数。 */
+function subscribe(channel, callback) {
+  if (typeof callback !== 'function') return () => {}
+  const listener = (_event, ...args) => callback(...args)
+  ipcRenderer.on(channel, listener)
+  return () => ipcRenderer.removeListener(channel, listener)
+}
+
 const electronAPI = {
   minimize: () => ipcRenderer.send('window-minimize'),
   maximize: () => ipcRenderer.send('window-maximize'),
   unmaximize: () => ipcRenderer.send('window-unmaximize'),
   close: () => ipcRenderer.send('window-close'),
-  onMaximized: (cb) => ipcRenderer.on('window-is-maximized', cb),
-  onUnmaximized: (cb) => ipcRenderer.on('window-is-unmaximized', cb),
-  
+  onMaximized: (cb) => subscribe('window-is-maximized', cb),
+  onUnmaximized: (cb) => subscribe('window-is-unmaximized', cb),
+
   // 外部链接打开 API
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
-  
+
   // 全局快捷键 API
-  registerGlobalShortcut: (accelerator, action) => 
+  registerGlobalShortcut: (accelerator, action) =>
     ipcRenderer.invoke('shortcut:register', accelerator, action),
-  unregisterGlobalShortcut: (accelerator) => 
+  unregisterGlobalShortcut: (accelerator) =>
     ipcRenderer.invoke('shortcut:unregister', accelerator),
-  testGlobalShortcut: (accelerator) => 
+  testGlobalShortcut: (accelerator) =>
     ipcRenderer.invoke('shortcut:test', accelerator),
   onGlobalShortcut: (callback) => {
     if (typeof callback !== 'function') return () => {}
@@ -25,7 +33,7 @@ const electronAPI = {
     ipcRenderer.on('shortcut:triggered', listener)
     return () => ipcRenderer.removeListener('shortcut:triggered', listener)
   },
-  
+
   // 内存清理 API
   onMemoryCleanup: (callback) => {
     if (typeof callback !== 'function') return () => {}
@@ -48,24 +56,18 @@ const electronAPI = {
   },
   updateLyrics: (lyrics) => {
     if (Array.isArray(lyrics)) {
-      console.log('📡 preload发送歌词数据:', lyrics.length, '行')
       ipcRenderer.send('player:lyric-update', lyrics)
     } else {
-      console.log('❌ 歌词数据格式错误:', typeof lyrics)
+      console.warn('preload', '歌词必须是数组')
     }
   },
   updateCurrentTime: (time) => {
-    if (typeof time === 'number') {
-      // 减少日志频率，只在整数秒时输出
-      if (Math.floor(time) !== Math.floor(time - 0.1)) {
-        console.log('⏱️ preload发送当前时间:', Math.floor(time * 1000), 'ms')
-      }
+    if (Number.isFinite(time) && time >= 0) {
       ipcRenderer.send('player:time-update', time * 1000) // 转换为毫秒
     }
   },
   updatePlaybackTime: (time) => {
-    if (typeof time === 'number') {
-      console.log('⏱️ preload发送播放时间:', time)
+    if (Number.isFinite(time) && time >= 0) {
       ipcRenderer.send('player:time-update', time)
     }
   },
@@ -75,12 +77,43 @@ const electronAPI = {
     ipcRenderer.on('player:control', listener)
     return () => ipcRenderer.removeListener('player:control', listener)
   },
-  
+
   // 桌面歌词相关API
   desktopLyric: {
     toggle: () => ipcRenderer.invoke('desktop-lyric:toggle'),
     show: () => ipcRenderer.invoke('desktop-lyric:show'),
     hide: () => ipcRenderer.invoke('desktop-lyric:hide')
+  },
+
+  // 日志 API
+  initLogger: () => ipcRenderer.invoke('logger:init'),
+  writeLog: (level, message, data) => {
+    // 支持多种调用方式
+    if (typeof level === 'object' && level !== null) {
+      // writeLog({ level, message, data })
+      return ipcRenderer.invoke('logger:write', level)
+    } else if (typeof level === 'string' && typeof message === 'string') {
+      // writeLog('info', 'message', data)
+      return ipcRenderer.invoke('logger:write', { level, message, data })
+    } else {
+      // writeLog('message only')
+      return ipcRenderer.invoke('logger:write', { message: level })
+    }
+  },
+
+  // 配置 API
+  getConfig: () => ipcRenderer.invoke('config:get'),
+  setConfig: (config) => ipcRenderer.invoke('config:set', config),
+
+  // 主题管理 API
+  loadThemesConfig: () => ipcRenderer.invoke('theme:load-config'),
+  getAvailableThemes: () => ipcRenderer.invoke('theme:get-available'),
+  setActiveTheme: (themeName) => ipcRenderer.invoke('theme:set-active', themeName),
+  onThemeChange: (callback) => {
+    if (typeof callback !== 'function') return () => {}
+    const listener = (_event, theme) => callback(theme)
+    ipcRenderer.on('theme:changed', listener)
+    return () => ipcRenderer.removeListener('theme:changed', listener)
   }
 }
 
@@ -102,3 +135,30 @@ const settingsAPI = {
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI)
 contextBridge.exposeInMainWorld('settingsAPI', settingsAPI)
+
+contextBridge.exposeInMainWorld('loadingAPI', {
+  onProgress: (callback) => subscribe('loading-progress', callback)
+})
+
+contextBridge.exposeInMainWorld('desktopLyricAPI', {
+  onSongUpdate: (callback) => subscribe('desktop-lyric:song-update', callback),
+  onLyricUpdate: (callback) => subscribe('desktop-lyric:lyric-update', callback),
+  onTimeUpdate: (callback) => subscribe('desktop-lyric:time-update', callback),
+  onSettingsUpdate: (callback) => subscribe('desktop-lyric:settings-update', callback),
+  onLockChanged: (callback) => subscribe('desktop-lyric:lock-changed', callback),
+  changeSize: (size) => {
+    if (['small', 'medium', 'large'].includes(size)) ipcRenderer.send('desktop-lyric:size-changed', size)
+  },
+  changeTheme: (theme) => {
+    if (['classic', 'gradient', 'minimal'].includes(theme)) ipcRenderer.send('desktop-lyric:theme-changed', theme)
+  },
+  close: () => ipcRenderer.send('desktop-lyric:close')
+})
+
+// 为了防止 undefined 错误，暴露一个 API 检查函数
+contextBridge.exposeInMainWorld('checkElectronAPI', () => {
+  return {
+    electronAPI: typeof window.electronAPI !== 'undefined' ? 'available' : 'undefined',
+    settingsAPI: typeof window.settingsAPI !== 'undefined' ? 'available' : 'undefined'
+  }
+})

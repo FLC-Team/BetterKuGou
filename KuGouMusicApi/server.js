@@ -7,6 +7,38 @@ const { createRequest } = require('./util/request');
 const dotenv = require('dotenv');
 const cache = require('./util/apicache').middleware;
 
+const SENSITIVE_QUERY_KEYS = new Set(['token', 'vip_token', 'cookie', 'password', 'pwd', 'key', 'accesskey', 'access_key', 'code', 'captcha', 'mobile', 'username', 'userid']);
+
+/** 日志仅保留路由及非敏感查询参数，直接解析原始 URL 以免预解码改变参数边界。 */
+function getSafeRequestUrl(originalUrl) {
+  try {
+    const parsed = new URL(originalUrl, 'http://localhost');
+    for (const key of parsed.searchParams.keys()) {
+      if (SENSITIVE_QUERY_KEYS.has(key.toLowerCase())) {
+        parsed.searchParams.set(key, '[REDACTED]');
+      }
+    }
+    return `${parsed.pathname}${parsed.search}`;
+  } catch (_) {
+    return originalUrl.split('?')[0];
+  }
+}
+
+/** 保留标准异常诊断字段，不展开 Axios 的请求配置、Cookie 或响应正文。 */
+function getSafeErrorDetails(error, depth = 0) {
+  if (!error || typeof error.stack !== 'string' || depth > 2) return undefined;
+  const redact = (value) => typeof value === 'string' ? value
+    .replace(/Bearer\s+[\w.~+\/-]+=*/gi, 'Bearer [REDACTED]')
+    .replace(/\b(token|vip_token|cookie|password|pwd|key|accesskey|code|mobile|userid|username)(=|%3D)[^&\s]+/gi, '$1$2[REDACTED]') : value;
+  return {
+    name: error.name,
+    code: error.code,
+    message: redact(error.message),
+    stack: redact(error.stack),
+    cause: getSafeErrorDetails(error.cause, depth + 1),
+  };
+}
+
 /**
  * @typedef {{
  * identifier?: string,
@@ -56,7 +88,7 @@ async function getModulesDefinitions(modulesPath, specificRoute, doRequire = tru
  * @param {ModuleDefinition[]} moduleDefs
  * @return {Promise<import('express').Express>}
  */
-async function consturctServer(moduleDefs) {
+async function constructServer(moduleDefs) {
   const app = express();
   const { CORS_ALLOW_ORIGIN } = process.env;
   app.set('trust proxy', true);
@@ -120,7 +152,18 @@ async function consturctServer(moduleDefs) {
   app.use('/docs', express.static(path.join(__dirname, 'docs')));
 
   // Cache
-  app.use(cache('2 minutes', (_, res) => res.statusCode === 200));
+  const publicCache = cache('2 minutes', (_, res) => res.statusCode === 200, {
+    appendKey: (req) => req.headers.origin || '',
+  });
+  app.use((req, res, next) => {
+    // 缓存键不包含请求体/认证头；只缓存公开 GET，避免混用登录返回和用户数据。
+    const hasCredentials = req.headers.authorization
+      || Object.keys(req.query).some((key) => SENSITIVE_QUERY_KEYS.has(key.toLowerCase()))
+      || Object.keys(req.cookies).some((key) => key !== 'KUGOU_API_PLATFORM');
+    const isPrivateRoute = /^\/(login|captcha|register|user|personal|everyday|playhistory|playlist\/(add|del|tracks)|artist\/(follow|unfollow))(\/|$)/i.test(req.path);
+    if (req.method !== 'GET' || Object.keys(req.body || {}).length || hasCredentials || isPrivateRoute) return next();
+    return publicCache(req, res, next);
+  });
 
   const moduleDefinitions = moduleDefs || (await getModulesDefinitions(path.join(__dirname, 'module'), {}));
 
@@ -132,7 +175,8 @@ async function consturctServer(moduleDefs) {
         }
       });
 
-      const query = Object.assign({}, { cookie: req.cookies }, req.query, { body: req.body });
+      // 请求体映射到模块顶层，查询参数保留既有优先级，同时兼容直接读取 body 的调用。
+      const query = { cookie: req.cookies, ...req.body, ...req.query, body: req.body };
 
       try {
         const moduleResponse = await moduleDef.module(query, (config) => {
@@ -144,7 +188,7 @@ async function consturctServer(moduleDefs) {
           return createRequest(config);
         });
 
-        console.log('[OK]', decode(req.originalUrl));
+        if (process.env.DEBUG) console.debug('[OK]', getSafeRequestUrl(req.originalUrl));
 
         const cookies = moduleResponse.cookie;
         if (!query.noCookie) {
@@ -171,9 +215,11 @@ async function consturctServer(moduleDefs) {
         res.header(moduleResponse.headers).status(moduleResponse.status).send(moduleResponse.body);
       } catch (e) {
         const moduleResponse = e;
-        console.log('[ERR]', decode(req.originalUrl), {
+        console.error('[ERR]', getSafeRequestUrl(req.originalUrl), {
           status: moduleResponse.status,
-          body: moduleResponse.body,
+          code: moduleResponse.body?.error_code ?? moduleResponse.body?.code,
+          name: moduleResponse.name,
+          exception: getSafeErrorDetails(moduleResponse) || getSafeErrorDetails(moduleResponse.body?.msg),
         });
 
         if (!moduleResponse.body) {
@@ -201,16 +247,18 @@ async function startService() {
   const port = Number(process.env.PORT || '6500');
   const host = process.env.HOST || '';
 
-  const app = await consturctServer();
+  const app = await constructServer();
 
   /** @type {import('express').Express & ExpressExtension} */
   const appExt = app;
 
-  appExt.service = app.listen(port, host, () => {
-    console.log(`server running @ http://${host || 'localhost'}:${port}`);
+  await new Promise((resolve, reject) => {
+    appExt.service = app.listen(port, host, resolve);
+    appExt.service.once('error', reject);
   });
+  console.log(`server running @ http://${host || 'localhost'}:${appExt.service.address().port}`);
 
   return appExt;
 }
 
-module.exports = { startService, getModulesDefinitions };
+module.exports = { startService, getModulesDefinitions, constructServer };

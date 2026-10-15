@@ -1,28 +1,30 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
-import TitleBar from './components/TitleBar.vue'
-import LoginView from './components/LoginView.vue'
-import Sidebar from './components/Sidebar.vue'
-import HomeView from './components/HomeView.vue'
-import FavoriteView from './components/FavoriteView.vue'
-import SettingsView from './components/SettingsView.vue'
-import MusicPlayer from './components/MusicPlayer.vue'
-import PersonalFMView from './components/PersonalFMView.vue'
-import DailyRecommendView from './components/DailyRecommendView.vue'
-import RankDetailView from './components/RankDetailView.vue'
-import SearchView from './components/SearchView.vue'
-import ArtistView from './components/ArtistView.vue'
-import AlbumDetailView from './components/AlbumDetailView.vue'
-import { getLoginInfo, isLoggedIn } from './api/auth.js'
-import { getUserPlaylists } from './api/music.js'
+import { logger } from './utils/logger.js'
+
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { TitleBar, Sidebar, MusicPlayer } from './components/index.js'
+import {
+  LoginView,
+  HomeView,
+  FavoriteView,
+  SettingsView,
+  PersonalFMView,
+  DailyRecommendView,
+  RankDetailView,
+  SearchView,
+  ArtistView,
+  AlbumDetailView
+} from './views/index.js'
+import { clearLoginInfo, getLoginInfo, isLoggedIn } from './api/auth.js'
+import { getUserPlaylists, KUGOU_AUTH_EXPIRED_EVENT } from './api/music.js'
 import { useSettingsStore } from './stores/settingsStore.js'
 import { cloneDeep } from './utils/objectUtils.js'
 
-console.log('App.vue loaded')
+logger.trace('App', 'App.vue loaded')
 
 // 全局错误处理
 const handleGlobalError = (error, info) => {
-  console.error('全局错误:', error, info)
+  logger.error('App', '全局错误:', error, info)
   // 这里可以添加错误报告或用户提示
 }
 
@@ -56,11 +58,47 @@ const userPlaylists = ref([
   // { id: 1, name: '我喜欢的音乐' },
   // { id: 2, name: '每日推荐' },
 ])
+const selectedPlaylistId = ref(null)
+const selectedPlaylistData = ref(null)
+const userPlaylistsLoaded = ref(false)
+const pageSessionVersion = ref(0)
+const favoritesRevision = ref(0)
+const cachedPageNames = ['HomeView', 'FavoriteView', 'RankDetailView', 'AlbumDetailView', 'ArtistView', 'SearchView', 'DailyRecommendView']
+const pageSessionKey = computed(() => `${userLoggedIn.value ? userInfo.value?.userid || 'user' : 'guest'}:${pageSessionVersion.value}`)
+const pageScrollPositions = new WeakMap()
+let playlistDirectoryRequestId = 0
+let playlistDirectoryTask = null
+
+/** 账户改变后释放私有页面缓存；仅打开登录页面不影响已有页面。 */
+const resetPageSession = () => {
+  pageSessionVersion.value++
+  playlistDirectoryRequestId++
+  playlistDirectoryTask = null
+  userPlaylistsLoaded.value = false
+  userPlaylists.value = []
+  selectedPlaylistId.value = null
+  selectedPlaylistData.value = null
+}
+
+/** 独立滚动容器随页面缓存，并在脱离文档前保存真实滚动位置。 */
+const rememberPageScroll = (element) => {
+  pageScrollPositions.set(element, element.scrollTop)
+  element.inert = true
+}
+const restorePageScroll = (element) => {
+  element.inert = false
+  const scrollTop = pageScrollPositions.get(element) || 0
+  nextTick(() => {
+    if (element.isConnected) element.scrollTop = scrollTop
+  })
+}
 
 // 播放器状态
 const currentSong = ref(null)
 const playlist = ref([])
 const playlistIndex = ref(0)
+const hasPlayer = computed(() => Boolean(currentSong.value && typeof currentSong.value === 'object' &&
+  Array.isArray(playlist.value) && playlist.value.length > 0))
 
 // 检查登录状态
 const checkLoginStatus = () => {
@@ -69,7 +107,7 @@ const checkLoginStatus = () => {
     if (loginInfo) {
       userLoggedIn.value = true
       userInfo.value = loginInfo.userInfo
-      console.log('用户已登录:', userInfo.value)
+      logger.trace('App', '已恢复登录状态')
       // 登录后获取用户歌单
       fetchUserPlaylists()
     }
@@ -77,24 +115,39 @@ const checkLoginStatus = () => {
 }
 
 // 获取用户歌单
-const fetchUserPlaylists = async () => {
-  try {
-    const response = await getUserPlaylists(1, 100)
-    console.log('用户歌单列表:', response)
-    
-    if (response.status === 1 && response.data) {
-      const playlists = response.data.info || []
-      // 转换为侧边栏需要的格式
-      userPlaylists.value = playlists.map(p => ({
-        id: p.global_collection_id,
-        name: p.name,
-        count: p.count || 0
-      }))
+const fetchUserPlaylists = () => {
+  if (playlistDirectoryTask) return playlistDirectoryTask
+  const requestId = ++playlistDirectoryRequestId
+  const token = localStorage.getItem('kugou_token')
+  const userId = localStorage.getItem('kugou_userid')
+  const isCurrentRequest = () => requestId === playlistDirectoryRequestId && userLoggedIn.value &&
+    localStorage.getItem('kugou_token') === token && localStorage.getItem('kugou_userid') === userId
+  userPlaylistsLoaded.value = false
+  const task = Promise.resolve().then(async () => {
+    try {
+      const response = await getUserPlaylists(1, 100)
+      if (!isCurrentRequest()) return
+      if (response.status !== 1 || !response.data) throw new Error('获取用户歌单失败')
+      const lists = response.data.info || response.data.lists || response.data.list || []
+      userPlaylists.value = (Array.isArray(lists) ? lists : []).map(item => ({
+        ...item,
+        id: item.global_collection_id ?? item.globalCollectionId ?? item.listid ?? item.list_id ?? item.id,
+        name: item.name || '',
+        count: item.count || 0
+      })).filter(item => item.id != null)
+    } catch (error) {
+      if (isCurrentRequest()) logger.error('App', '获取用户歌单失败:', error)
+    } finally {
+      if (isCurrentRequest()) userPlaylistsLoaded.value = true
+      if (playlistDirectoryTask === task) playlistDirectoryTask = null
     }
-  } catch (error) {
-    console.error('获取用户歌单失败:', error)
-  }
+  })
+  playlistDirectoryTask = task
+  return task
 }
+
+// 首次渲染前确定账号，避免先挂载访客首页再重复请求登录首页。
+checkLoginStatus()
 
 // 显示登录界面
 const handleShowLogin = () => {
@@ -103,21 +156,22 @@ const handleShowLogin = () => {
 
 // 显示设置界面
 const handleShowSettings = () => {
-  console.log('打开设置界面')
+  logger.trace('App', '打开设置界面')
+  showLogin.value = false
   currentView.value = 'settings'
   showSettings.value = true
 }
 
 // 关闭设置界面
 const handleCloseSettings = () => {
-  console.log('关闭设置界面')
+  logger.trace('App', '关闭设置界面')
   currentView.value = 'home'
   showSettings.value = false
 }
 
 // 设置改变处理
-const handleSettingsChanged = (settings) => {
-  console.log('设置已更新:', settings)
+const handleSettingsChanged = () => {
+  logger.trace('App', '设置已更新')
   // TODO: 根据设置更新应用状态
 }
 
@@ -128,7 +182,8 @@ const handleBackToMain = () => {
 
 // 登录成功处理
 const handleLoginSuccess = (data) => {
-  console.log('登录成功:', data)
+  logger.trace('App', '登录成功')
+  resetPageSession()
   userLoggedIn.value = true
   userInfo.value = {
     userid: data.userid,
@@ -143,26 +198,41 @@ const handleLoginSuccess = (data) => {
 
 // 退出登录处理
 const handleLogout = () => {
-  console.log('退出登录')
+  logger.trace('App', '退出登录')
   // 清除本地存储
-  localStorage.removeItem('kugou_token')
-  localStorage.removeItem('kugou_userid')
-  localStorage.removeItem('kugou_userinfo')
-  
+  clearLoginInfo()
+  resetPageSession()
+
   // 重置状态
   userLoggedIn.value = false
   userInfo.value = null
   userPlaylists.value = []
   currentView.value = 'home'
-  
+
   // 显示登录界面
+  showLogin.value = true
+}
+
+// API token 可能已过期，不能只根据本地是否存在 token 维持假登录状态。
+const handleAuthExpired = () => {
+  clearLoginInfo()
+  resetPageSession()
+  userLoggedIn.value = false
+  userInfo.value = null
+  userPlaylists.value = []
+  currentView.value = 'home'
   showLogin.value = true
 }
 
 // 处理侧边栏导航
 const handleNavigate = (view, data) => {
-  console.log('Navigate to:', view, data)
+  logger.trace('App', 'Navigate to:', view, data)
+  showLogin.value = false
   currentView.value = view
+  if (view === 'playlist') {
+    selectedPlaylistId.value = data?.id ?? null
+    selectedPlaylistData.value = data || null
+  }
   // 如果是排行榜详情，保存排行榜数据
   if (view === 'rank' && data) {
     rankData.value = data
@@ -176,18 +246,18 @@ const handleNavigate = (view, data) => {
 
 // 处理创建歌单
 const handleCreatePlaylist = () => {
-  console.log('Create new playlist')
+  logger.trace('App', 'Create new playlist')
   // TODO: 显示创建歌单对话框
 }
 
 // 处理播放歌曲
 const handlePlay = (song) => {
-  console.log('🎵 [App.vue] handlePlay 调用:', song.name || song.filename)
-  console.log('🎵 [App.vue] 歌曲 hash:', song.hash)
-  console.log('🎵 [App.vue] 旧 currentSong:', currentSong.value?.name)
-  console.log('App.vue - userLoggedIn:', userLoggedIn.value)
+  logger.trace('App', '🎵 [App.vue] handlePlay 调用:', song.name || song.filename)
+  logger.trace('App', '🎵 [App.vue] 歌曲 hash:', song.hash)
+  logger.trace('App', '🎵 [App.vue] 旧 currentSong:', currentSong.value?.name)
+  logger.trace('App', 'App.vue - userLoggedIn:', userLoggedIn.value)
   currentSong.value = song
-  console.log('🎵 [App.vue] 新 currentSong:', currentSong.value?.name)
+  logger.trace('App', '🎵 [App.vue] 新 currentSong:', currentSong.value?.name)
   // 如果是单曲播放，只有当前歌曲
   if (!playlist.value.find(s => s.hash === song.hash)) {
     playlist.value = [song]
@@ -200,14 +270,14 @@ const handlePlay = (song) => {
 // 处理播放所有歌曲
 const handlePlayAll = async (songs) => {
   if (process.env.NODE_ENV === 'development') {
-    console.log('Play all songs:', songs)
+    logger.trace('App', 'Play all songs:', songs)
   }
-  
+
   if (!songs || !Array.isArray(songs) || songs.length === 0) {
-    console.warn('无效的歌曲列表:', songs)
+    logger.warn('App', '无效的歌曲列表:', songs)
     return
   }
-  
+
   try {
     // 使用批量更新策略，避免频繁的响应式更新
     const batch = async () => {
@@ -217,17 +287,17 @@ const handlePlayAll = async (songs) => {
       for (let i = 0; i < songs.length; i += batchSize) {
         batches.push(songs.slice(i, i + batchSize))
       }
-      
+
       // 先添加第一批歌曲并开始播放（避免先清空导致播放器重置）
       if (batches.length > 0) {
         // 直接设置第一批歌曲，不先清空
         playlist.value = [...batches[0]]
         playlistIndex.value = 0
         currentSong.value = songs[0]
-        
+
         // 等待第一首歌曲开始加载
         await nextTick()
-        
+
         // 异步添加剩余批次
         if (batches.length > 1) {
           for (let i = 1; i < batches.length; i++) {
@@ -237,20 +307,20 @@ const handlePlayAll = async (songs) => {
         }
       }
     }
-    
+
     await batch()
-    
+
     if (process.env.NODE_ENV === 'development') {
-      console.log('已添加', songs.length, '首歌曲到播放列表')
+      logger.trace('App', '已添加', songs.length, '首歌曲到播放列表')
     }
   } catch (error) {
-    console.error('处理播放所有歌曲时出错:', error)
+    logger.error('App', '处理播放所有歌曲时出错:', error)
   }
 }
 
 // 处理下一首播放
 const handlePlayNext = (song) => {
-  console.log('下一首播放:', song)
+  logger.trace('App', '下一首播放:', song)
   // 通过ref访问MusicPlayer组件的方法
   if (musicPlayerRef.value) {
     musicPlayerRef.value.addToPlayNextQueue(song)
@@ -259,7 +329,7 @@ const handlePlayNext = (song) => {
 
 // 处理从播放列表移除
 const handleRemoveFromPlaylist = (song) => {
-  console.log('从播放列表移除:', song)
+  logger.trace('App', '从播放列表移除:', song)
   if (musicPlayerRef.value) {
     musicPlayerRef.value.removeFromPlaylist(song)
   }
@@ -267,53 +337,60 @@ const handleRemoveFromPlaylist = (song) => {
 
 // 处理搜索歌曲
 const handleSearch = (song) => {
-  console.log('搜索歌曲:', song)
-  
+  logger.trace('App', '搜索歌曲:', song)
+
   // 构造搜索关键词：优先使用歌曲名，如果没有则使用文件名
   const songName = song.name || song.filename || song.audio_name || song.songname
   const artistName = song.singername || (song.singerinfo && song.singerinfo.length > 0 ? song.singerinfo[0].singername : '')
-  
+
   // 构造搜索词：歌曲名 + 歌手名
   let searchKeyword = songName
   if (artistName) {
     searchKeyword += ` ${artistName}`
   }
-  
+
   if (searchKeyword.trim()) {
     // 调用搜索请求处理函数
     handleSearchRequest(searchKeyword.trim())
   } else {
-    console.warn('无法构造搜索关键词，歌曲信息不完整')
+    logger.warn('App', '无法构造搜索关键词，歌曲信息不完整')
     alert('无法搜索：歌曲信息不完整')
   }
 }
 
 // 处理搜索请求
 const handleSearchRequest = async (keywords) => {
-  console.log('执行搜索:', keywords)
+  logger.trace('App', '执行搜索:', keywords)
   try {
     searchQuery.value = keywords
     currentView.value = 'search'
     // 这里暂时不直接调用搜索API，而是在SearchView组件中处理
   } catch (error) {
-    console.error('搜索失败:', error)
+    logger.error('App', '搜索失败:', error)
     alert('搜索失败，请稍后重试')
   }
 }
 
 // 处理清空播放列表
-const handleClearPlaylist = async () => {
-  console.log('清空播放列表')
-  
-  // 先清空播放列表，这会触发 TransitionGroup 的离开动画
+const handleClearPlaylist = () => {
+  logger.trace('App', '清空播放列表')
+
   playlist.value = []
   playlistIndex.value = 0
-  
-  // 等待播放列表项的离开动画完成（0.3s）
-  await new Promise(resolve => setTimeout(resolve, 400))
-  
-  // 然后隐藏播放器，触发退出动画
   currentSong.value = null
+}
+
+// 播放器通过事件更新父级队列，按当前歌曲重新定位索引。
+const handlePlaylistUpdated = (songs) => {
+  if (!Array.isArray(songs)) return
+  playlist.value = songs
+  if (songs.length === 0) {
+    playlistIndex.value = 0
+    currentSong.value = null
+    return
+  }
+  const index = songs.findIndex(song => song.hash === currentSong.value?.hash)
+  playlistIndex.value = index >= 0 ? index : 0
 }
 
 // MusicPlayer组件的ref
@@ -332,6 +409,7 @@ const hasAppliedDefaultPage = ref(false)
 const hasRestoredSession = ref(false)
 let sessionPersistTimer = null
 let isRestoringSession = false
+let cleanupPlaybackSessionRestore = null
 
 // 歌词界面显示状态
 const isLyricViewVisible = ref(false)
@@ -343,12 +421,12 @@ const AUTO_LYRIC_DELAY = 60 * 1000 // 60秒
 
 // 处理歌词界面显示状态变化
 const handleLyricViewChanged = (isVisible) => {
-  console.log('🎵 [App.vue] handleLyricViewChanged - 歌词界面状态变化:', isVisible)
+  logger.trace('App', '🎵 [App.vue] handleLyricViewChanged - 歌词界面状态变化:', isVisible)
   isLyricViewVisible.value = isVisible
-  
+
   // 如果用户手动切换歌词界面，重置自动全屏计时器
   if (!isVisible && settings.playback?.fullscreenLyrics && currentSong.value) {
-    console.log('🎵 [App.vue] 用户关闭歌词界面，重置自动全屏计时器')
+    logger.trace('App', '🎵 [App.vue] 用户关闭歌词界面，重置自动全屏计时器')
     resetAutoLyricTimer()
   } else if (isVisible) {
     // 如果用户进入歌词界面，暂停自动全屏计时器
@@ -356,22 +434,27 @@ const handleLyricViewChanged = (isVisible) => {
   }
 }
 
+// 清空队列会直接卸载播放器，仍需复原标题栏并取消歌词状态。
+watch(hasPlayer, (visible) => {
+  if (!visible) handleLyricViewChanged(false)
+})
+
 // 播放上一曲（由 MusicPlayer 组件内部处理）
 const handlePrevious = () => {
   // MusicPlayer 组件已经处理了播放逻辑
-  console.log('上一曲事件')
+  logger.trace('App', '上一曲事件')
 }
 
 // 播放下一曲（由 MusicPlayer 组件内部处理）
 const handleNext = () => {
   // MusicPlayer 组件已经处理了播放逻辑
-  console.log('下一曲事件')
+  logger.trace('App', '下一曲事件')
 }
 
 // 处理歌曲切换事件
 const handleSongChanged = (song) => {
-  console.log('🎵 [App.vue] handleSongChanged - 歌曲已切换:', song.name || song.filename)
-  console.log('🎵 [App.vue] 歌曲 hash:', song.hash)
+  logger.trace('App', '🎵 [App.vue] handleSongChanged - 歌曲已切换:', song.name || song.filename)
+  logger.trace('App', '🎵 [App.vue] 歌曲 hash:', song.hash)
   // 避免对相同歌曲重复赋值，减少不必要的触发
   if (!currentSong.value || currentSong.value.hash !== song.hash) {
     currentSong.value = song
@@ -381,16 +464,16 @@ const handleSongChanged = (song) => {
   if (index !== -1) {
     playlistIndex.value = index
   }
-  
+
   // 🔧 新的智能自动全屏逻辑：
   // - 如果用户已经在歌词界面，保持在歌词界面
   // - 如果用户没在歌词界面且开启了自动全屏，重置60秒计时器
   if (!isLyricViewVisible.value && settings.playback?.fullscreenLyrics) {
     resetAutoLyricTimer()
   }
-  
+
   if (process.env.NODE_ENV === 'development') {
-    console.log('🎵 [App.vue] 切歌完成，歌词界面策略:', {
+    logger.trace('App', '🎵 [App.vue] 切歌完成，歌词界面策略:', {
       isLyricViewVisible: isLyricViewVisible.value,
       fullscreenLyricsEnabled: settings.playback?.fullscreenLyrics,
       action: isLyricViewVisible.value ? '保持显示' : '启动自动全屏计时器'
@@ -401,7 +484,7 @@ const handleSongChanged = (song) => {
 // 更新用户活动时间戳并重置计时器
 const updateUserActivity = () => {
   lastUserActivity.value = Date.now()
-  
+
   // 如果开启了自动全屏且有歌曲播放，重置计时器
   if (settings.playback?.fullscreenLyrics && currentSong.value && !isLyricViewVisible.value) {
     resetAutoLyricTimer()
@@ -411,16 +494,16 @@ const updateUserActivity = () => {
 // 自动全屏计时器管理
 const startAutoLyricTimer = () => {
   clearAutoLyricTimer()
-  
-  console.log('🎵 [App.vue] 启动自动全屏计时器，60秒后进入全屏歌词')
+
+  logger.trace('App', '🎵 [App.vue] 启动自动全屏计时器，60秒后进入全屏歌词')
   autoLyricTimer.value = setTimeout(() => {
     // 检查是否满足自动全屏条件
-    if (settings.playback?.fullscreenLyrics && 
-        currentSong.value && 
+    if (settings.playback?.fullscreenLyrics &&
+        currentSong.value &&
         !isLyricViewVisible.value &&
         musicPlayerRef.value?.isPlaying) {
-      
-      console.log('🎵 [App.vue] 60秒无操作，自动进入全屏歌词')
+
+      logger.trace('App', '🎵 [App.vue] 60秒无操作，自动进入全屏歌词')
       musicPlayerRef.value?.showLyrics()
     }
   }, AUTO_LYRIC_DELAY)
@@ -428,7 +511,7 @@ const startAutoLyricTimer = () => {
 
 const clearAutoLyricTimer = () => {
   if (autoLyricTimer.value) {
-    console.log('🎵 [App.vue] 清除自动全屏计时器')
+    logger.trace('App', '🎵 [App.vue] 清除自动全屏计时器')
     clearTimeout(autoLyricTimer.value)
     autoLyricTimer.value = null
   }
@@ -436,11 +519,11 @@ const clearAutoLyricTimer = () => {
 
 const resetAutoLyricTimer = () => {
   // 只在满足条件时才重置计时器
-  if (settings.playback?.fullscreenLyrics && 
-      currentSong.value && 
+  if (settings.playback?.fullscreenLyrics &&
+      currentSong.value &&
       !isLyricViewVisible.value) {
-    
-    console.log('🎵 [App.vue] 重置自动全屏计时器')
+
+    logger.trace('App', '🎵 [App.vue] 重置自动全屏计时器')
     startAutoLyricTimer()
   } else {
     clearAutoLyricTimer()
@@ -449,14 +532,19 @@ const resetAutoLyricTimer = () => {
 
 // 切换播放列表显示
 const handleTogglePlaylist = () => {
-  console.log('Toggle playlist')
+  logger.trace('App', 'Toggle playlist')
   // TODO: 显示播放列表侧边栏
 }
 
 // 切换收藏状态
 const handleToggleFavorite = (song) => {
-  console.log('Toggle favorite:', song)
+  logger.trace('App', 'Toggle favorite:', song)
   // TODO: 添加/移除收藏
+}
+
+const handleFavoritesChanged = () => {
+  favoritesRevision.value++
+  musicPlayerRef.value?.checkFavoriteStatus?.()
 }
 
 // 快捷键处理
@@ -466,6 +554,8 @@ const handleKeyDown = (event) => {
   if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
     return
   }
+  // 保留聚焦按钮/链接的原生激活行为，避免 Space 收藏变成播放快捷键。
+  if ([' ', 'Enter'].includes(event.key) && target.closest?.('button, [role="button"], a[href]')) return
 
   // 如果正在编辑快捷键,不触发任何快捷键
   if (window.__editingShortcut) {
@@ -488,7 +578,7 @@ const handleKeyDown = (event) => {
     ' ': 'Space'
   }
   mainKey = keyMap[mainKey] || mainKey
-  
+
   if (['Control', 'Alt', 'Shift', 'Meta'].includes(mainKey)) {
     return
   }
@@ -545,62 +635,65 @@ const handleKeyDown = (event) => {
   }
 
   if (handled) {
-    console.log('🎹 快捷键触发:', pressedKey)
+    logger.trace('App', '🎹 快捷键触发:', pressedKey)
   }
 }
 
 // 全局快捷键注册
 const registeredGlobalShortcuts = ref(new Set())
+let shortcutUpdateQueue = Promise.resolve()
+let shortcutGeneration = 0
+let isAppUnmounting = false
+let unsubscribeGlobalShortcut = null
+let unsubscribeMemoryCleanup = null
 
+// 串行更新快捷键；IPC 注册结果异步返回，过期任务不能继续注册。
 function registerGlobalShortcuts() {
   if (!window.electronAPI?.registerGlobalShortcut) {
-    console.warn('⚠️ Electron API 不可用,无法注册全局快捷键')
+    logger.warn('App', '⚠️ Electron API 不可用,无法注册全局快捷键')
     return
   }
 
-  if (!settings.shortcuts?.enableGlobal) {
-    // 如果关闭了全局快捷键,注销所有
-    unregisterAllGlobalShortcuts()
-    return
-  }
+  const generation = ++shortcutGeneration
+  const enabled = Boolean(settings.shortcuts?.enableGlobal)
+  const shortcuts = cloneDeep(settings.shortcuts?.keys || {})
+  shortcutUpdateQueue = shortcutUpdateQueue.then(async () => {
+    await unregisterAllGlobalShortcuts()
+    if (isAppUnmounting || generation !== shortcutGeneration || !enabled) return
 
-  const shortcuts = settings.shortcuts.keys
-  if (!shortcuts) return
-
-  // 注销所有旧的快捷键
-  unregisterAllGlobalShortcuts()
-
-  // 注册新的快捷键
-  Object.entries(shortcuts).forEach(([action, key]) => {
-    if (!key || key === 'Escape') return
-
-    try {
-      const success = window.electronAPI.registerGlobalShortcut(key, action)
-      if (success) {
-        registeredGlobalShortcuts.value.add(key)
-        console.log('✅ 全局快捷键注册成功:', key, '→', action)
-      } else {
-        console.warn('❌ 全局快捷键注册失败:', key)
+    for (const [action, key] of Object.entries(shortcuts)) {
+      if (isAppUnmounting || generation !== shortcutGeneration) break
+      if (!key || key === 'Escape') continue
+      try {
+        const success = await window.electronAPI.registerGlobalShortcut(key, action)
+        if (success) {
+          registeredGlobalShortcuts.value.add(key)
+          logger.trace('App', '全局快捷键注册成功:', key, action)
+        } else {
+          logger.warn('App', '全局快捷键注册失败:', key)
+        }
+      } catch (err) {
+        logger.error('App', '全局快捷键注册错误:', key, err)
       }
-    } catch (err) {
-      console.error('全局快捷键注册错误:', key, err)
     }
+  }).catch(err => {
+    logger.error('App', '更新全局快捷键失败:', err)
   })
+  return shortcutUpdateQueue
 }
 
-function unregisterAllGlobalShortcuts() {
+async function unregisterAllGlobalShortcuts() {
   if (!window.electronAPI?.unregisterGlobalShortcut) return
 
-  registeredGlobalShortcuts.value.forEach(key => {
+  for (const key of [...registeredGlobalShortcuts.value]) {
     try {
-      window.electronAPI.unregisterGlobalShortcut(key)
-      console.log('🔓 全局快捷键已注销:', key)
+      await window.electronAPI.unregisterGlobalShortcut(key)
+      registeredGlobalShortcuts.value.delete(key)
+      logger.trace('App', '🔓 全局快捷键已注销:', key)
     } catch (err) {
-      console.error('注销全局快捷键错误:', key, err)
+      logger.error('App', '注销全局快捷键错误:', key, err)
     }
-  })
-
-  registeredGlobalShortcuts.value.clear()
+  }
 }
 
 // 监听全局快捷键设置变化
@@ -617,9 +710,9 @@ watch(
 // 监听来自主进程的全局快捷键触发
 onMounted(() => {
   if (window.electronAPI?.onGlobalShortcut) {
-    window.electronAPI.onGlobalShortcut((action) => {
-      console.log('🌐 全局快捷键触发:', action)
-      
+    unsubscribeGlobalShortcut = window.electronAPI.onGlobalShortcut((action) => {
+      logger.trace('App', '🌐 全局快捷键触发:', action)
+
       // 执行对应的操作
       switch (action) {
         case 'playPause':
@@ -661,97 +754,107 @@ onMounted(() => {
 
 // 应用启动时检查登录状态
 onMounted(() => {
-  checkLoginStatus()
-  
+
   // 添加快捷键监听
   document.addEventListener('keydown', handleKeyDown)
-  
+
   // 添加用户活动检测监听器
   const activityEvents = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart']
   activityEvents.forEach(eventType => {
     document.addEventListener(eventType, updateUserActivity, { passive: true })
   })
-  
+
   // 注册全局快捷键
   if (settingsReady.value) {
     registerGlobalShortcuts()
   }
-  
+
   if (typeof window !== 'undefined') {
     window.addEventListener('beforeunload', handleBeforeUnload)
+    window.addEventListener(KUGOU_AUTH_EXPIRED_EVENT, handleAuthExpired)
   }
-  
+
   // 监听内存清理事件
   if (window.electronAPI && window.electronAPI.onMemoryCleanup) {
-    window.electronAPI.onMemoryCleanup(() => {
+    unsubscribeMemoryCleanup = window.electronAPI.onMemoryCleanup(() => {
       performMemoryCleanup()
     })
   }
 })
 
 onBeforeUnmount(() => {
+  isAppUnmounting = true
+  playlistDirectoryRequestId++
+  playlistDirectoryTask = null
+  shortcutGeneration += 1
+  unsubscribeGlobalShortcut?.()
+  unsubscribeMemoryCleanup?.()
+  cleanupPlaybackSessionRestore?.()
   // 移除快捷键监听
   document.removeEventListener('keydown', handleKeyDown)
-  
+
   // 移除用户活动检测监听器
   const activityEvents = ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart']
   activityEvents.forEach(eventType => {
     document.removeEventListener(eventType, updateUserActivity, { passive: true })
   })
-  
+
   // 清除自动全屏计时器
   clearAutoLyricTimer()
-  
+
   // 注销所有全局快捷键
-  unregisterAllGlobalShortcuts()
-  
+  shortcutUpdateQueue = shortcutUpdateQueue.then(unregisterAllGlobalShortcuts).catch(err => {
+    logger.error('App', '退出时注销全局快捷键失败:', err)
+  })
+
   if (sessionPersistTimer) {
     clearTimeout(sessionPersistTimer)
     sessionPersistTimer = null
   }
   if (typeof window !== 'undefined') {
     window.removeEventListener('beforeunload', handleBeforeUnload)
+    window.removeEventListener(KUGOU_AUTH_EXPIRED_EVENT, handleAuthExpired)
   }
 })
 
 function applyDefaultPage(page) {
-  console.log('[App] applyDefaultPage 调用:', { 
-    page, 
+  logger.trace('App', '[App] applyDefaultPage 调用:', {
+    page,
     userLoggedIn: userLoggedIn.value,
     currentView: currentView.value,
     hasAppliedDefaultPage: hasAppliedDefaultPage.value
   })
-  
+
   // 计算期望的页面
   const desired = page === 'favorites' && !userLoggedIn.value ? 'home' : page
   const normalizedDesired = desired === 'favorites' ? 'favorite' : desired
-  
-  console.log('[App] 计算结果:', { desired, normalizedDesired })
-  
+
+  logger.trace('App', '[App] 计算结果:', { desired, normalizedDesired })
+
   // 首次应用：直接设置
   if (!hasAppliedDefaultPage.value) {
     if (normalizedDesired && normalizedDesired !== currentView.value) {
       currentView.value = normalizedDesired
-      console.log('[App] 首次应用，已切换到:', normalizedDesired)
+      logger.trace('App', '[App] 首次应用，已切换到:', normalizedDesired)
     }
     hasAppliedDefaultPage.value = true
     return
   }
-  
+
   // 已应用过，但如果当前在 home 页面，且期望页面是 favorite，且用户刚登录
   // 则允许切换到 favorite（这是为了处理登录状态延迟的情况）
-  if (normalizedDesired === 'favorite' && 
-      currentView.value === 'home' && 
+  if (normalizedDesired === 'favorite' &&
+      currentView.value === 'home' &&
       userLoggedIn.value) {
     currentView.value = normalizedDesired
-    console.log('[App] 登录后切换到收藏页:', normalizedDesired)
+    logger.trace('App', '[App] 登录后切换到收藏页:', normalizedDesired)
   }
 }
 
 watch(
   [settingsReady, () => settings.software?.defaultPage, userLoggedIn],
   ([ready, page, loggedIn]) => {
-    console.log('[App] watch 触发:', { ready, page, loggedIn, hasApplied: hasAppliedDefaultPage.value })
+    logger.trace('App', '[App] watch 触发:', { ready, page, loggedIn, hasApplied: hasAppliedDefaultPage.value })
     if (!ready) return
     applyDefaultPage(page)
   },
@@ -800,7 +903,7 @@ function queueSessionPersist({ immediate = false } = {}) {
     try {
       await saveSessionSnapshot(snapshot)
     } catch (err) {
-      console.error('[App] 保存播放会话失败:', err)
+      logger.error('App', '[App] 保存播放会话失败:', err)
     }
   }
 
@@ -823,8 +926,11 @@ async function applyPlaybackSession(state) {
   const player = musicPlayerRef.value
   const audio = player?.$refs?.audioPlayer
   if (!player || !audio) return
+  cleanupPlaybackSessionRestore?.()
+  const songHash = currentSong.value?.hash
 
   const applyState = () => {
+    if (isAppUnmounting || currentSong.value?.hash !== songHash) return
     if (state.playMode) {
       player.playMode = state.playMode
     }
@@ -841,8 +947,13 @@ async function applyPlaybackSession(state) {
       player.duration = state.duration
     }
     if (state.isPlaying) {
-      audio.play().catch(() => {})
-      player.isPlaying = true
+      audio.play().then(() => {
+        if (!isAppUnmounting && currentSong.value?.hash === songHash) player.isPlaying = !audio.paused
+      }).catch(error => {
+        if (isAppUnmounting || currentSong.value?.hash !== songHash) return
+        player.isPlaying = false
+        logger.warn('App', '恢复播放失败:', error)
+      })
     } else {
       audio.pause()
       player.isPlaying = false
@@ -855,9 +966,14 @@ async function applyPlaybackSession(state) {
   }
 
   const handleLoaded = () => {
+    cleanupPlaybackSessionRestore?.()
+    applyState()
+  }
+
+  cleanupPlaybackSessionRestore = () => {
     audio.removeEventListener('loadedmetadata', handleLoaded)
     audio.removeEventListener('loadeddata', handleLoaded)
-    applyState()
+    cleanupPlaybackSessionRestore = null
   }
 
   audio.addEventListener('loadedmetadata', handleLoaded)
@@ -901,7 +1017,9 @@ async function restoreSessionIfNeeded() {
 watch(
   [settingsReady, () => settings.session, () => settings.software?.restorePlaylist, () => settings.software?.restorePlaybackState],
   () => {
-    void restoreSessionIfNeeded()
+    void restoreSessionIfNeeded().catch(error => {
+      logger.error('App', '恢复播放会话失败:', error)
+    })
   },
   { immediate: true }
 )
@@ -921,6 +1039,7 @@ watch(playlist, () => {
 }, { deep: true })
 
 watch(currentSong, () => {
+  cleanupPlaybackSessionRestore?.()
   if (isRestoringSession) return
   queueSessionPersist({ immediate: true })
 })
@@ -932,7 +1051,7 @@ watch(playlistIndex, () => {
 
 // 添加调试：监控 currentSong 变化
 watch(currentSong, (newVal, oldVal) => {
-  console.log('🎵 [App.vue] currentSong 响应式变化:', {
+  logger.trace('App', '🎵 [App.vue] currentSong 响应式变化:', {
     old: oldVal?.hash,
     new: newVal?.hash,
     oldName: oldVal?.name,
@@ -957,6 +1076,8 @@ watch(
         playlist: [],
         playlistIndex: 0,
         currentSong: null
+      }).catch(error => {
+        logger.error('App', '清除播放队列快照失败:', error)
       })
     } else {
       queueSessionPersist({ immediate: true })
@@ -972,6 +1093,8 @@ watch(
     if (!enabled) {
       void saveSessionSnapshot({
         playbackState: cloneDeep(defaultSessionTemplate.playbackState)
+      }).catch(error => {
+        logger.error('App', '清除播放状态快照失败:', error)
       })
     } else {
       queueSessionPersist({ immediate: true })
@@ -986,38 +1109,19 @@ function handleBeforeUnload() {
 
 // 渲染进程内存清理
 function performMemoryCleanup() {
-  console.log('🧹 [渲染进程] 执行内存清理...')
-  
+  logger.trace('App', '🧹 [渲染进程] 执行内存清理...')
+
   try {
-    // 1. 清理音频缓存
-    if (musicPlayerRef.value && musicPlayerRef.value.$refs.audioPlayer) {
-      const audio = musicPlayerRef.value.$refs.audioPlayer
-      // 清理音频资源但不影响当前播放
-      if (audio.paused) {
-        audio.src = ''
-        audio.load()
-      }
-    }
-    
-    // 2. 清理图片缓存 - 移除不可见的图片元素
-    const images = document.querySelectorAll('img[data-loaded="true"]')
-    images.forEach(img => {
-      const rect = img.getBoundingClientRect()
-      // 如果图片不在视口内且已加载
-      if (rect.top < -500 || rect.bottom > window.innerHeight + 500) {
-        // 清理图片引用，但保留占位
-        if (img.dataset.originalSrc) {
-          img.removeAttribute('src')
-        }
-      }
-    })
-    
+    // 当前音频资源由播放器管理，暂停时仍需保留地址和播放进度。
+
+    // 图片及音频的生命周期由对应组件管理，避免清理后无法恢复可见内容。
+
     // 3. 触发垃圾回收（如果可用）
     if (window.gc) {
       window.gc()
-      console.log('✅ 渲染进程 GC 已执行')
+      logger.trace('App', '✅ 渲染进程 GC 已执行')
     }
-    
+
     // 4. 清理大型数组和对象缓存
     // 保留最近的播放历史，清理较旧的
     // if (playlist.value.length > 100) {
@@ -1029,17 +1133,17 @@ function performMemoryCleanup() {
     //   playlist.value = playlist.value.slice(start, end)
     //   playlistIndex.value = currentIndex - start
     // }
-    
-    console.log('✅ [渲染进程] 内存清理完成')
+
+    logger.trace('App', '✅ [渲染进程] 内存清理完成')
   } catch (error) {
-    console.error('❌ [渲染进程] 内存清理失败:', error)
+    logger.error('App', '❌ [渲染进程] 内存清理失败:', error)
   }
 }
 </script>
 
 <template>
-  <div class="app-container">
-    <TitleBar 
+  <div class="app-container" :class="{ 'has-player': hasPlayer, 'has-floating-player': hasPlayer && settings.custom?.playerStyle === 'netease' }">
+    <TitleBar
       @show-login="handleShowLogin"
       @logout="handleLogout"
       @open-settings="handleShowSettings"
@@ -1048,143 +1152,104 @@ function performMemoryCleanup() {
       :userInfo="userInfo"
       :isLyricViewVisible="isLyricViewVisible"
     />
-    
+
     <div class="content">
-      <!-- 登录界面 -->
-      <LoginView 
-        v-if="showLogin" 
-        @back="handleBackToMain"
-        @loginSuccess="handleLoginSuccess"
-      />
-      
       <!-- 主界面布局 -->
-      <div v-else class="main-layout">
+      <div class="main-layout">
         <!-- 侧边栏（始终显示）-->
-        <Sidebar 
+        <Sidebar
           :playlists="userPlaylists"
-          :currentView="currentView"
+          :currentView="showLogin ? 'login' : currentView"
           :userLoggedIn="userLoggedIn"
+          :userInfo="userInfo"
+          :selectedPlaylistId="selectedPlaylistId"
           @navigate="handleNavigate"
           @create-playlist="handleCreatePlaylist"
+          @show-login="handleShowLogin"
+          @open-settings="handleShowSettings"
+          @logout="handleLogout"
         />
-        
-        <!-- 主内容区域 -->
-        <div class="main-content">
-          <div class="content-view">
-            <!-- 设置视图 -->
-            <div v-if="currentView === 'settings'" class="view-settings">
-              <SettingsView 
-                @close="handleCloseSettings"
-                @settings-changed="handleSettingsChanged"
-              />
-            </div>
-            
-            <!-- 主页视图（未登录和登录后都显示）-->
-            <div v-else-if="currentView === 'home'" class="view-home">
-              <HomeView 
-                @navigate="handleNavigate"
-                @play="handlePlay"
-              />
-            </div>
-            
-            <!-- 收藏视图（仅登录后可访问）-->
-            <div v-else-if="currentView === 'favorite' && userLoggedIn" class="view-favorite">
-              <FavoriteView 
-                :current-song="currentSong"
-                @navigate="handleNavigate"
-                @play="handlePlay"
-                @play-all="handlePlayAll"
-                @play-next="handlePlayNext"
-                @remove-from-playlist="handleRemoveFromPlaylist"
-                @search="handleSearch"
-              />
-            </div>
-            
-            <!-- 私人FM视图 -->
-            <div v-else-if="currentView === 'personal-fm'" class="view-personal-fm">
-              <PersonalFMView 
-                @navigate="handleNavigate"
-                @play="handlePlay"
-              />
-            </div>
-            
-            <!-- 每日推荐视图 -->
-            <div v-else-if="currentView === 'daily-recommend'" class="view-daily-recommend">
-              <DailyRecommendView 
-                @navigate="handleNavigate"
-                @play="handlePlay"
-                @play-all="handlePlayAll"
-              />
-            </div>
-            
-            <!-- 排行榜详情视图 -->
-            <div v-else-if="currentView === 'rank' && rankData" class="view-rank-detail">
-              <RankDetailView 
-                :rank-data="rankData"
-                @navigate="handleNavigate"
-                @play="handlePlay"
-                @play-all="handlePlayAll"
-              />
-            </div>
-            
-            <!-- 搜索结果视图 -->
-            <div v-else-if="currentView === 'search'" class="view-search">
-              <SearchView 
-                :search-keyword="searchQuery"
-                :current-song="currentSong"
-                @navigate="handleNavigate"
-                @play="handlePlay"
-                @play-all="handlePlayAll"
-                @play-next="handlePlayNext"
-              />
-            </div>
-            
-            <!-- 歌手页面视图 -->
-            <div v-else-if="currentView === 'artist' && artistData" class="view-artist">
-              <ArtistView 
-                :artist-id="artistData?.id"
-                :artist-name="artistData?.name"
-                @play="handlePlay"
-                @navigate="handleNavigate"
-              />
-            </div>
 
-            <!-- 专辑详情视图 -->
-            <div v-else-if="currentView === 'album' && albumData" class="view-album">
-              <AlbumDetailView 
-                :album-id="albumData?.id"
-                :album-name="albumData?.name"
-                @navigate="handleNavigate"
-                @play="handlePlay"
+        <!-- 页面组件独立缓存与滚动，登录和设置仍按原生命周期卸载。 -->
+        <div class="main-content">
+          <Transition name="page-switch" @before-leave="rememberPageScroll" @before-enter="restorePageScroll">
+            <KeepAlive :key="pageSessionKey" :include="cachedPageNames" :max="12">
+              <LoginView
+                v-if="showLogin" key="login" class="page-view"
+                @back="handleBackToMain" @loginSuccess="handleLoginSuccess"
               />
-            </div>
-            
-            <!-- 歌单视图（仅登录后可访问）-->
-            <div v-else-if="currentView === 'playlist' && userLoggedIn" class="view-playlist">
-              <h1>歌单详情</h1>
-              <p class="placeholder">歌单内容将在这里显示</p>
-            </div>
-            
-            <!-- 未登录时访问需要登录的页面，显示提示 -->
-            <div v-else-if="!userLoggedIn && currentView !== 'home'" class="login-required">
-              <svg viewBox="0 0 1024 1024" width="80" height="80" fill="currentColor" opacity="0.3">
-                <path d="M858.5 763.6a374 374 0 00-80.6-119.5 375.63 375.63 0 00-119.5-80.6c-.4-.2-.8-.3-1.2-.5C719.5 518 760 444.7 760 362c0-137-111-248-248-248S264 225 264 362c0 82.7 40.5 156 102.8 201.1-.4.2-.8.3-1.2.5-44.8 18.9-85 46-119.5 80.6a375.63 375.63 0 00-80.6 119.5A371.7 371.7 0 00136 901.8a8 8 0 008 8.2h60c4.4 0 7.9-3.5 8-7.8 2-77.2 33-149.5 87.8-204.3 56.7-56.7 132-87.9 212.2-87.9s155.5 31.2 212.2 87.9C779 752.7 810 825 812 902.2c.1 4.4 3.6 7.8 8 7.8h60a8 8 0 008-8.2c-1-47.8-10.9-94.3-29.5-138.2zM512 534c-45.9 0-89.1-17.9-121.6-50.4S340 407.9 340 362c0-45.9 17.9-89.1 50.4-121.6S466.1 190 512 190s89.1 17.9 121.6 50.4S684 316.1 684 362c0 45.9-17.9 89.1-50.4 121.6S557.9 534 512 534z"/>
-              </svg>
-              <h2>需要登录</h2>
-              <p>请先登录以访问此页面</p>
-              <button class="primary-btn" @click="handleShowLogin">
-                立即登录
-              </button>
-            </div>
-          </div>
+              <SettingsView
+                v-else-if="currentView === 'settings'" key="settings" class="page-view view-settings"
+                @close="handleCloseSettings" @settings-changed="handleSettingsChanged"
+              />
+              <HomeView
+                v-else-if="currentView === 'home'" key="home" class="page-view view-home"
+                :favorites-revision="favoritesRevision"
+                @navigate="handleNavigate" @play="handlePlay"
+              />
+              <FavoriteView
+                v-else-if="userLoggedIn && (currentView === 'favorite' || currentView === 'playlist')"
+                :key="currentView === 'favorite' ? 'favorite' : 'playlist:' + selectedPlaylistId"
+                class="page-view view-favorite"
+                :current-song="currentSong"
+                :playlist-id="currentView === 'playlist' ? selectedPlaylistId : null"
+                :playlist-name="selectedPlaylistData?.name || '歌单'"
+                :user-playlists="userPlaylists" :playlists-loaded="userPlaylistsLoaded"
+                @favorites-changed="handleFavoritesChanged"
+                @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll"
+                @play-next="handlePlayNext" @remove-from-playlist="handleRemoveFromPlaylist" @search="handleSearch"
+              />
+              <PersonalFMView
+                v-else-if="currentView === 'personal-fm'" key="personal-fm" class="page-view view-personal-fm"
+                @navigate="handleNavigate" @play="handlePlay"
+              />
+              <DailyRecommendView
+                v-else-if="currentView === 'daily-recommend'" key="daily-recommend" class="page-view view-daily-recommend"
+                @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll"
+              />
+              <RankDetailView
+                v-else-if="currentView === 'rank' && rankData"
+                :key="'rank:' + (rankData.rankid ?? rankData.id)" class="page-view view-rank-detail"
+                :rank-data="rankData" :current-song="currentSong"
+                @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll"
+              />
+              <SearchView
+                v-else-if="currentView === 'search'" :key="'search:' + searchQuery" class="page-view view-search"
+                :search-keyword="searchQuery" :current-song="currentSong"
+                @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll" @play-next="handlePlayNext"
+              />
+              <ArtistView
+                v-else-if="currentView === 'artist' && artistData"
+                :key="'artist:' + (artistData.id ?? artistData.name)" class="page-view view-artist"
+                :artist-id="artistData.id" :artist-name="artistData.name"
+                @navigate="handleNavigate" @play="handlePlay"
+              />
+              <AlbumDetailView
+                v-else-if="currentView === 'album' && albumData"
+                :key="'album:' + (albumData.id ?? albumData.name)" class="page-view view-album"
+                :album-id="albumData.id" :album-name="albumData.name"
+                @navigate="handleNavigate" @play="handlePlay"
+              />
+              <div v-else-if="!userLoggedIn && currentView !== 'home'" class="page-view login-required" key="login-required">
+                <svg viewBox="0 0 1024 1024" width="80" height="80" fill="currentColor" opacity="0.3">
+                  <path d="M858.5 763.6a374 374 0 00-80.6-119.5 375.63 375.63 0 00-119.5-80.6c-.4-.2-.8-.3-1.2-.5C719.5 518 760 444.7 760 362c0-137-111-248-248-248S264 225 264 362c0 82.7 40.5 156 102.8 201.1-.4.2-.8.3-1.2.5-44.8 18.9-85 46-119.5 80.6a375.63 375.63 0 00-80.6 119.5A371.7 371.7 0 00136 901.8a8 8 0 008 8.2h60c4.4 0 7.9-3.5 8-7.8 2-77.2 33-149.5 87.8-204.3 56.7-56.7 132-87.9 212.2-87.9s155.5 31.2 212.2 87.9C779 752.7 810 825 812 902.2c.1 4.4 3.6 7.8 8 7.8h60a8 8 0 008-8.2c-1-47.8-10.9-94.3-29.5-138.2zM512 534c-45.9 0-89.1-17.9-121.6-50.4S340 407.9 340 362c0-45.9 17.9-89.1 50.4-121.6S466.1 190 512 190s89.1 17.9 121.6 50.4S684 316.1 684 362c0 45.9-17.9 89.1-50.4 121.6S557.9 534 512 534z"/>
+                </svg>
+                <h2>需要登录</h2>
+                <p>请先登录以访问此页面</p>
+                <button class="primary-btn" @click="handleShowLogin">
+                  立即登录
+                </button>
+              </div>
+            </KeepAlive>
+          </Transition>
         </div>
       </div>
     </div>
-    
+
     <!-- 全局音乐播放器 -->
     <Transition name="player-slide">
-      <MusicPlayer 
-        v-if="currentSong && typeof currentSong === 'object' && Array.isArray(playlist)"
+      <MusicPlayer
+        v-if="hasPlayer"
         ref="musicPlayerRef"
         :song="currentSong"
         :playlist="playlist"
@@ -1194,221 +1259,11 @@ function performMemoryCleanup() {
         @toggle-playlist="handleTogglePlaylist"
         @toggle-favorite="handleToggleFavorite"
         @clear-playlist="handleClearPlaylist"
+        @playlist-updated="handlePlaylistUpdated"
         @lyric-view-changed="handleLyricViewChanged"
       />
     </Transition>
   </div>
 </template>
 
-<style scoped>
-.app-container {
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-  background: var(--color-background);
-  color: var(--color-text);
-  overflow: hidden;
-  position: relative;
-}
-
-/* 播放器滑入滑出动画 */
-.player-slide-enter-active {
-  animation: slideUp 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
-}
-
-.player-slide-leave-active {
-  animation: slideDown 0.3s cubic-bezier(0.55, 0.06, 0.68, 0.19);
-}
-
-@keyframes slideUp {
-  from {
-    transform: translateY(100%);
-    opacity: 0;
-  }
-  to {
-    transform: translateY(0);
-    opacity: 1;
-  }
-}
-
-@keyframes slideDown {
-  from {
-    transform: translateY(0);
-    opacity: 1;
-  }
-  to {
-    transform: translateY(100%);
-    opacity: 0;
-  }
-}
-
-.content {
-  flex: 1;
-  overflow: hidden;
-  display: flex;
-  position: relative;
-  z-index: 1;
-}
-
-.main-layout {
-  flex: 1;
-  display: flex;
-  overflow: hidden;
-}
-
-.main-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
-  background: linear-gradient(135deg, var(--color-background) 0%, var(--color-background-light) 100%);
-  padding-bottom: 90px; /* 为播放器留出空间 */
-}
-
-/* 自定义滚动条 */
-.main-content::-webkit-scrollbar {
-  width: 8px;
-}
-
-.main-content::-webkit-scrollbar-track {
-  background: var(--color-background);
-}
-
-.main-content::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 4px;
-}
-
-.main-content::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-tertiary);
-}
-
-.welcome-screen {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  padding: var(--spacing-lg);
-}
-
-.welcome-screen h1 {
-  font-size: var(--font-size-2xl);
-  margin-bottom: var(--spacing-md);
-}
-
-.welcome-screen p {
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-base);
-}
-
-/* 需要登录提示页面 */
-.login-required {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: calc(100vh - 140px); /* 减去标题栏和播放器高度 */
-  padding: var(--spacing-xl);
-  text-align: center;
-}
-
-.login-required svg {
-  margin-bottom: var(--spacing-xl);
-  opacity: 0.3;
-}
-
-.login-required h2 {
-  font-size: var(--font-size-xl);
-  color: var(--color-text);
-  margin-bottom: var(--spacing-md);
-}
-
-.login-required p {
-  font-size: var(--font-size-base);
-  color: var(--color-text-secondary);
-  margin-bottom: var(--spacing-xl);
-}
-
-.primary-btn {
-  padding: var(--spacing-md) var(--spacing-xl);
-  background: var(--gradient-primary);
-  color: var(--text-white);
-  border: none;
-  border-radius: var(--radius-md);
-  font-size: var(--font-size-base);
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  box-shadow: var(--shadow-button);
-}
-
-.primary-btn:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-button-hover);
-}
-
-.primary-btn:active {
-  transform: translateY(0);
-}
-
-.content-view {
-  min-height: 100%;
-}
-
-.view-home {
-  height: 100%;
-}
-
-.view-favorite {
-  height: 100%;
-}
-
-.view-settings {
-  height: 100%;
-}
-
-.content-view h1 {
-  font-size: var(--font-size-2xl);
-  margin-bottom: var(--spacing-lg);
-  color: var(--color-text);
-}
-
-.user-welcome {
-  text-align: center;
-  padding: var(--spacing-xl);
-  border-radius: var(--radius-lg);
-  background: var(--color-background-light);
-  border: 1px solid var(--color-border);
-  max-width: 400px;
-  margin: var(--spacing-xl) auto;
-}
-
-.user-welcome p {
-  margin: var(--spacing-sm) 0;
-  color: var(--color-text);
-  font-size: var(--font-size-base);
-}
-
-.user-id {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-tertiary);
-}
-
-.vip-badge {
-  display: inline-block;
-  margin-top: var(--spacing-md);
-  padding: var(--spacing-sm) var(--spacing-md);
-  background: var(--gradient-gold);
-  color: var(--text-black);
-  border-radius: var(--radius-md);
-  font-weight: 600;
-  font-size: var(--font-size-sm);
-}
-
-.placeholder {
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-base);
-  text-align: center;
-  padding: var(--spacing-xl);
-}
-</style>
+<style src="./App.css" scoped></style>

@@ -268,7 +268,8 @@
   </div>
 
   <script>
-    const { ipcRenderer } = require('electron')
+    const lyricAPI = window.desktopLyricAPI
+    const subscriptions = []
     
     // 状态管理
     let isLocked = false
@@ -309,15 +310,15 @@
       closeBtn.addEventListener('click', closeLyric)
 
       // 监听主进程消息
-      ipcRenderer.on('desktop-lyric:song-update', (event, song) => {
+      subscriptions.push(lyricAPI.onSongUpdate((song) => {
         updateSongInfo(song)
-      })
+      }))
 
-      ipcRenderer.on('desktop-lyric:lyric-update', (event, lyrics) => {
+      subscriptions.push(lyricAPI.onLyricUpdate((lyrics) => {
         updateLyrics(lyrics)
-      })
+      }))
 
-      ipcRenderer.on('desktop-lyric:time-update', (event, time) => {
+      subscriptions.push(lyricAPI.onTimeUpdate((time) => {
         // 使用requestAnimationFrame进行性能优化
         if (updateRAFId) {
           cancelAnimationFrame(updateRAFId)
@@ -325,9 +326,9 @@
         updateRAFId = requestAnimationFrame(() => {
           updateCurrentTime(time)
         })
-      })
+      }))
 
-      ipcRenderer.on('desktop-lyric:settings-update', (event, settings) => {
+      subscriptions.push(lyricAPI.onSettingsUpdate((settings) => {
         if (settings.fontSize) currentSize = settings.fontSize
         if (settings.theme) currentTheme = settings.theme
         if (typeof settings.locked === 'boolean') isLocked = settings.locked
@@ -335,14 +336,18 @@
         updateSize()
         updateTheme()
         updateLockState()
-      })
+      }))
 
-      ipcRenderer.on('desktop-lyric:lock-changed', (event, locked) => {
+      subscriptions.push(lyricAPI.onLockChanged((locked) => {
         isLocked = locked
         updateLockState()
-      })
+      }))
 
-      console.log('桌面歌词窗口已初始化')
+      window.addEventListener('beforeunload', () => {
+        subscriptions.splice(0).forEach(unsubscribe => unsubscribe())
+        if (updateRAFId) cancelAnimationFrame(updateRAFId)
+      }, { once: true })
+
     }
 
     function updateLockState() {
@@ -361,7 +366,7 @@
       const currentIndex = sizes.indexOf(currentSize)
       currentSize = sizes[(currentIndex + 1) % sizes.length]
       updateSize()
-      ipcRenderer.send('desktop-lyric:size-changed', currentSize)
+      lyricAPI.changeSize(currentSize)
     }
 
     function updateSize() {
@@ -375,7 +380,7 @@
       const currentIndex = themes.indexOf(currentTheme)
       currentTheme = themes[(currentIndex + 1) % themes.length]
       updateTheme()
-      ipcRenderer.send('desktop-lyric:theme-changed', currentTheme)
+      lyricAPI.changeTheme(currentTheme)
     }
 
     function updateTheme() {
@@ -385,7 +390,7 @@
 
     // 关闭歌词窗口
     function closeLyric() {
-      ipcRenderer.send('desktop-lyric:close')
+      lyricAPI.close()
     }
 
     // 更新歌曲信息
@@ -400,10 +405,6 @@
 
     // 更新歌词
     function updateLyrics(lyrics) {
-      console.log('桌面歌词接收到数据:', lyrics ? lyrics.length : 0, '行')
-      if (lyrics && lyrics.length > 0) {
-        console.log('前3行歌词:', lyrics.slice(0, 3))
-      }
       
       currentLyrics = lyrics || []
       updateCurrentLyric()
@@ -459,7 +460,6 @@
         
         // 只在歌词行发生变化时才重新渲染DOM结构
         if (newCurrentIndex !== currentLyricIndex) {
-          console.log('🎵 切换到新歌词行:', newCurrentIndex, currentLine.text)
           currentLyricIndex = newCurrentIndex
           
           // 检查是否是KRC格式（支持卡拉OK效果）
@@ -499,7 +499,6 @@
       const words = lyricLine.words || []
       let html = ''
       
-      console.log('🎵 重建卡拉OK DOM结构:', words.length, '个单词')
       
       for (let i = 0; i < words.length; i++) {
         const word = words[i]

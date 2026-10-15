@@ -1,8 +1,34 @@
 // 音乐相关 API
 import axios from 'axios'
+import { logger } from '../utils/logger.js'
 
 // API 基础地址
 const API_BASE_URL = 'http://localhost:6500'
+export const KUGOU_AUTH_EXPIRED_EVENT = 'kugou-auth-expired'
+
+const AUTH_EXPIRED_ERROR_CODES = new Set([20017])
+const requestIdentities = new WeakMap()
+
+const isAuthExpiredPayload = (payload) => {
+  const errorCode = Number(payload?.error_code ?? payload?.data?.error_code)
+  return AUTH_EXPIRED_ERROR_CODES.has(errorCode)
+}
+
+const notifyAuthExpired = (config) => {
+  const identity = config && requestIdentities.get(config)
+  if (identity && (identity.token !== localStorage.getItem('kugou_token') ||
+      identity.userId !== localStorage.getItem('kugou_userid'))) return
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(KUGOU_AUTH_EXPIRED_EVENT))
+  }
+}
+
+const createAuthExpiredError = (cause) => {
+  const error = new Error('登录状态已失效，请重新登录')
+  error.code = 'KUGOU_AUTH_EXPIRED'
+  error.cause = cause
+  return error
+}
 
 // 创建 axios 实例
 const apiClient = axios.create({
@@ -18,6 +44,7 @@ apiClient.interceptors.request.use(
     // 对于需要完整认证的 API（如 getSongUrl），会在函数内部单独处理
     const token = localStorage.getItem('kugou_token')
     const userid = localStorage.getItem('kugou_userid')
+    requestIdentities.set(config, { token, userId: userid })
     
     if (token && !config.params?.cookie) {
       // 只有在没有明确指定 cookie 的情况下才添加这些参数
@@ -40,10 +67,18 @@ apiClient.interceptors.request.use(
 // 响应拦截器
 apiClient.interceptors.response.use(
   (response) => {
+    if (isAuthExpiredPayload(response.data)) {
+      notifyAuthExpired(response.config)
+      return Promise.reject(createAuthExpiredError(response.data))
+    }
     return response.data
   },
   (error) => {
-    console.error('API Error:', error)
+    if (isAuthExpiredPayload(error.response?.data)) {
+      notifyAuthExpired(error.config)
+      return Promise.reject(createAuthExpiredError(error))
+    }
+    logger.error('music-api', 'API请求失败', error)
     return Promise.reject(error)
   }
 )
@@ -189,7 +224,7 @@ export const getLyric = async (hash, album_audio_id = 0, keywords = '') => {
     // 第一步：搜索歌词信息
     const searchResult = await searchLyric(hash, album_audio_id, keywords)
     
-    console.log('搜索歌词响应:', searchResult) // 调试日志
+    logger.trace('music-api', '搜索歌词响应', searchResult)
     
     if (!searchResult || !searchResult.candidates || searchResult.candidates.length === 0) {
       throw new Error('未找到歌词信息')
@@ -209,7 +244,7 @@ export const getLyric = async (hash, album_audio_id = 0, keywords = '') => {
     
     return lyricDetail
   } catch (error) {
-    console.error('获取歌词失败:', error)
+    logger.error('music-api', '获取歌词失败', error)
     throw error
   }
 }
@@ -330,7 +365,7 @@ export const findArtistByName = async (name) => {
     const list = res?.data?.lists || []
     return list[0] || null
   } catch (e) {
-    console.error('findArtistByName error:', e)
+    logger.error('music-api', 'findArtistByName失败', e)
     return null
   }
 }

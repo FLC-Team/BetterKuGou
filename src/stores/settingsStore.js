@@ -1,6 +1,7 @@
 import { reactive, computed } from 'vue'
 import { cloneDeep, mergeDeep, replaceReactive } from '../utils/objectUtils.js'
 import { applyTheme } from '../utils/themeManager.js'
+import { logger } from '../utils/logger.js'
 
 const LOCAL_STORAGE_KEY = 'betterkugou_settings'
 const CURRENT_SCHEMA_VERSION = 1
@@ -21,6 +22,7 @@ const baseDefaultSettings = Object.freeze({
   custom: {
     playerStyle: 'default',
     theme: 'dark',
+    themePackages: [],
     customTheme: {
       primary: '#667eea',
       hover: '#764ba2',
@@ -73,7 +75,13 @@ const bridge = typeof window !== 'undefined' ? window.settingsAPI : null
 let initPromise = null
 let defaultSnapshot = cloneDeep(baseDefaultSettings)
 let unsubscribeExternalListener = null
-let isApplyingExternalUpdate = false
+let committedSnapshot = cloneDeep(baseDefaultSettings)
+let persistQueue = Promise.resolve()
+let mutationVersion = 0
+let persistedVersion = -1
+let pendingMutations = []
+let writeInFlight = false
+let bufferedExternalSettings = null
 
 async function resolvePathDefaults(settings) {
   const resolved = cloneDeep(settings)
@@ -88,26 +96,18 @@ async function resolvePathDefaults(settings) {
       }
       return resolved
     } catch (err) {
-      console.warn('[settingsStore] 获取默认路径失败:', err)
+      logger.warn('settingsStore', '获取默认路径失败', err)
     }
   }
-  if (!resolved.download.downloadPath) {
-    resolved.download.downloadPath = 'C:/Users/BetterKugou/Downloads'
-  }
-  if (!resolved.download.cachePath) {
-    resolved.download.cachePath = 'C:/Users/BetterKugou/AppData/Local/BetterKugou/Cache'
-  }
+  // 浏览器预览无法确定本机目录，保留空值；桌面端由主进程提供路径。
   return resolved
 }
 
-function applySettings(newSettings, { persist = false, notify = true } = {}) {
+function applySettings(newSettings, { notify = true } = {}) {
   replaceReactive(state.settings, newSettings)
   applyTheme(state.settings)
   if (notify) {
     state.revision += 1
-  }
-  if (persist) {
-    void persistSettings()
   }
 }
 
@@ -119,7 +119,7 @@ async function fetchDefaultSettings() {
       return mergeDeep(cloneDeep(baseDefaultSettings), defaults)
     }
   } catch (err) {
-    console.warn('[settingsStore] 获取主进程默认设置失败:', err)
+    logger.warn('settingsStore', '获取主进程默认设置失败', err)
   }
   return cloneDeep(baseDefaultSettings)
 }
@@ -132,7 +132,7 @@ async function loadFromBridge() {
       return remoteSettings
     }
   } catch (err) {
-    console.warn('[settingsStore] 读取主进程设置失败:', err)
+    logger.warn('settingsStore', '读取主进程设置失败', err)
   }
   return null
 }
@@ -146,43 +146,71 @@ function loadFromLocalStorage() {
       return parsed
     }
   } catch (err) {
-    console.warn('[settingsStore] 解析本地设置失败:', err)
+    logger.warn('settingsStore', '解析本地设置失败', err)
   }
   return null
 }
 
-async function persistSettings() {
-  const payload = cloneDeep(state.settings)
-  state.error = null
-  try {
-    if (bridge?.set) {
-      await bridge.set(payload)
-    } else {
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload))
-    }
-  } catch (err) {
-    console.warn('[settingsStore] 持久化设置失败:', err)
-    state.error = {
-      source: 'persist',
-      code: err?.code || 'UNKNOWN',
-      message: err?.message || '保存设置失败'
-    }
-    if (bridge?.get) {
-      try {
-        isApplyingExternalUpdate = true
-        const latest = await bridge.get()
-        if (latest && typeof latest === 'object') {
-          const migrated = migrateSettings(latest, defaultSnapshot)
-          applySettings(migrated, { persist: false, notify: true })
-        }
-      } catch (fetchErr) {
-        console.warn('[settingsStore] 回滚设置失败:', fetchErr)
-      } finally {
-        isApplyingExternalUpdate = false
-      }
-    }
-    throw err
+/** 将未提交的编辑重放到主进程快照，避免广播或失败回滚覆盖后续修改。 */
+function applyCommittedSettings(snapshot) {
+  committedSnapshot = cloneDeep(snapshot)
+  let next = cloneDeep(snapshot)
+  for (const mutation of pendingMutations) {
+    next = mutation.merge ? mergeDeep(next, mutation.patch) : cloneDeep(mutation.patch)
   }
+  applySettings(next)
+}
+
+/** 串行持久化并在执行时取最新快照；较早的自身广播不能回退乐观状态。 */
+function persistSettings() {
+  const requestedVersion = mutationVersion
+  const task = persistQueue.then(async () => {
+    if (requestedVersion <= persistedVersion) return
+    const sentVersion = mutationVersion
+    const payload = cloneDeep(state.settings)
+    writeInFlight = true
+    bufferedExternalSettings = null
+    state.error = null
+    try {
+      let result
+      if (bridge?.set) {
+        result = await bridge.set(payload)
+      } else {
+        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload))
+      }
+      const remote = bufferedExternalSettings || (result && typeof result === 'object' ? result : payload)
+      pendingMutations = pendingMutations.filter(mutation => mutation.version > sentVersion)
+      persistedVersion = sentVersion
+      applyCommittedSettings(migrateSettings(remote, defaultSnapshot))
+    } catch (err) {
+      logger.warn('settingsStore', '持久化设置失败', err)
+      state.error = {
+        source: 'persist',
+        code: err?.code || 'UNKNOWN',
+        message: err?.message || '保存设置失败'
+      }
+      let latest = committedSnapshot
+      if (bridge?.get) {
+        try {
+          const remote = await bridge.get()
+          if (remote && typeof remote === 'object') latest = migrateSettings(remote, defaultSnapshot)
+        } catch (fetchErr) {
+          logger.warn('settingsStore', '读取回滚快照失败，使用最近提交的设置', fetchErr)
+          latest = committedSnapshot
+        }
+      }
+      // 失败只撤销本次调用及其之前的编辑，后续调用仍会排队保存。
+      pendingMutations = pendingMutations.filter(mutation => mutation.version > requestedVersion)
+      applyCommittedSettings(bufferedExternalSettings || latest)
+      throw err
+    } finally {
+      writeInFlight = false
+      bufferedExternalSettings = null
+    }
+  })
+  // 本次调用者仍可捕获失败，后续提交不会因前一次失败停止。
+  persistQueue = task.catch(() => {})
+  return task
 }
 
 function migrateSettings(rawSettings, defaults) {
@@ -197,7 +225,7 @@ function migrateSettings(rawSettings, defaults) {
     migrated = mergeDeep(cloneDeep(defaults), migrated)
   }
 
-  return migrated
+  return mergeDeep(cloneDeep(defaults), migrated)
 }
 
 async function initSettings() {
@@ -214,7 +242,8 @@ async function initSettings() {
       const base = remote ?? local ?? defaultResolved
 
       const migrated = migrateSettings(base, defaultResolved)
-      applySettings(migrated, { persist: !remote })
+      committedSnapshot = cloneDeep(migrated)
+      applySettings(migrated)
 
       if (!remote) {
         await persistSettings()
@@ -223,13 +252,21 @@ async function initSettings() {
       if (bridge?.onUpdate && !unsubscribeExternalListener) {
         unsubscribeExternalListener = bridge.onUpdate((payload) => {
           if (!payload || typeof payload !== 'object') return
-          isApplyingExternalUpdate = true
-          applySettings(migrateSettings(payload, defaultSnapshot), { persist: false, notify: true })
-          isApplyingExternalUpdate = false
+          try {
+            const migrated = migrateSettings(payload, defaultSnapshot)
+            committedSnapshot = cloneDeep(migrated)
+            if (writeInFlight) {
+              bufferedExternalSettings = migrated
+            } else {
+              applyCommittedSettings(migrated)
+            }
+          } catch (error) {
+            logger.warn('settingsStore', '应用外部设置更新失败', error)
+          }
         })
       }
     } catch (err) {
-      console.error('[settingsStore] 初始化失败:', err)
+      logger.error('settingsStore', '初始化失败', err)
       state.error = err
       const fallback = await resolvePathDefaults(baseDefaultSettings)
       applySettings(fallback, { persist: false })
@@ -249,9 +286,11 @@ async function updateSettings(patch, { merge = true, persist = true } = {}) {
   } else {
     replaceReactive(state.settings, cloned)
   }
+  mutationVersion += 1
+  pendingMutations.push({ version: mutationVersion, patch: cloned, merge })
   applyTheme(state.settings)
   state.revision += 1
-  if (persist && !isApplyingExternalUpdate) {
+  if (persist) {
     await persistSettings()
   }
 }
@@ -267,20 +306,20 @@ async function resetSettings() {
 
 async function exportSettingsToFile(targetPath) {
   if (!bridge?.export) {
-    console.warn('[settingsStore] 当前环境不支持导出设置')
+    logger.warn('settingsStore', '当前环境不支持导出设置')
     return { canceled: true, reason: 'unsupported' }
   }
   try {
     return await bridge.export(targetPath)
   } catch (err) {
-    console.error('[settingsStore] 导出设置失败:', err)
+    logger.error('settingsStore', '导出设置失败', err)
     return { canceled: true, error: err }
   }
 }
 
 async function importSettingsFromFile() {
   if (!bridge?.import) {
-    console.warn('[settingsStore] 当前环境不支持导入设置')
+    logger.warn('settingsStore', '当前环境不支持导入设置')
     return { canceled: true, reason: 'unsupported' }
   }
   try {
@@ -291,20 +330,20 @@ async function importSettingsFromFile() {
     }
     return result
   } catch (err) {
-    console.error('[settingsStore] 导入设置失败:', err)
+    logger.error('settingsStore', '导入设置失败', err)
     return { canceled: true, error: err }
   }
 }
 
 async function chooseDirectory(options = {}) {
   if (!bridge?.chooseDirectory) {
-    console.warn('[settingsStore] 当前环境不支持目录选择')
+    logger.warn('settingsStore', '当前环境不支持目录选择')
     return { canceled: true, reason: 'unsupported' }
   }
   try {
     return await bridge.chooseDirectory(options)
   } catch (err) {
-    console.error('[settingsStore] 选择目录失败:', err)
+    logger.error('settingsStore', '选择目录失败', err)
     return { canceled: true, error: err }
   }
 }
