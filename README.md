@@ -1,5 +1,7 @@
 # BetterKuGou
 
+# 本项目已停止开发
+
 > 本项目前端与客户端由本仓库维护，后端接口基于 [MakcRe/KuGouMusicApi](https://github.com/MakcRe/KuGouMusicApi) 项目，致谢原作者的开源贡献。
 
 [![GitHub release](https://img.shields.io/github/v/release/YuanXiaCN/BetterKuGou?include_prereleases)](https://github.com/YuanXiaCN/BetterKuGou/releases)
@@ -116,4 +118,6 @@ npm run build # Vue 与 Electron 构建
 
 > 作者：鸢夏 <1925019494@qq.com> 
 > 反馈Q群：[点击加入](https://qm.qq.com/q/H9g8tVztKg)
+> 作者：鸢夏 <1925019494@qq.com>
+> 
 > 项目主页：[https://github.com/YuanXiaCN/BetterKuGou](https://github.com/YuanXiaCN/BetterKuGou)
