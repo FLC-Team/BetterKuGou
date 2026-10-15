@@ -282,6 +282,7 @@ export default {
   },
   beforeUnmount() {
     this.isDisposed = true
+    this.seekPreviewTime = null
     if (process.env.NODE_ENV === 'development') {
       logger.debug('LyricView', '🔄 LyricView 组件即将卸载，清理所有资源')
     }
@@ -1367,11 +1368,11 @@ export default {
     /** 每次拖动立即预览歌词位置与逐字状态，音频只在确认后跳转一次。 */
     previewSeek(event) {
       const time = Number(event.target.value)
-      if (!Number.isFinite(time) || !Number.isFinite(this.duration) || this.duration <= 0 || this.isDisposed) return
+      if (!Number.isFinite(time) || !Number.isFinite(this.duration) || this.duration <= 0 || this.isDisposed || this.pauseUpdates) return
       this.seekPreviewTime = Math.max(0, Math.min(this.duration, time))
       this.syncDisplayedTime(true)
     },
-    commitSeek(event) {
+    commitSeek() {
       const time = this.seekPreviewTime
       this.seekPreviewTime = null
       if (time != null) this.seekTo(time)
@@ -1386,7 +1387,7 @@ export default {
       else this.closeLyricView()
     },
     seekTo(time) {
-      if (this.isDisposed || !Number.isFinite(time) || !Number.isFinite(this.duration) || this.duration <= 0) return
+      if (this.isDisposed || this.pauseUpdates || !Number.isFinite(time) || !Number.isFinite(this.duration) || this.duration <= 0) return
       const target = Math.max(0, Math.min(this.duration, time))
       this.$emit('seek', target)
       this.syncPlaybackTime(target, true)

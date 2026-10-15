@@ -357,7 +357,7 @@ import { applyTheme } from '../utils/themeManager.js'
 const emit = defineEmits(['close', 'settings-changed'])
 
 // 从 package.json 获取版本信息
-const appVersion = ref('0.1.4-alpha-pre1')
+const appVersion = ref('0.1.5-alpha-pre1')
 
 const sections = [
   { id: 'playback', label: '播放设置' },

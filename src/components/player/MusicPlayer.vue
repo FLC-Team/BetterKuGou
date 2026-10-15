@@ -126,9 +126,9 @@
               :value="displayPlayTime"
               @input="handleProgressDrag"
               @change="handleProgressChange"
-        @pointercancel="cancelProgressDrag"
-        @blur="cancelProgressDrag"
-        @keydown.esc.stop.prevent="cancelProgressDrag"
+              @pointercancel="cancelProgressDrag"
+              @blur="cancelProgressDrag"
+              @keydown.esc.stop.prevent="cancelProgressDrag"
             />
           </div>
           <span class="time-text">{{ formatTime(duration - displayPlayTime) }}</span>
