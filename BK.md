@@ -14,7 +14,7 @@ Vue 3 渲染界面与播放器，Electron 主进程提供窗口、托盘、桌�
 - [public/](./public/public.md)：公共 Logo 和安装图标。
 - [scripts/](./scripts/scripts.md)：正式静态检查工具。
 - [tests/](./tests/tests.md)：Node 回归测试及 Vue/HTTP 集成边界验证。
-- `.github/`：开发提示和多平台自动构建工作流；推送 `main`、针对 `main` 的 PR 和手动触发执行检查、测试及构建，推送 `v*` 标签时另行创建 Release。
+- `.github/`：开发提示和多平台自动构建工作流；推送 `master`、针对 `master` 的 PR 和手动触发执行检查、测试及构建，推送 `v*` 标签时另行创建 Release。
 - `.vscode/`：编辑器建议配置。
 - `.agent/`：删除文件恢复区、临时诊断工具和截图；不提交。
 - `.agents/`：已有 Agent 配置目录；不作为应用入口。

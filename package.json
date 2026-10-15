@@ -14,7 +14,7 @@
     "preview": "vite preview",
     "electron:dev": "vite",
     "electron:build": "npm run build && electron-builder",
-    "install-backend-deps": "npm --prefix KuGouMusicApi install --omit=dev",
+    "install-backend-deps": "cd KuGouMusicApi && npm install --omit=dev",
     "postinstall": "npm run install-backend-deps",
     "dist": "npm run electron:build",
     "dist:win": "npm run build && electron-builder --win --x64 --ia32 --arm64",
