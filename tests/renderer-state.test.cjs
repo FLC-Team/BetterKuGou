@@ -154,7 +154,7 @@ function loadApp(electronAPI = {}, overrides = {}) {
     .match(/<script setup>([\s\S]*?)<\/script>/)[1])
   const scope = vue.effectScope()
   const app = scope.run(() => vm.runInContext(`${script}\n;({
-    settings, registeredGlobalShortcuts, registerGlobalShortcuts, handleClearPlaylist,
+    settings, registeredGlobalShortcuts, registerGlobalShortcuts, handleClearPlaylist, handlePlayAll,
     handlePlaylistUpdated, handleKeyDown, currentSong, playlist, playlistIndex, musicPlayerRef,
     fetchUserPlaylists, userPlaylists, userPlaylistsLoaded, userLoggedIn, userInfo,
     handleShowLogin, handleLoginSuccess, handleLogout, handleAuthExpired, handleNavigate,
@@ -698,6 +698,21 @@ test('root unmount releases IPC listeners and paused audio remains resumable', a
   assert.equal(audio.currentTime, 42)
   await app.dispose()
   assert.deepEqual(released, ['shortcut', 'memory'])
+})
+
+test('a large queue publishes completely and cannot append stale batches to a newer selection', async () => {
+  const app = loadApp()
+  const songs = Array.from({ length: 1000 }, (_, index) => ({ hash: `old-${index}` }))
+  const first = app.handlePlayAll(songs)
+  assert.equal(app.playlist.value.length, 1000)
+  const latest = [{ hash: 'latest-a' }, { hash: 'latest-b' }]
+  const second = app.handlePlayAll(latest)
+  await Promise.all([first, second])
+  assert.deepEqual(Array.from(app.playlist.value, song => song.hash), ['latest-a', 'latest-b'])
+  assert.equal(app.currentSong.value.hash, 'latest-a')
+  assert.equal(app.playlistIndex.value, 0)
+  assert.equal(songs.length, 1000)
+  await app.dispose()
 })
 
 test('queue updates align current index and clearing cannot erase a newly selected song', async () => {

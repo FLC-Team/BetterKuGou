@@ -291,36 +291,11 @@ const handlePlayAll = async (songs) => {
   }
 
   try {
-    // 使用批量更新策略，避免频繁的响应式更新
-    const batch = async () => {
-      // 分批添加歌曲，避免一次性处理大量数据导致UI卡顿
-      const batchSize = 100
-      const batches = []
-      for (let i = 0; i < songs.length; i += batchSize) {
-        batches.push(songs.slice(i, i + batchSize))
-      }
-
-      // 先添加第一批歌曲并开始播放（避免先清空导致播放器重置）
-      if (batches.length > 0) {
-        // 直接设置第一批歌曲，不先清空
-        playlist.value = [...batches[0]]
-        playlistIndex.value = 0
-        currentSong.value = songs[0]
-
-        // 等待第一首歌曲开始加载
-        await nextTick()
-
-        // 异步添加剩余批次
-        if (batches.length > 1) {
-          for (let i = 1; i < batches.length; i++) {
-            await nextTick() // 每批之间给UI更新的机会
-            playlist.value = [...playlist.value, ...batches[i]]
-          }
-        }
-      }
-    }
-
-    await batch()
+    // 一次发布完整队列，避免 nextTick 微任务分批反复渲染和覆盖后续选歌。
+    playlist.value = [...songs]
+    playlistIndex.value = 0
+    currentSong.value = songs[0]
+    await nextTick()
 
     if (process.env.NODE_ENV === 'development') {
       logger.trace('App', '已添加', songs.length, '首歌曲到播放列表')

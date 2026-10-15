@@ -353,6 +353,271 @@ test('external selection aligns queue index before next-track navigation', async
   assert.equal(player.currentIndex, 3)
 })
 
+test('shuffle skips a failed candidate instead of retrying it on next, previous and natural end', async t => {
+  for (const direction of ['next', 'previous', 'ended']) {
+    for (const failure of ['url', 'play']) {
+      const urls = []
+      const failedHash = direction === 'previous' ? 'D' : 'B'
+      const { player, audio } = createPlayer(t, {
+        getSongUrl: async hash => {
+          urls.push(hash)
+          return failure === 'url' && hash === failedHash ? { status: 0 }
+            : { status: 1, url: `https://example.test/${hash}.mp3` }
+        }
+      })
+      player.playlist = ['A', 'B', 'C', 'D'].map(song)
+      await player.requestSong(player.playlist[0])
+      player.playMode = 'shuffle'
+      player.shuffledPlaylist = [...player.playlist]
+      player.waitForDelay = async () => true
+      const play = audio.play.bind(audio)
+      audio.play = () => failure === 'play' && audio.src.endsWith(`/${failedHash}.mp3`)
+        ? Promise.reject(new Error('Unavailable audio')) : play()
+      if (direction === 'ended') {
+        audio.ended = true
+        audio.paused = true
+        player.handleEnded()
+        await flush()
+      } else if (direction === 'previous') await player.playPrevious()
+      else await player.playNext()
+      assert.equal(player.currentSong.hash, 'C', `${direction}/${failure}`)
+      assert.deepEqual(urls, ['A', failedHash, 'C'])
+      assert.equal(player.isSwitchingSong, false)
+    }
+  }
+})
+
+test('a new selection cancels outstanding detail and URL waits without waiting for their response', async t => {
+  for (const stage of ['detail', 'url']) {
+    const stale = deferred()
+    const { player, audio } = createPlayer(t, {
+      getSongDetail: () => stale.promise,
+      getSongUrl: hash => stage === 'url' && hash === 'A' ? stale.promise
+        : Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` })
+    })
+    player.playlist = [stage === 'detail' ? { hash: 'A', name: 'A' } : song('A'), song('B')]
+    const loading = player.requestSong(player.playlist[0])
+    player.requestSong(player.playlist[1])
+    await loading
+    await flush()
+    assert.equal(player.currentSong.hash, 'B', stage)
+    assert.equal(audio.src, 'https://example.test/B.mp3', stage)
+    assert.equal(player.isLoadingSong, false)
+    assert.equal(player.pendingTimers.size, 0)
+    stale.reject(new Error('Late failed response'))
+    await flush()
+    assert.equal(player.currentSong.hash, 'B')
+  }
+})
+
+test('navigation during a stalled load follows the latest target and releases the old lock', async t => {
+  for (const stage of ['url', 'play']) {
+    for (const direction of ['next', 'previous']) {
+      const stale = deferred()
+      const { player, audio } = createPlayer(t, {
+        getSongUrl: hash => stage === 'url' && hash === 'B' ? stale.promise
+          : Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` })
+      })
+      player.playlist = ['A', 'B', 'C'].map(song)
+      await player.requestSong(player.playlist[0])
+      const play = audio.play.bind(audio)
+      audio.play = () => stage === 'play' && audio.src.endsWith('/B.mp3') ? stale.promise.then(play) : play()
+      const loading = player.requestSong(player.playlist[1])
+      await flush()
+      if (direction === 'next') await player.playNext()
+      else await player.playPrevious()
+      await loading
+      await flush()
+      const expected = direction === 'next' ? 'C' : 'A'
+      assert.equal(player.currentSong.hash, expected, `${stage}/${direction}`)
+      assert.equal(player.trackTransition, direction === 'next' ? 'next' : 'select', 'returning to the committed song keeps its transition')
+      assert.equal(player.isLoadingSong, false)
+      assert.equal(player.isSwitchingSong, false)
+      assert.equal(player.pendingTimers.size, 0)
+      stale.resolve({ status: 1, url: 'https://example.test/B.mp3' })
+      await flush()
+      assert.equal(audio.src, `https://example.test/${expected}.mp3`)
+    }
+  }
+})
+
+test('rapid navigation supersedes an unfinished next-track play and preserves priority queue intent', async t => {
+  const stale = deferred()
+  const { state, getPlayer, audioElements } = mountPlayer(t, ['A', 'B', 'C', 'D'].map(song))
+  await flush()
+  const player = getPlayer()
+  const audio = audioElements[0]
+  const play = audio.play.bind(audio)
+  audio.play = () => audio.src.endsWith('/B.mp3') ? stale.promise.then(play) : play()
+  const loading = player.playNext()
+  await flush()
+  player.playNextQueue = [state.playlist[3]]
+  await player.playNext()
+  await loading
+  await flush()
+  assert.equal(state.song.hash, 'D')
+  assert.equal(player.currentIndex, 3)
+  assert.equal(player.trackTransition, 'next')
+  assert.equal(player.isSwitchingSong, false)
+  assert.equal(player.isLoadingSong, false)
+  stale.resolve()
+  await flush()
+  assert.equal(audio.src, 'https://example.test/D.mp3')
+})
+
+test('busy external priority navigation cannot override a later stop, selection or priority request', async t => {
+  for (const action of ['stop', 'select', 'next']) {
+    const stale = deferred()
+    const { state, getPlayer, audioElements } = mountPlayer(t, ['A', 'B', 'C'].map(song), {
+      getSongUrl: hash => hash === 'B' ? stale.promise
+        : Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` })
+    })
+    await flush()
+    const player = getPlayer()
+    const loading = player.requestSong(state.playlist[1])
+    await flush()
+    player.playNextQueue = [song('D'), song('E')]
+    const next = player.playNext()
+    if (action === 'stop') player.stopPlayback()
+    else if (action === 'select') state.song = state.playlist[2]
+    else player.playNext()
+    await next
+    await loading
+    await flush()
+    const expected = action === 'stop' ? null : action === 'select' ? 'C' : 'E'
+    assert.equal(player.currentSong?.hash ?? null, expected, action)
+    assert.equal(audioElements[0].src, expected ? `https://example.test/${expected}.mp3` : '')
+    assert.equal(player.isLoadingSong, false)
+    assert.equal(player.isSwitchingSong, false)
+    stale.resolve({ status: 1, url: 'https://example.test/B.mp3' })
+    await flush()
+    assert.equal(player.currentSong?.hash ?? null, expected)
+  }
+})
+
+test('queued navigation skips unavailable successors and keeps the index aligned with the retained song', async t => {
+  for (const mode of ['loop', 'shuffle']) {
+    for (const direction of ['next', 'previous']) {
+      for (const playable of [true, false]) {
+        const stale = deferred()
+        const requests = []
+        const songs = (direction === 'next' ? ['A', 'B', 'C', 'D', 'E'] : ['A', 'E', 'C', 'B', 'D']).map(song)
+        const { state, getPlayer } = mountPlayer(t, songs, {
+          getSongUrl: hash => {
+            requests.push(hash)
+            if (hash === 'B') return stale.promise
+            return Promise.resolve(hash === 'A' || (playable && hash === 'E')
+              ? { status: 1, url: `https://example.test/${hash}.mp3` } : { status: 0 })
+          }
+        })
+        await flush()
+        const player = getPlayer()
+        player.playMode = mode
+        player.shuffledPlaylist = [...songs]
+        state.song = songs.find(item => item.hash === 'B')
+        await flush()
+        if (direction === 'next') await player.playNext()
+        else await player.playPrevious()
+        await flush()
+        assert.equal(player.currentSong.hash, playable ? 'E' : 'A', `${mode}/${direction}/${playable}`)
+        assert.equal(state.song.hash, player.currentSong.hash, 'the parent session follows the song that actually survived')
+        assert.equal(player.currentIndex, player.playlist.findIndex(item => item.hash === player.currentSong.hash))
+        assert.equal(requests.filter(hash => hash === 'C').length, 1)
+        assert.equal(requests.filter(hash => hash === 'D').length <= 1, true)
+        stale.resolve({ status: 1, url: 'https://example.test/B.mp3' })
+      }
+    }
+  }
+})
+
+test('the old source ending cannot skip a different song already selected or loading next', async t => {
+  for (const source of ['selection', 'next']) {
+    const stale = deferred()
+    const requests = []
+    const { state, getPlayer, audioElements } = mountPlayer(t, ['A', 'B', 'C'].map(song), {
+      getSongUrl: hash => {
+        requests.push(hash)
+        return hash === 'B' ? stale.promise : Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` })
+      }
+    })
+    await flush()
+    const player = getPlayer()
+    if (source === 'selection') state.song = state.playlist[1]
+    else player.playNext()
+    await flush()
+    audioElements[0].ended = true
+    player.handleEnded()
+    await flush()
+    assert.deepEqual(requests, ['A', 'B'], source)
+    stale.resolve({ status: 1, url: 'https://example.test/B.mp3' })
+    await flush()
+    assert.equal(player.currentSong.hash, 'B')
+    assert.equal(state.song.hash, 'B')
+  }
+})
+
+test('playback timeout restores the committed source and releases pending operations', async t => {
+  const timers = new Map()
+  let nextTimer = 0
+  const stale = deferred()
+  const { player, audio } = createPlayer(t, {
+    setTimeout: (callback, milliseconds) => {
+      const id = ++nextTimer
+      timers.set(id, { callback, milliseconds })
+      return id
+    },
+    clearTimeout: id => timers.delete(id)
+  })
+  player.playlist = ['A', 'B', 'C'].map(song)
+  await player.requestSong(player.playlist[0])
+  await flush()
+  audio.currentTime = player.currentTime = 42
+  const play = audio.play.bind(audio)
+  audio.play = () => audio.src.endsWith('/B.mp3') ? stale.promise.then(play) : play()
+  const loading = player.requestSong(player.playlist[1])
+  await flush()
+  const timeout = [...timers.values()].find(timer => timer.milliseconds === 15000)
+  assert.ok(timeout, 'playback has a bounded wait')
+  timeout.callback()
+  assert.equal(await loading, false)
+  assert.equal(player.currentSong.hash, 'A')
+  assert.equal(audio.currentTime, 42)
+  assert.equal(player.isLoadingSong, false)
+  assert.equal(player.pendingTimers.size, 0)
+  await player.requestSong(player.playlist[2])
+  stale.resolve()
+  await flush()
+  assert.equal(player.currentSong.hash, 'C')
+  assert.equal(audio.src, 'https://example.test/C.mp3')
+})
+
+test('stop and unmount release a stalled play immediately and ignore its late completion', async t => {
+  for (const action of ['stop', 'unmount']) {
+    const stale = deferred()
+    const { player, audio, component } = createPlayer(t)
+    player.playlist = ['A', 'B', 'C'].map(song)
+    await player.requestSong(player.playlist[0])
+    const play = audio.play.bind(audio)
+    audio.play = () => audio.src.endsWith('/B.mp3') ? stale.promise.then(play) : play()
+    const loading = player.playNext()
+    await flush()
+    if (action === 'stop') player.stopPlayback()
+    else component.beforeUnmount.call(player)
+    await loading
+    assert.equal(player.isLoadingSong, false, action)
+    assert.equal(player.isSwitchingSong, false, action)
+    assert.equal(player.pendingTimers.size, 0)
+    stale.resolve()
+    await flush()
+    assert.equal(audio.paused, true)
+    assert.equal(audio.src, '')
+    if (action === 'stop') {
+      await player.requestSong(player.playlist[2])
+      assert.equal(player.currentSong.hash, 'C')
+    }
+  }
+})
+
 test('direct selection and navigation commit the transition belonging to the successful operation', async t => {
   const { player } = createPlayer(t)
   player.playlist = ['A', 'B', 'C'].map(song)

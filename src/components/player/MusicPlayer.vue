@@ -69,7 +69,7 @@
             </svg>
           </button>
           
-          <button class="control-btn" @click="playPrevious" :disabled="isSwitchingSong" title="上一曲">
+          <button class="control-btn" @click="playPrevious" title="上一曲">
             <svg viewBox="0 0 1024 1024" width="20" height="20" fill="currentColor">
               <path d="M793.6 150.4c-12.8 0-25.6 4.8-35.2 14.4L416 480v-288c0-19.2-16-35.2-35.2-35.2s-35.2 16-35.2 35.2v646.4c0 19.2 16 35.2 35.2 35.2s35.2-16 35.2-35.2V544l342.4 315.2c9.6 9.6 22.4 14.4 35.2 14.4 19.2 0 35.2-16 35.2-35.2V185.6c0-19.2-16-35.2-35.2-35.2z"/>
             </svg>
@@ -84,7 +84,7 @@
             </svg>
           </button>
           
-          <button class="control-btn" @click="playNext" :disabled="isSwitchingSong" title="下一曲">
+          <button class="control-btn" @click="playNext" title="下一曲">
             <svg viewBox="0 0 1024 1024" width="20" height="20" fill="currentColor">
               <path d="M230.4 150.4c12.8 0 25.6 4.8 35.2 14.4L608 480v-288c0-19.2 16-35.2 35.2-35.2s35.2 16 35.2 35.2v646.4c0 19.2-16 35.2-35.2 35.2s-35.2-16-35.2-35.2V544L265.6 859.2c-9.6 9.6-22.4 14.4-35.2 14.4-19.2 0-35.2-16-35.2-35.2V185.6c0-19.2 16-35.2 35.2-35.2z"/>
             </svg>
@@ -104,7 +104,7 @@
         
         <!-- 默认样式：只有播放控制按钮 -->
         <div v-else class="control-buttons">
-          <button class="control-btn" @click="playPrevious" :disabled="isSwitchingSong" title="上一曲">
+          <button class="control-btn" @click="playPrevious" title="上一曲">
             <svg viewBox="0 0 1024 1024" width="20" height="20" fill="currentColor">
               <path d="M793.6 150.4c-12.8 0-25.6 4.8-35.2 14.4L416 480v-288c0-19.2-16-35.2-35.2-35.2s-35.2 16-35.2 35.2v646.4c0 19.2 16 35.2 35.2 35.2s35.2-16 35.2-35.2V544l342.4 315.2c9.6 9.6 22.4 14.4 35.2 14.4 19.2 0 35.2-16 35.2-35.2V185.6c0-19.2-16-35.2-35.2-35.2z"/>
             </svg>
@@ -119,7 +119,7 @@
             </svg>
           </button>
           
-          <button class="control-btn" @click="playNext" :disabled="isSwitchingSong" title="下一曲">
+          <button class="control-btn" @click="playNext" title="下一曲">
             <svg viewBox="0 0 1024 1024" width="20" height="20" fill="currentColor">
               <path d="M230.4 150.4c12.8 0 25.6 4.8 35.2 14.4L608 480v-288c0-19.2 16-35.2 35.2-35.2s35.2 16 35.2 35.2v646.4c0 19.2-16 35.2-35.2 35.2s-35.2-16-35.2-35.2V544L265.6 859.2c-9.6 9.6-22.4 14.4-35.2 14.4-19.2 0-35.2-16-35.2-35.2V185.6c0-19.2 16-35.2 35.2-35.2z"/>
             </svg>

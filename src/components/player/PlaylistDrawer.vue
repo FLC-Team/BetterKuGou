@@ -14,7 +14,7 @@
       </div>
 
       <!-- 播放列表 -->
-      <div class="playlist-content">
+      <div v-if="visible" class="playlist-content">
         <TransitionGroup 
           name="playlist-item" 
           tag="div" 
