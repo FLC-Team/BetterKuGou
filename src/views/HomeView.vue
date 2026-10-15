@@ -1,127 +1,105 @@
 <template>
   <div class="home-view">
-    <h1 class="page-title">发现音乐</h1>
-    
-    <!-- 顶部三个卡片 -->
-    <div class="top-cards">
-      <!-- 猜你喜欢 -->
-      <div class="music-card" @click="handlePersonalFM">
-        <div class="card-icon">
-          <svg viewBox="0 0 1024 1024" width="48" height="48" fill="currentColor">
-            <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64zm0 820c-205.4 0-372-166.6-372-372s166.6-372 372-372 372 166.6 372 372-166.6 372-372 372z"/>
-            <path d="M719.4 499.1l-296.1-215A15.9 15.9 0 00398 297v430c0 13.1 14.8 20.5 25.3 12.9l296.1-215a15.9 15.9 0 000-25.8zm-257.6 134V390.9L628.5 512 461.8 633.1z"/>
-          </svg>
+    <div class="home-content">
+      <header class="home-header">
+        <div>
+          <p class="eyebrow">YOUR DAILY SOUNDTRACK</p>
+          <h1 class="page-title">发现音乐<span class="title-dot">.</span></h1>
         </div>
-        <div class="card-content">
-          <h3 class="card-title">猜你喜欢</h3>
-          <p class="card-description">私人 FM 为你推荐</p>
-          <div v-if="fmLoading" class="card-loading">加载中...</div>
-          <div v-else-if="fmCount" class="card-count">{{ fmCount }} 首歌曲</div>
-        </div>
-      </div>
+        <p class="header-note">让喜欢的音乐，填满今天。</p>
+      </header>
 
-      <!-- 每日推荐 -->
-      <div class="music-card" @click="handleDailyRecommend">
-        <div class="card-icon card-icon-daily">
-          <svg viewBox="0 0 1024 1024" width="48" height="48" fill="currentColor">
-            <path d="M923 283.6a260.04 260.04 0 00-56.9-82.8 264.4 264.4 0 00-84-55.5A265.34 265.34 0 00679.7 125c-49.3 0-97.4 13.5-139.2 39-10 6.1-19.5 12.8-28.5 20.1-9-7.3-18.5-14-28.5-20.1-41.8-25.5-89.9-39-139.2-39-35.5 0-69.9 6.8-102.4 20.3-31.4 13-59.7 31.7-84 55.5a258.44 258.44 0 00-56.9 82.8c-13.9 32.3-21 66.6-21 101.9 0 33.3 6.8 68 20.3 103.3 11.3 29.5 27.5 60.1 48.2 91 32.8 48.9 77.9 99.9 133.9 151.6 92.8 85.7 184.7 144.9 188.6 147.3l23.7 15.2c10.5 6.7 24 6.7 34.5 0l23.7-15.2c3.9-2.5 95.7-61.6 188.6-147.3 56-51.7 101.1-102.7 133.9-151.6 20.7-30.9 37-61.5 48.2-91 13.5-35.3 20.3-70 20.3-103.3.1-35.3-7-69.6-20.9-101.9z"/>
-          </svg>
-        </div>
-        <div class="card-content">
-          <h3 class="card-title">每日推荐</h3>
-          <p class="card-description">根据你的口味推荐</p>
-          <div v-if="dailyLoading" class="card-loading">加载中...</div>
-          <div v-else-if="dailyCount" class="card-count">{{ dailyCount }} 首歌曲</div>
-        </div>
-      </div>
-
-      <!-- 排行榜 -->
-      <div class="music-card music-card-rank" @click="toggleRankList">
-        <div class="card-icon card-icon-rank">
-          <svg viewBox="0 0 1024 1024" width="48" height="48" fill="currentColor">
-            <path d="M864 256H736v-80c0-35.3-28.7-64-64-64H352c-35.3 0-64 28.7-64 64v80H160c-17.7 0-32 14.3-32 32v32c0 4.4 3.6 8 8 8h60.4l24.7 523c1.6 34.1 29.8 61 63.9 61h454c34.2 0 62.3-26.8 63.9-61l24.7-523H888c4.4 0 8-3.6 8-8v-32c0-17.7-14.3-32-32-32zm-200 0H360v-72h304v72z"/>
-          </svg>
-        </div>
-        <div class="card-content">
-          <h3 class="card-title">排行榜</h3>
-          <p class="card-description">热门音乐榜单</p>
-          <div v-if="rankLoading" class="card-loading">加载中...</div>
-          <div v-else-if="rankList.length" class="card-count">{{ rankList.length }} 个榜单</div>
-        </div>
-        
-        <!-- 排行榜下拉列表 -->
-        <Transition name="rank-dropdown">
-          <div v-if="showRankList" class="rank-dropdown" @click.stop>
-            <div 
-              v-for="rank in rankList" 
-              :key="rank.rankid"
-              class="rank-item"
-              @click="handleRankClick(rank)"
-            >
-              <img v-if="rank.imgurl" :src="fixImgUrl(rank.imgurl)" class="rank-icon" />
-              <span class="rank-name">{{ rank.rankname }}</span>
-            </div>
-          </div>
-        </Transition>
-      </div>
-    </div>
-
-    <!-- AI 推荐区域 -->
-    <div class="ai-recommend-section">
-      <div class="section-header">
-        <h2 class="section-title">
-          <svg viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor">
-            <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64zm0 820c-205.4 0-372-166.6-372-372s166.6-372 372-372 372 166.6 372 372-166.6 372-372 372z"/>
-            <path d="M464 336a48 48 0 1096 0 48 48 0 10-96 0zm72 112h-48c-4.4 0-8 3.6-8 8v272c0 4.4 3.6 8 8 8h48c4.4 0 8-3.6 8-8V456c0-4.4-3.6-8-8-8z"/>
-          </svg>
-          AI 为你推荐
-        </h2>
-        <button v-if="!aiLoading && aiRecommendList.length === 0" class="refresh-btn" @click="loadAIRecommend">
-          <svg viewBox="0 0 1024 1024" width="16" height="16" fill="currentColor">
-            <path d="M909.1 209.3l-56.4 44.1C775.8 155.1 656.2 92 521.9 92 290 92 102.3 279.5 102 511.5 101.7 743.7 289.8 932 521.9 932c181.3 0 335.8-115 394.6-276.1 1.5-4.2-.7-8.9-4.9-10.3l-56.7-19.5a8 8 0 00-10.1 4.8c-1.8 5-3.8 10-5.9 14.9-17.3 41-42.1 77.8-73.7 109.4A344.77 344.77 0 01655.9 788a8 8 0 00-4.8 10.1l19.5 56.7c1.5 4.3 6.2 6.5 10.3 4.9C831.6 797.8 946 643.3 946 462c0-232.3-188.3-420-420-420z"/>
-          </svg>
-          刷新推荐
+      <section class="featured-grid" aria-label="为你发现">
+        <button class="daily-feature" type="button" @click="handleDailyRecommend">
+          <span class="feature-copy">
+            <span class="feature-kicker"><span class="status-dot"></span> 每日推荐 / DAILY MIX</span>
+            <span class="feature-title">今天，<br />听点喜欢的。</span>
+            <span class="feature-description">熟悉的心动，也有意外的新发现。</span>
+            <span class="feature-action">
+              <span class="round-play"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 11 7-11 7z" /></svg></span>
+              <span>开启今日歌单</span>
+              <span v-if="dailyLoading" class="feature-count">准备中</span>
+              <span v-else-if="dailyCount" class="feature-count">{{ dailyCount }} 首精选</span>
+            </span>
+          </span>
+          <span class="daily-art" aria-hidden="true">
+            <span class="record-disc"><span class="record-label">BK<br /><small>DAILY SOUNDS</small></span></span>
+            <span class="record-sleeve">
+              <span class="sleeve-pattern"></span>
+              <img v-if="dailyCover && !failedImages[fixImgUrl(dailyCover, 400)]" :src="fixImgUrl(dailyCover, 400)" alt="" @error="markImageFailed(dailyCover, 400)" />
+              <span v-else class="sleeve-lettering"><small>THE DAILY</small><strong>好音乐<br />日常听。</strong><span>SELECTED FOR YOU</span></span>
+              <span class="sleeve-caption">DAILY MIX <span>↗</span></span>
+            </span>
+          </span>
         </button>
-      </div>
 
-      <div v-if="aiLoading" class="ai-loading">
-        <span class="loading-spinner" role="status" aria-label="加载中"></span>
-        <p>AI 正在为你生成推荐...</p>
-      </div>
+        <button class="fm-feature" type="button" @click="handlePersonalFM">
+          <span class="feature-kicker">PERSONAL RADIO <span class="radio-live" aria-hidden="true"></span></span>
+          <span class="fm-art" aria-hidden="true">
+            <span v-for="bar in 19" :key="bar" :style="{ '--bar-height': `${[20, 34, 48, 30, 60, 42, 76, 54, 88, 100, 72, 50, 80, 40, 60, 28, 44, 32, 18][bar - 1]}%` }"></span>
+          </span>
+          <span class="fm-bottom">
+            <span><span class="fm-title">猜你喜欢</span><span class="fm-description">私人 FM · 随心听下去</span></span>
+            <span class="fm-arrow" aria-hidden="true">↗</span>
+          </span>
+          <span class="fm-status">{{ fmLoading ? '正在寻找好音乐…' : fmCount ? `${fmCount} 首音乐，等你遇见` : '下一首，也许就是心头好' }}</span>
+        </button>
+      </section>
 
-      <div v-else-if="aiRecommendList.length === 0" class="ai-empty">
-        <svg viewBox="0 0 1024 1024" width="64" height="64" fill="currentColor" opacity="0.3">
-          <path d="M923 283.6a260.04 260.04 0 00-56.9-82.8 264.4 264.4 0 00-84-55.5A265.34 265.34 0 00679.7 125c-49.3 0-97.4 13.5-139.2 39-10 6.1-19.5 12.8-28.5 20.1-9-7.3-18.5-14-28.5-20.1-41.8-25.5-89.9-39-139.2-39-35.5 0-69.9 6.8-102.4 20.3-31.4 13-59.7 31.7-84 55.5a258.44 258.44 0 00-56.9 82.8c-13.9 32.3-21 66.6-21 101.9 0 33.3 6.8 68 20.3 103.3 11.3 29.5 27.5 60.1 48.2 91 32.8 48.9 77.9 99.9 133.9 151.6 92.8 85.7 184.7 144.9 188.6 147.3l23.7 15.2c10.5 6.7 24 6.7 34.5 0l23.7-15.2c3.9-2.5 95.7-61.6 188.6-147.3 56-51.7 101.1-102.7 133.9-151.6 20.7-30.9 37-61.5 48.2-91 13.5-35.3 20.3-70 20.3-103.3.1-35.3-7-69.6-20.9-101.9z"/>
-        </svg>
-        <p>收藏一些歌曲，让 AI 为你推荐更多好音乐</p>
-      </div>
-
-      <div v-else class="ai-recommend-grid">
-        <div 
-          v-for="song in aiRecommendList" 
-          :key="song.hash"
-          class="song-card"
-          @click="handleSongClick(song)"
-        >
-          <div class="song-cover">
-            <img v-if="song.imgurl" :src="fixImgUrl(song.imgurl)" :alt="song.songname" />
-            <div class="play-overlay">
-              <svg viewBox="0 0 1024 1024" width="32" height="32" fill="white">
-                <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64zm0 820c-205.4 0-372-166.6-372-372s166.6-372 372-372 372 166.6 372 372-166.6 372-372 372z"/>
-                <path d="M719.4 499.1l-296.1-215A15.9 15.9 0 00398 297v430c0 13.1 14.8 20.5 25.3 12.9l296.1-215a15.9 15.9 0 000-25.8zm-257.6 134V390.9L628.5 512 461.8 633.1z"/>
-              </svg>
-            </div>
+      <section class="recommend-section" aria-labelledby="recommend-title" :aria-busy="aiLoading">
+        <header class="section-header">
+          <div><p class="eyebrow">MADE FOR YOU</p><h2 id="recommend-title" class="section-title">为你精选<span class="section-caption">从你的喜欢，听见更多</span></h2></div>
+          <div class="section-actions">
+            <button class="refresh-btn text-action" type="button" :disabled="aiLoading" @click="loadAIRecommend">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5" /><path d="M6.1 7a7 7 0 0 1 11.4-1L20 9M4 15l2.5 3A7 7 0 0 0 18 17" /></svg>
+              {{ aiLoading ? '更新中' : '换一批' }}
+            </button>
+            <button v-if="aiRecommendList.length > 6" class="recommend-toggle text-action" type="button" :aria-expanded="showAllRecommendations" aria-controls="recommend-grid" @click="showAllRecommendations = !showAllRecommendations">{{ showAllRecommendations ? '收起' : '查看全部' }} <span aria-hidden="true">{{ showAllRecommendations ? '−' : '↗' }}</span></button>
           </div>
-          <div class="song-info">
-            <h4 class="song-name">{{ song.songname }}</h4>
-            <p class="song-artist"><span class="artist-link" @click.stop="goArtistFromAISong(song)">{{ song.singername }}</span></p>
-          </div>
+        </header>
+
+        <div v-if="aiLoading && !aiRecommendList.length" class="recommend-grid skeleton-grid" role="status" aria-label="正在加载推荐歌曲">
+          <div v-for="item in 6" :key="item" class="skeleton-card" aria-hidden="true"><div class="skeleton-cover"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
         </div>
-      </div>
+        <div v-else-if="!aiRecommendList.length" class="recommend-empty">
+          <span class="empty-record" aria-hidden="true">♪</span>
+          <div><h3>好音乐，从你的喜欢开始</h3><p>收藏喜欢的歌曲，让 AI 为你发现更多心动旋律。</p></div>
+          <button class="text-action empty-action" type="button" @click="handleDailyRecommend">先听每日推荐 <span aria-hidden="true">↗</span></button>
+        </div>
+        <div v-else id="recommend-grid" class="recommend-grid">
+          <article v-for="song in visibleRecommendations" :key="song.hash" class="song-card">
+            <button class="song-play" type="button" :aria-label="`播放 ${song.songname || song.filename || song.name || '歌曲'}`" @click="handleSongClick(song)">
+              <span class="song-cover">
+                <span class="cover-placeholder" aria-hidden="true"><span>♪</span></span>
+                <img v-if="song.imgurl && !failedImages[fixImgUrl(song.imgurl, 400)]" :src="fixImgUrl(song.imgurl, 400)" alt="" loading="lazy" @error="markImageFailed(song.imgurl, 400)" />
+                <span class="play-overlay" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 5 11 7-11 7z" /></svg></span>
+              </span>
+              <span class="song-name" :title="song.songname || song.filename || song.name">{{ song.songname || song.filename || song.name || '未知歌曲' }}</span>
+            </button>
+            <button class="artist-link" type="button" :title="song.singername || song.author_name" :disabled="!song.singername && !song.author_name" @click.stop="goArtistFromAISong(song)">{{ song.singername || song.author_name || '未知歌手' }}</button>
+          </article>
+        </div>
+      </section>
+
+      <section class="rank-section" aria-labelledby="rank-title" :aria-busy="rankLoading">
+        <header class="section-header">
+          <div><p class="eyebrow">ON THE CHARTS</p><h2 id="rank-title" class="section-title">此刻流行<span class="section-caption">好音乐，正在被听见</span></h2></div>
+          <button v-if="rankList.length > 4" class="rank-toggle text-action" type="button" :aria-expanded="showRankList" aria-controls="rank-grid" @click="toggleRankList">{{ showRankList ? '收起榜单' : '全部榜单' }} <span aria-hidden="true">{{ showRankList ? '−' : '↗' }}</span></button>
+        </header>
+        <div v-if="rankLoading && !rankList.length" class="rank-empty" role="status"><span class="loading-spinner" aria-hidden="true"></span> 正在加载榜单…</div>
+        <div v-else-if="!rankList.length" class="rank-empty"><span>暂时没有榜单，稍后再来听听。</span><button class="text-action" type="button" @click="loadRankList">重新加载 <span aria-hidden="true">↗</span></button></div>
+        <div v-else id="rank-grid" class="rank-grid">
+          <button v-for="(rank, index) in visibleRanks" :key="rank.rankid" class="rank-item" type="button" @click="handleRankClick(rank)">
+            <span class="rank-cover"><span aria-hidden="true">{{ String(index + 1).padStart(2, '0') }}</span><img v-if="rank.imgurl && !failedImages[fixImgUrl(rank.imgurl)]" :src="fixImgUrl(rank.imgurl)" alt="" loading="lazy" @error="markImageFailed(rank.imgurl)" /></span>
+            <span class="rank-info"><span class="rank-name">{{ rank.rankname }}</span><span class="rank-description">{{ rank.intro || '发现榜单里的热门旋律' }}</span></span>
+            <svg class="rank-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+          </button>
+        </div>
+      </section>
+      <footer class="home-footer"><span></span>音乐，让日常多一点喜欢<span></span></footer>
     </div>
   </div>
 </template>
-
 <script>
 import { logger } from '../utils/logger.js'
 
@@ -156,6 +134,7 @@ export default {
       // 每日推荐
       dailyLoading: false,
       dailyCount: 0,
+      dailyCover: '',
       dailyLoadedDate: '',
       dailyRequestedDate: '',
       dailyRefreshPending: false,
@@ -172,7 +151,17 @@ export default {
       aiRequestedSeed: null,
       aiCommittedSeed: null,
       aiRecommendList: [],
+      showAllRecommendations: false,
+      failedImages: Object.create(null),
       recentSongs: [] // 最近收藏的歌曲
+    }
+  },
+  computed: {
+    visibleRecommendations() {
+      return this.showAllRecommendations ? this.aiRecommendList : this.aiRecommendList.slice(0, 6)
+    },
+    visibleRanks() {
+      return this.showRankList ? this.rankList : this.rankList.slice(0, 4)
     }
   },
   mounted() {
@@ -201,9 +190,13 @@ export default {
       return !this.isDisposed && this.requestIdentity === getAccountIdentity()
     },
     // 修正图片URL中的{size}
-    fixImgUrl(url) {
-      if (!url) return '';
-      return url.replace('{size}', '150');
+    fixImgUrl(url, size = 150) {
+      if (typeof url !== 'string') return ''
+      return url.replace('{size}', String(size))
+    },
+    // 按实际尺寸隔离失败封面，资源刷新后重试，不影响其他尺寸的图片。
+    markImageFailed(url, size = 150) {
+      this.failedImages[this.fixImgUrl(url, size)] = true
     },
     async loadData() {
       await Promise.all([
@@ -256,6 +249,9 @@ export default {
         if (response.status === 1 && response.data) {
           // 每日推荐 song_list 是数组，song_list_size 是数量
           this.dailyCount = Array.isArray(response.data.song_list) ? response.data.song_list.length : (response.data.song_list_size || 0)
+          const coverSong = response.data.song_list?.[0]
+          this.dailyCover = coverSong?.sizable_cover || coverSong?.imgurl || coverSong?.trans_param?.union_cover || coverSong?.album_img || coverSong?.relate_goods?.[0]?.info?.image || ''
+          delete this.failedImages[this.fixImgUrl(this.dailyCover, 400)]
           this.dailyLoadedDate = today
         }
       } catch (error) {
@@ -290,6 +286,7 @@ export default {
             ...rank,
             imgurl: rank.imgurl || rank.banner7url || rank.banner6url || ''
           }));
+          for (const rank of this.rankList) delete this.failedImages[this.fixImgUrl(rank.imgurl)]
           this.rankLoaded = true
         }
       } catch (error) {
@@ -334,6 +331,7 @@ export default {
                    (song.relate_goods && song.relate_goods.length > 0 && song.relate_goods[0].info ? 
                    song.relate_goods[0].info.image : '')
           }));
+          for (const song of this.aiRecommendList) delete this.failedImages[this.fixImgUrl(song.imgurl, 400)]
           this.aiCommittedSeed = recentSongIds
         }
       } catch (error) {
@@ -417,331 +415,4 @@ export default {
 }
 </script>
 
-<style scoped>
-.home-view {
-  padding: var(--spacing-xl);
-  max-width: 1400px;
-  margin: 0 auto;
-}
-
-.page-title {
-  font-size: var(--font-size-2xl);
-  font-weight: 600;
-  margin-bottom: var(--spacing-xl);
-  color: var(--color-text);
-}
-
-/* 顶部卡片区域 */
-.top-cards {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: var(--spacing-lg);
-  margin-bottom: var(--spacing-xl);
-  height: 180px;
-}
-
-.music-card {
-  background: var(--color-background-light);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: var(--spacing-lg);
-  cursor: pointer;
-  transition: all var(--transition-base);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-  overflow: hidden;
-}
-
-.music-card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: linear-gradient(135deg, var(--color-primary) 0%, transparent 100%);
-  opacity: 0;
-  transition: opacity var(--transition-base);
-}
-
-.music-card:hover::before {
-  opacity: 0.1;
-}
-
-.music-card:hover {
-  border-color: var(--color-primary);
-  transform: translateY(-4px);
-  box-shadow: var(--shadow-lg);
-}
-
-.card-icon {
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-hover));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: var(--spacing-md);
-  color: white;
-  position: relative;
-  z-index: 1;
-}
-
-.card-icon svg {
-  width: 36px;
-  height: 36px;
-}
-
-.card-icon-daily {
-  background: var(--gradient-secondary);
-}
-
-.card-icon-rank {
-  background: var(--gradient-gold);
-}
-
-.card-content {
-  text-align: center;
-  position: relative;
-  z-index: 1;
-}
-
-.card-title {
-  font-size: var(--font-size-base);
-  font-weight: 600;
-  color: var(--color-text);
-  margin-bottom: var(--spacing-xs);
-}
-
-.card-description {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-secondary);
-  margin-bottom: var(--spacing-sm);
-}
-
-.card-loading,
-.card-count {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-tertiary);
-}
-
-/* 排行榜下拉列表 */
-.music-card-rank {
-  overflow: visible;
-}
-
-.rank-dropdown {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  right: 0;
-  margin-top: var(--spacing-sm);
-  background: var(--color-background-light);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
-  max-height: 400px;
-  overflow-y: auto;
-  z-index: 10;
-}
-
-.rank-dropdown::-webkit-scrollbar {
-  width: 6px;
-}
-
-.rank-dropdown::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 3px;
-}
-
-.rank-item {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-md);
-  padding: var(--spacing-md);
-  cursor: pointer;
-  transition: background var(--transition-fast);
-}
-
-.rank-item:hover {
-  background: var(--color-background);
-}
-
-.rank-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius-sm);
-  object-fit: cover;
-}
-
-.rank-name {
-  font-size: var(--font-size-sm);
-  color: var(--color-text);
-}
-
-/* 排行榜下拉动画 */
-.rank-dropdown-enter-active,
-.rank-dropdown-leave-active {
-  transition: all 0.2s ease;
-}
-
-.rank-dropdown-enter-from,
-.rank-dropdown-leave-to {
-  opacity: 0;
-  transform: translateY(-10px);
-}
-
-/* AI 推荐区域 */
-.ai-recommend-section {
-  margin-top: var(--spacing-xl);
-}
-
-.section-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--spacing-lg);
-}
-
-.section-title {
-  font-size: var(--font-size-xl);
-  font-weight: 600;
-  color: var(--color-text);
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
-}
-
-.section-title svg {
-  color: var(--color-primary);
-}
-
-.refresh-btn {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-xs);
-  padding: var(--spacing-sm) var(--spacing-md);
-  background: var(--color-background-light);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.refresh-btn:hover {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-}
-
-.ai-loading {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: var(--spacing-xl) 0;
-  color: var(--color-text-secondary);
-}
-
-.loading-gif {
-  width: 60px;
-  height: 60px;
-  margin-bottom: var(--spacing-md);
-}
-
-.ai-empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: var(--spacing-xl) 0;
-  color: var(--color-text-secondary);
-  text-align: center;
-}
-
-.ai-empty svg {
-  margin-bottom: var(--spacing-md);
-}
-
-/* AI 推荐歌曲网格 */
-.ai-recommend-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: var(--spacing-lg);
-}
-
-.song-card {
-  cursor: pointer;
-  transition: all var(--transition-base);
-}
-
-.song-card:hover {
-  transform: translateY(-4px);
-}
-
-.song-cover {
-  position: relative;
-  width: 100%;
-  padding-bottom: 100%;
-  border-radius: var(--radius-md);
-  overflow: hidden;
-  background: var(--color-background-lighter);
-  margin-bottom: var(--spacing-sm);
-}
-
-.song-cover img {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.play-overlay {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: var(--bg-overlay);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0;
-  transition: opacity var(--transition-fast);
-}
-
-.song-card:hover .play-overlay {
-  opacity: 1;
-}
-
-.song-info {
-  padding: 0 var(--spacing-xs);
-}
-
-.song-name {
-  font-size: var(--font-size-sm);
-  color: var(--color-text);
-  margin-bottom: var(--spacing-xs);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.song-artist {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.artist-link { cursor: pointer; }
-.artist-link:hover { color: var(--color-primary); text-decoration: underline; }
-</style>
+<style scoped src="./styles/HomeView.css"></style>
