@@ -1,67 +1,62 @@
 <template>
-  <div class="album-detail-view" v-if="album">
-    <div class="header">
-      <button class="back-btn" @click="$emit('navigate','home')">
-        <svg viewBox="0 0 1024 1024" width="20" height="20" fill="currentColor">
-          <path d="M724 218.3V141c0-6.7-7.7-10.4-12.9-6.3L260.3 486.8a31.86 31.86 0 000 50.3l450.8 352.1c5.3 4.1 12.9.4 12.9-6.3v-77.3c0-4.9-2.3-9.6-6.1-12.6l-360-281 360-281.1c3.8-3 6.1-7.7 6.1-12.6z"/>
-        </svg>
-        返回
-      </button>
-      <h1 class="page-title">{{ album.album_name || album.name }}</h1>
-    </div>
+  <div class="album-detail-view list-page" :aria-busy="loading">
+    <div class="list-content">
+      <button type="button" class="back-btn" @click="$emit('navigate', 'home')">← 返回发现</button>
+      <header class="collection-hero">
+        <ArtworkCover :src="getCover(album)" class="collection-art" mark="♪" />
+        <div class="collection-copy">
+          <p class="eyebrow">THE ALBUM / 专辑</p>
+          <h1 class="page-title">{{ album?.album_name || album?.name || albumName || '专辑' }}</h1>
+          <p class="collection-description">一张专辑，一段完整的音乐叙事。</p>
+          <div class="collection-meta"><span>{{ album?.author_name || album?.singername || '未知歌手' }}</span><span v-if="album?.publish_date || album?.pub_time">{{ album.publish_date || album.pub_time }}</span><span>{{ songs.length }} 首歌曲</span></div>
 
-    <div class="album-header">
-      <img v-if="album.sizable_cover || album.cover" :src="getCover(album)" class="cover" />
-      <div class="meta">
-        <h2 class="name">{{ album.album_name || album.name }}</h2>
-        <div class="sub">{{ album.author_name || album.singername || '-' }}</div>
-        <div class="sub">发行时间：{{ album.publish_date || album.pub_time || '-' }}</div>
-      </div>
-    </div>
-
-    <div class="song-list" v-if="songs.length">
-      <div class="list-header">
-        <div class="col-index">#</div>
-        <div class="col-title">歌曲</div>
-        <div class="col-artist">歌手</div>
-        <div class="col-duration">时长</div>
-      </div>
-      <div v-for="(song, idx) in songs" :key="song.hash || idx" class="song-item" @dblclick="$emit('play', song)">
-        <div class="col-index">{{ idx + 1 }}</div>
-        <div class="col-title">
-          <img v-if="song.cover" :src="song.cover.replace('{size}','400')" class="song-cover" />
-          <div class="song-info">
-            <div class="song-name">{{ getSongName(song.name) }}</div>
-          </div>
         </div>
-        <div class="col-artist">{{ getSingerNames(song.singerinfo, song) }}</div>
-        <div class="col-duration">{{ formatDuration(song.timelen) }}</div>
-      </div>
-    </div>
+      </header>
+      <div class="section-heading"><h2>专辑曲目</h2></div>
 
-    <div v-else class="loading-container">
-      <template v-if="error">
-        <p>获取专辑曲目失败：{{ error }}</p>
-        <button class="back-btn" @click="load">重试</button>
-      </template>
-      <template v-else>
-        <span class="loading-spinner" role="status" aria-label="加载中"></span>
-        <p>加载中...</p>
-      </template>
+      <div class="song-list" v-if="songs.length">
+        <div class="list-header">
+          <div class="col-index">#</div>
+          <div class="col-title">歌曲</div>
+          <div class="col-artist">歌手</div>
+          <div class="col-duration">时长</div>
+        </div>
+        <div v-for="(song, idx) in songs" :key="song.hash || idx" class="song-item" :class="{ playing: !!song.hash && currentSong?.hash === song.hash }" :aria-current="song.hash && currentSong?.hash === song.hash ? 'true' : undefined" @dblclick="$emit('play', song)">
+          <div class="col-index">{{ String(idx + 1).padStart(2, '0') }}</div>
+          <div class="col-title">
+            <ArtworkCover :src="song.cover || ''" class="song-cover" />
+            <div class="song-info">
+              <button type="button" class="song-name" @click.stop="$emit('play', song)" @dblclick.stop :title="getSongName(song.name)">{{ getSongName(song.name) }}</button>
+              <span class="mobile-artist">{{ getSingerNames(song.singerinfo, song) || '未知歌手' }}</span>
+            </div>
+          </div>
+          <div class="col-artist">{{ getSingerNames(song.singerinfo, song) }}</div>
+          <div class="col-duration">{{ formatDuration(song.timelen) }}</div>
+        </div>
+      </div>
+
+      <div v-else-if="loading" class="loading-container"><span class="loading-spinner" role="status" aria-label="加载中"></span><p>正在打开专辑…</p></div>
+      <div v-else-if="error" class="error" role="alert">
+  <p class="empty-text">无法打开专辑</p><p>{{ error }}</p><button type="button" class="retry-btn" @click="load">重试</button>
+      </div>
+      <div v-else class="empty"><p class="empty-text">暂无专辑曲目</p><p>稍后再来听听，或返回发现更多音乐。</p></div>
     </div>
   </div>
 </template>
 
 <script>
+import ArtworkCover from '../components/common/ArtworkCover.vue'
 import { logger } from '../utils/logger.js'
 
 import { getAlbumDetail, getAlbumSongs, getImagesByHash } from '../api/music.js'
 
 export default {
+  components: { ArtworkCover },
   name: 'AlbumDetailView',
   props: {
     albumId: { type: [String, Number], required: false },
-    albumName: { type: String, default: '' }
+    albumName: { type: String, default: '' },
+    currentSong: { type: Object, default: null }
   },
   emits: ['navigate','play'],
   data() {
@@ -192,24 +187,4 @@ export default {
 }
 </script>
 
-<style scoped>
-.album-detail-view { padding: var(--spacing-xl); max-width: 1200px; margin: 0 auto; }
-.header { display: flex; align-items: center; gap: var(--spacing-lg); margin-bottom: var(--spacing-xl); }
-.back-btn { display: flex; align-items: center; gap: var(--spacing-xs); padding: var(--spacing-sm) var(--spacing-md); background: var(--color-background-light); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text); font-size: var(--font-size-sm); cursor: pointer; transition: all var(--transition-fast); }
-.back-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
-.page-title { flex: 1; font-size: var(--font-size-2xl); font-weight: 600; color: var(--color-text); margin: 0; }
-.album-header { display: flex; gap: var(--spacing-xl); align-items: center; margin-bottom: var(--spacing-xl); }
-.cover { width: 160px; height: 160px; border-radius: 12px; object-fit: cover; }
-.meta .name { font-size: var(--font-size-xl); margin: 0; }
-.meta .sub { color: var(--color-text-secondary); margin-top: 6px; }
-.song-list { background: var(--color-background-light); border-radius: var(--radius-lg); overflow: hidden; }
-.list-header, .song-item { display: grid; grid-template-columns: 60px 1fr 240px 140px; gap: var(--spacing-md); align-items: center; padding: var(--spacing-md) var(--spacing-lg); }
-.list-header { font-size: var(--font-size-sm); color: var(--color-text-tertiary); border-bottom: 1px solid var(--color-border); font-weight: 500; }
-.song-item { border-bottom: 1px solid var(--color-border); transition: background var(--transition-fast); cursor: pointer; }
-.song-item:hover { background: var(--color-background); }
-.song-cover { width: 40px; height: 40px; border-radius: var(--radius-sm); object-fit: cover; flex-shrink: 0; }
-.song-info { display: flex; align-items: center; gap: var(--spacing-sm); min-width: 0; flex: 1; }
-.song-name { color: var(--color-text); font-size: var(--font-size-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.loading-container { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: var(--spacing-xl) 0; color: var(--color-text-secondary); }
-.loading-gif { width: 60px; height: 60px; margin-bottom: var(--spacing-md); }
-</style>
+<style src="./styles/ListPage.css" scoped></style>

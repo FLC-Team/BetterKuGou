@@ -234,7 +234,7 @@ test('artist pagination failures are diagnosed and release the loading guard', a
     .replace('export default', 'module.exports =')
   const diagnostics = []
   const sandbox = vm.createContext({
-    module: { exports: {} }, ContextMenu: {}, nextplayIcon: '',
+    module: { exports: {} }, ContextMenu: {}, ArtworkCover: {}, nextplayIcon: '',
     logger: { error: (...args) => diagnostics.push(args) },
     getArtistAudios: async () => { throw new Error('Network unavailable') }
   })
@@ -432,6 +432,7 @@ test('out-of-order search responses and errors cannot replace newer results', as
     console: quietConsole,
     logger: quietLogger,
     ContextMenu: {},
+    ArtworkCover: {},
     nextplayIcon: '',
     searchMusic: () => {
       const request = deferred()

@@ -1,6 +1,7 @@
 
 import { logger } from '../../utils/logger.js'
 import { getUserPlaylists, getPlaylistTracks } from '../../api/music.js'
+import ArtworkCover from '../../components/common/ArtworkCover.vue'
 import ContextMenu from '../../components/common/ContextMenu.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import { useSettingsStore } from '../../stores/settingsStore.js'
@@ -12,6 +13,7 @@ export default {
   name: 'FavoriteView',
   emits: ['play', 'play-all', 'play-next', 'remove-from-playlist', 'search', 'navigate', 'favorites-changed'],
   components: {
+    ArtworkCover,
     ContextMenu
   },
   props: {

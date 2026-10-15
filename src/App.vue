@@ -1201,10 +1201,12 @@ function performMemoryCleanup() {
               />
               <PersonalFMView
                 v-else-if="currentView === 'personal-fm'" key="personal-fm" class="page-view view-personal-fm"
+                :current-song="currentSong"
                 @navigate="handleNavigate" @play="handlePlay"
               />
               <DailyRecommendView
                 v-else-if="currentView === 'daily-recommend'" key="daily-recommend" class="page-view view-daily-recommend"
+                :current-song="currentSong"
                 @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll"
               />
               <RankDetailView
@@ -1222,12 +1224,14 @@ function performMemoryCleanup() {
                 v-else-if="currentView === 'artist' && artistData"
                 :key="'artist:' + (artistData.id ?? artistData.name)" class="page-view view-artist"
                 :artist-id="artistData.id" :artist-name="artistData.name"
+                :current-song="currentSong"
                 @navigate="handleNavigate" @play="handlePlay"
               />
               <AlbumDetailView
                 v-else-if="currentView === 'album' && albumData"
                 :key="'album:' + (albumData.id ?? albumData.name)" class="page-view view-album"
                 :album-id="albumData.id" :album-name="albumData.name"
+                :current-song="currentSong"
                 @navigate="handleNavigate" @play="handlePlay"
               />
               <div v-else-if="!userLoggedIn && currentView !== 'home'" class="page-view login-required" key="login-required">

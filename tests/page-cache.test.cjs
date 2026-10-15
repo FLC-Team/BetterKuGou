@@ -11,6 +11,7 @@ function createArtist(t, hotRequest = () => Promise.reject(new Error('temporary 
   const requests = []
   const failures = []
   const sandbox = {
+    ArtworkCover: {},
     process: { env: { NODE_ENV: 'test' } },
     logger: {
       trace() {},
