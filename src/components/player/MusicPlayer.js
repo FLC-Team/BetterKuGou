@@ -1349,7 +1349,7 @@ export default {
     },
     
     // 进度条更改完成（释放鼠标时更改播放位置）
-    handleProgressChange(e) {
+    handleProgressChange() {
       const time = this.seekPreviewTime
       this.seekPreviewTime = null
       this.isDragging = false

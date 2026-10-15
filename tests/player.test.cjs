@@ -548,6 +548,22 @@ test('cancelled range input restores actual progress and never emits a seek', t 
   assert.equal(emitted.length, 0)
 })
 
+test('switching songs cancels lyric previews and ignores input or change while updates are paused', t => {
+  const { component, lyric, emitted } = createLyric(t)
+  lyric.currentPlayTime = 15
+  lyric.syncDisplayedTime()
+  lyric.previewSeek({ target: { value: '75' } })
+  lyric.pauseUpdates = true
+  component.watch.pauseUpdates.call(lyric, true)
+  assert.equal(lyric.seekPreviewTime, null)
+  assert.equal(lyric.internalPlayTime, 15)
+  lyric.previewSeek({ target: { value: '90' } })
+  lyric.commitSeek({ target: { value: '90' } })
+  lyric.seekTo(90)
+  assert.equal(lyric.seekPreviewTime, null)
+  assert.equal(emitted.length, 0)
+})
+
 test('the mounted lyric RAF and real audio time updates cannot overwrite a local drag preview', async t => {
   const { component, lyric, frames, emitted } = createLyric(t)
   lyric.parsedLyrics = [{ time: 0, text: 'first' }, { time: 20, text: 'second' }, { time: 40, text: 'third' }]
@@ -882,26 +898,131 @@ test('distant lyrics retain a bounded offscreen position so seeking into them ca
   assert.match(current.transition, /transform 0\.24s/)
 })
 
-test('committing the main player progress follows the same immediate lyric timing and smooth scroll', t => {
-  const { player, audio } = createPlayer(t)
-  const { component, lyric } = createLyric(t)
+test('main player drag previews drive lyrics while actual time and RAF advance, then seek only once', t => {
+  const playerFrames = createFrameClock()
+  const { player, audio } = createPlayer(t, {
+    requestAnimationFrame: callback => playerFrames.request(callback),
+    cancelAnimationFrame: id => playerFrames.cancel(id)
+  })
+  const { component, lyric, frames } = createLyric(t)
+  let actualTime = 1
+  let audioSeeks = 0
+  Object.defineProperty(audio, 'currentTime', {
+    get: () => actualTime,
+    set: value => { actualTime = value; audioSeeks++ }
+  })
   audio.src = 'https://example.test/A.mp3'
-  player.duration = 120
-  player.currentTime = audio.currentTime = 1
+  player.$el = {}
+  player.duration = audio.duration = 120
+  player.currentTime = 1
   lyric.parsedLyrics = [{ time: 0, text: 'first' }, { time: 10, text: 'second' }, { time: 20, text: 'third' }]
   lyric.currentPlayTime = 1
-  lyric.syncPlaybackTime(1)
-  player.handleProgressDrag({ target: { value: '15' } })
-  assert.equal(audio.currentTime, 1)
-  assert.equal(lyric.currentLyricIndex, 0)
+  component.mounted.call(lyric)
+  frames.step()
+  const passPlayerTimesToLyrics = () => {
+    const previousPreview = lyric.previewTime
+    const previousTime = lyric.currentPlayTime
+    lyric.previewTime = player.seekPreviewTime
+    lyric.currentPlayTime = player.currentTime
+    if (lyric.previewTime !== previousPreview) component.watch.previewTime.call(lyric, lyric.previewTime)
+    if (lyric.currentPlayTime !== previousTime) component.watch.currentPlayTime.call(lyric, lyric.currentPlayTime)
+  }
+  for (const target of [15, 25, 5, 15]) {
+    player.handleProgressDrag({ target: { value: String(target) } })
+    passPlayerTimesToLyrics()
+    assert.equal(player.displayPlayTime, target)
+    assert.equal(lyric.internalPlayTime, target)
+    assert.equal(lyric.currentLyricIndex, target >= 20 ? 2 : target >= 10 ? 1 : 0)
+  }
+  actualTime = 2
+  player.handleTimeUpdate()
+  passPlayerTimesToLyrics()
+  assert.equal(player.currentTime, 2)
+  assert.equal(player.displayPlayTime, 15)
+  assert.equal(lyric.internalPlayTime, 15)
+  player.startTimeUpdate()
+  actualTime = 3
+  playerFrames.step()
+  passPlayerTimesToLyrics()
+  frames.step()
+  assert.equal(player.currentTime, 3)
+  assert.equal(player.seekPreviewTime, 15)
+  assert.equal(player.displayPlayTime, 15)
+  assert.equal(lyric.internalPlayTime, 15)
+  assert.equal(audioSeeks, 0)
   player.handleProgressChange({ target: { value: '15' } })
-  lyric.currentPlayTime = player.currentTime
-  component.watch.currentPlayTime.call(lyric, player.currentTime)
+  passPlayerTimesToLyrics()
   assert.equal(player.isDragging, false)
+  assert.equal(player.seekPreviewTime, null)
   assert.equal(audio.currentTime, 15)
   assert.equal(lyric.internalPlayTime, 15)
   assert.equal(lyric.currentLyricIndex, 1)
   assert.match(lyric.getLyricLineStyle(1).transition, /transform 0\.24s/)
+  player.handleProgressChange({ target: { value: '100' } })
+  assert.equal(audioSeeks, 1)
+  assert.equal(audio.currentTime, 15)
+})
+
+test('cancelling a main player preview restores the latest audio time and ignores late or old-song changes', async t => {
+  const { player, audio } = createPlayer(t)
+  let actualTime = 1
+  let audioSeeks = 0
+  Object.defineProperty(audio, 'currentTime', {
+    get: () => actualTime,
+    set: value => { actualTime = value; audioSeeks++ }
+  })
+  audio.src = 'https://example.test/A.mp3'
+  player.duration = audio.duration = 120
+  player.currentSong = song('A')
+  player.currentTime = 1
+  player.handleProgressDrag({ target: { value: '80' } })
+  actualTime = 9
+  player.cancelProgressDrag()
+  assert.equal(player.currentTime, 9)
+  assert.equal(player.displayPlayTime, 9)
+  assert.equal(player.seekPreviewTime, null)
+  assert.equal(player.isDragging, false)
+  player.handleProgressChange({ target: { value: '80' } })
+  assert.equal(audio.currentTime, 9)
+  assert.equal(audioSeeks, 0)
+
+  player.handleProgressDrag({ target: { value: '60' } })
+  player.isComponentReady = false
+  await player.requestSong(song('B'))
+  assert.equal(player.seekPreviewTime, null)
+  assert.equal(player.isDragging, false)
+  player.handleProgressChange({ target: { value: '60' } })
+  assert.equal(audio.currentTime, 9)
+  assert.equal(audioSeeks, 0)
+})
+
+test('main progress previews clamp valid boundaries, reject invalid durations and clear when playback stops', t => {
+  const { player, audio } = createPlayer(t)
+  audio.src = 'https://example.test/A.mp3'
+  player.duration = 120
+  player.handleProgressDrag({ target: { value: '999' } })
+  assert.equal(player.displayPlayTime, 120)
+  player.handleProgressDrag({ target: { value: '-5' } })
+  assert.equal(player.displayPlayTime, 0)
+  player.cancelProgressDrag()
+  for (const duration of [0, NaN, Infinity]) {
+    player.duration = duration
+    player.handleProgressDrag({ target: { value: '50' } })
+    assert.equal(player.seekPreviewTime, null)
+    assert.equal(player.isDragging, false)
+  }
+  player.duration = 120
+  player.handleProgressDrag({ target: { value: '50' } })
+  player.closeLyrics()
+  assert.equal(player.seekPreviewTime, null)
+  assert.equal(player.isDragging, false)
+  player.handleProgressDrag({ target: { value: '50' } })
+  player.stopPlayback()
+  assert.equal(player.seekPreviewTime, null)
+  assert.equal(player.isDragging, false)
+  player.handleProgressChange({ target: { value: '50' } })
+  assert.equal(audio.src, '')
+  assert.equal(audio.currentTime, 0)
 })
 
 test('the final LRC line highlights progressively through the remaining song duration', t => {
