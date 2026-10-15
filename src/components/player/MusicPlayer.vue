@@ -1,5 +1,5 @@
 <template>
-  <div class="music-player" :class="{ 'player-style-netease': playerStyle === 'netease' }">
+  <div class="music-player" :class="{ 'player-style-netease': playerStyle === 'netease', 'player-ready': Boolean(currentSong) }">
     <!-- 默认样式：进度条在顶部 -->
     <div v-if="playerStyle !== 'netease'" class="progress-bar-container">
       <input 
@@ -20,18 +20,31 @@
     <!-- 播放器主体 -->
     <div class="player-main" :class="{ 'isPlaying': isPlaying }" v-if="currentSong">
       <!-- 左侧：歌曲信息 -->
-      <div class="song-info-section">
-        <img 
-          v-if="currentSong.cover" 
-          :src="currentSong.cover.replace('{size}', '400')" 
-          class="song-cover"
-          :alt="currentSong.name"
+      <div class="song-info-section" :data-motion="trackTransition">
+        <button
+          type="button"
+          class="song-cover-button"
           @click="showLyrics"
           title="点击查看歌词"
-        />
+          :aria-label="`查看 ${getSongName(currentSong.name)} 的歌词`"
+        >
+          <Transition name="song-meta">
+            <span :key="currentSong.hash" class="song-cover-frame">
+              <ArtworkCover :src="currentSong.cover" loading="eager" class="song-cover" />
+            </span>
+          </Transition>
+        </button>
         <div class="song-details">
-          <div class="song-name">{{ getSongName(currentSong.name) }}</div>
-          <div class="song-artist">{{ getSingerNames(currentSong.singerinfo) || currentSong.singername || (currentSong.name && currentSong.name.includes(' - ') ? currentSong.name.split(' - ')[0] : '未知歌手') }}</div>
+          <div class="song-text-viewport song-title-viewport">
+            <Transition name="song-meta">
+              <div :key="currentSong.hash" class="song-name" :title="getSongName(currentSong.name)">{{ getSongName(currentSong.name) }}</div>
+            </Transition>
+          </div>
+          <div class="song-text-viewport song-artist-viewport">
+            <Transition name="song-meta">
+              <div :key="currentSong.hash" class="song-artist">{{ getSingerNames(currentSong.singerinfo) || currentSong.singername || (currentSong.name && currentSong.name.includes(' - ') ? currentSong.name.split(' - ')[0] : '未知歌手') }}</div>
+            </Transition>
+          </div>
         </div>
         <button class="icon-btn favorite-btn" :class="{ active: isFavorite }" @click="toggleFavorite">
           <svg viewBox="0 0 1024 1024" width="18" height="18" fill="currentColor">
@@ -211,6 +224,7 @@
           v-if="showLyricView"
           :visible="showLyricView"
           :song="currentSong"
+          :track-transition="trackTransition"
           :lyrics="currentLyrics"
           :lyric-data="currentLyricData"
           :current-play-time="currentTime"
@@ -219,7 +233,7 @@
           :is-playing="isPlaying"
           :play-mode="playMode"
           :is-favorite="isFavorite"
-          :pause-updates="isSwitchingSong"
+          :pause-updates="isLoadingSong || isSwitchingSong"
           @close="closeLyrics"
           @toggle-play="togglePlay"
           @previous="playPrevious"

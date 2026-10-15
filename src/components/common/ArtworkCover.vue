@@ -1,7 +1,7 @@
 <template>
   <span class="artwork-cover" :aria-label="label || undefined" :role="label ? 'img' : undefined" :aria-hidden="label ? undefined : true">
     <span class="artwork-fallback" aria-hidden="true"><span>{{ mark }}</span></span>
-    <img v-if="source && !failed" :key="source" :src="source" alt="" loading="lazy" @error="failed = true" />
+    <img v-if="source && !failed" :key="source" :src="source" alt="" :loading="loading" @error="failed = true" />
   </span>
 </template>
 
@@ -10,6 +10,7 @@ import { computed, ref, watch } from 'vue'
 
 const props = defineProps({
   src: { type: String, default: '' },
+  loading: { type: String, default: 'lazy' },
   label: { type: String, default: '' },
   mark: { type: String, default: '♪' }
 })

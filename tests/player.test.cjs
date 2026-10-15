@@ -49,7 +49,7 @@ function loadComponent(filename, overrides = {}) {
     getSongDetail: async () => ({ status: 1, data: [] }),
     getSongUrl: async hash => ({ status: 1, url: `https://example.test/${hash}.mp3` }),
     getLyric: async hash => ({ status: 1, decodeContent: `[00:00.00]${hash}` }),
-    PlaylistDrawer: {}, ContextMenu: {}, LyricView: {}, TransitionGroup: {},
+    PlaylistDrawer: {}, ContextMenu: {}, LyricView: {}, ArtworkCover: {}, TransitionGroup: {},
     contextMenuManager: menuManager, useSettingsStore: () => ({}),
     ...Object.fromEntries(['playlistIcon', 'repeatAllIcon', 'repeatOneIcon', 'shuffleIcon',
       'sound0Icon', 'sound1Icon', 'sound2Icon', 'sound3Icon'].map(name => [name, ''])),
@@ -322,6 +322,414 @@ test('external selection aligns queue index before next-track navigation', async
   assert.equal(player.currentIndex, 3)
 })
 
+test('direct selection and navigation commit the transition belonging to the successful operation', async t => {
+  const { player } = createPlayer(t)
+  player.playlist = ['A', 'B', 'C'].map(song)
+  await player.requestSong(player.playlist[1])
+  assert.equal(player.currentSong.hash, 'B')
+  assert.equal(player.trackTransition, 'select')
+
+  await player.playNext({ type: 'click' })
+  assert.equal(player.currentSong.hash, 'C')
+  assert.equal(player.trackTransition, 'next')
+
+  await player.playPrevious()
+  assert.equal(player.currentSong.hash, 'B')
+  assert.equal(player.trackTransition, 'previous')
+
+  await player.handlePlaylistPlay(player.playlist[0])
+  assert.equal(player.currentSong.hash, 'A')
+  assert.equal(player.trackTransition, 'select')
+
+  await player.handleRemoveSong(0)
+  assert.equal(player.currentSong.hash, 'B')
+  assert.equal(player.trackTransition, 'next')
+})
+
+test('shuffle, automatic advance and priority queue playback retain their distinct transition intent', async t => {
+  const { player } = createPlayer(t)
+  player.playlist = ['A', 'B', 'C'].map(song)
+  await player.requestSong(player.playlist[0])
+  player.playMode = 'shuffle'
+  player.shuffledPlaylist = [player.playlist[0], player.playlist[2], player.playlist[1]]
+
+  await player.playNext({ type: 'click' })
+  assert.equal(player.currentSong.hash, 'C')
+  assert.equal(player.trackTransition, 'shuffle')
+
+  await player.playPrevious()
+  assert.equal(player.currentSong.hash, 'A')
+  assert.equal(player.trackTransition, 'previous')
+
+  player.handleEnded()
+  await flush()
+  assert.equal(player.currentSong.hash, 'C')
+  assert.equal(player.trackTransition, 'auto')
+
+  player.playNextQueue = [player.playlist[1]]
+  await player.playNext()
+  assert.equal(player.currentSong.hash, 'B')
+  assert.equal(player.trackTransition, 'next')
+
+  player.playNextQueue = [player.playlist[0]]
+  player.handleEnded()
+  await flush()
+  assert.equal(player.currentSong.hash, 'A')
+  assert.equal(player.trackTransition, 'auto')
+})
+
+test('a parent selection supersedes loading navigation together with its transition intent', async t => {
+  const pendingNext = deferred()
+  const { state, getPlayer } = mountPlayer(t, ['A', 'B', 'C'].map(song), {
+    getSongUrl: hash => hash === 'B' ? pendingNext.promise : Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` })
+  })
+  await flush()
+  const player = getPlayer()
+  const navigation = player.playNext()
+  assert.equal(player.isSwitchingSong, true)
+  assert.equal(player.currentSong.hash, 'A')
+  state.song = state.playlist[2]
+  await nextTick()
+  pendingNext.resolve({ status: 1, url: 'https://example.test/B.mp3' })
+  await navigation
+  await flush()
+  assert.equal(player.currentSong.hash, 'C')
+  assert.equal(state.song.hash, 'C')
+  assert.equal(player.$refs.audioPlayer.src, 'https://example.test/C.mp3')
+  assert.equal(player.trackTransition, 'select')
+})
+
+test('a pending selection keeps its transition when a later request replaces the queued song', async t => {
+  const { player } = createPlayer(t)
+  player.playlist = ['A', 'B'].map(song)
+  player.isComponentReady = false
+  await player.requestSong(player.playlist[0], 'previous')
+  await player.requestSong(player.playlist[1], 'next')
+  player.isComponentReady = true
+  await player.drainPendingSong()
+  assert.equal(player.currentSong.hash, 'B')
+  assert.equal(player.trackTransition, 'next')
+})
+
+test('failed URL and audio playback leave the visible song and its transition unchanged', async t => {
+  for (const failure of ['url', 'play']) {
+    const { player, audio, emitted } = createPlayer(t, {
+      getSongUrl: async hash => failure === 'url' && hash === 'C'
+        ? { status: 0, error_msg: 'Unavailable test song' }
+        : { status: 1, url: `https://example.test/${hash}.mp3` }
+    })
+    player.playlist = ['A', 'B', 'C'].map(song)
+    await player.requestSong(player.playlist[0])
+    await player.playNext()
+    const play = audio.play
+    audio.play = async function () {
+      if (failure === 'play' && this.src.endsWith('/C.mp3')) throw new Error('Test audio playback failure')
+      return play.call(this)
+    }
+
+    assert.equal(await player.requestSong(player.playlist[2]), false)
+    assert.equal(player.currentSong.hash, 'B', failure)
+    assert.equal(audio.src, 'https://example.test/B.mp3', failure)
+    assert.equal(player.trackTransition, 'next', failure)
+    assert.deepEqual(emitted.filter(event => event.name === 'song-changed').map(event => event.value.hash), ['A', 'B'])
+  }
+})
+
+test('a superseded playback restores the committed source when the latest parent selection fails', async t => {
+  for (const outcome of ['resolve', 'reject']) {
+    const playback = deferred()
+    const { state, getPlayer, audioElements } = mountPlayer(t,
+      ['A', 'B', 'C'].map(hash => ({ ...song(hash), cover: `${hash}.png` })), {
+        getSongUrl: async hash => hash === 'C'
+          ? { status: 0, error_code: 'TEST_UNAVAILABLE' }
+          : { status: 1, url: `https://example.test/${hash}.mp3` }
+      })
+    await flush()
+    const player = getPlayer()
+    const audio = audioElements[0]
+    audio.currentTime = player.currentTime = 31
+    player.duration = 180
+    player.trackTransition = 'previous'
+    const play = audio.play.bind(audio)
+    audio.play = () => audio.src.endsWith('/B.mp3') ? playback.promise.then(play) : play()
+    state.song = state.playlist[1]
+    await flush()
+    assert.equal(audio.src, 'https://example.test/B.mp3')
+    assert.equal(player.currentSong.hash, 'A')
+    audio.currentTime = 0
+    audio.duration = 222
+    player.handleTimeUpdate()
+    state.song = state.playlist[2]
+    await nextTick()
+    if (outcome === 'resolve') playback.resolve()
+    else playback.reject(new Error('Superseded playback failed'))
+    await flush()
+
+    assert.equal(audio.src, 'https://example.test/A.mp3', outcome)
+    assert.equal(player.loadedSongHash, 'A', outcome)
+    assert.equal(player.currentSong.name, 'A', outcome)
+    assert.equal(player.currentSong.cover, 'A.png', outcome)
+    assert.equal(player.currentLyrics, '[00:00.00]A', outcome)
+    assert.equal(player.trackTransition, 'previous', outcome)
+    assert.equal(audio.currentTime, 31, outcome)
+    assert.equal(player.currentTime, 31, outcome)
+    assert.equal(player.duration, 180, outcome)
+    assert.equal(state.song.hash, 'A', 'the parent session must retain the song that actually survived')
+    assert.equal(audio.paused, false, outcome)
+  }
+})
+
+test('a failed successor cannot use a superseded uncommitted source as its rollback song', async t => {
+  const playback = deferred()
+  const { player, audio, emitted } = createPlayer(t)
+  player.playlist = ['A', 'B', 'C'].map(song)
+  await player.requestSong(player.playlist[0])
+  await flush()
+  const play = audio.play.bind(audio)
+  audio.play = () => {
+    if (audio.src.endsWith('/B.mp3')) return playback.promise.then(play)
+    if (audio.src.endsWith('/C.mp3')) return Promise.reject(new Error('Successor playback failed'))
+    return play()
+  }
+  const loading = player.requestSong(player.playlist[1])
+  await flush()
+  await player.requestSong(player.playlist[2])
+  playback.resolve()
+  await loading
+  await flush()
+  assert.equal(audio.src, 'https://example.test/A.mp3')
+  assert.equal(player.loadedSongHash, 'A')
+  assert.equal(player.currentSong.hash, 'A')
+  assert.equal(player.currentLyrics, '[00:00.00]A')
+  assert.deepEqual(emitted.filter(event => event.name === 'song-changed').map(event => event.value.hash), ['A'])
+})
+
+test('selection during source restoration keeps the latest request and its transition', async t => {
+  const restoration = deferred()
+  const urls = []
+  const { state, getPlayer, audioElements } = mountPlayer(t, ['A', 'B', 'C', 'D'].map(song), {
+    getSongUrl: async hash => { urls.push(hash); return { status: 1, url: `https://example.test/${hash}.mp3` } }
+  })
+  await flush()
+  const player = getPlayer()
+  const audio = audioElements[0]
+  const play = audio.play.bind(audio)
+  audio.play = () => {
+    if (audio.src.endsWith('/B.mp3')) return Promise.reject(new Error('Playback failed'))
+    return audio.src.endsWith('/A.mp3') ? restoration.promise.then(play) : play()
+  }
+  state.song = state.playlist[1]
+  await flush()
+  assert.equal(audio.src, 'https://example.test/A.mp3')
+  state.song = state.playlist[2]
+  await nextTick()
+  player.requestSong(state.playlist[3], 'next')
+  restoration.resolve()
+  await flush()
+  assert.deepEqual(urls, ['A', 'B', 'D'])
+  assert.equal(player.currentSong.hash, 'D')
+  assert.equal(state.song.hash, 'D')
+  assert.equal(audio.src, 'https://example.test/D.mp3')
+  assert.equal(player.trackTransition, 'next')
+})
+
+test('rollback preserves the position and paused state immediately before source replacement', async t => {
+  const url = deferred()
+  const { player, audio } = createPlayer(t, {
+    getSongUrl: hash => hash === 'B' ? url.promise : Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` })
+  })
+  player.playlist = ['A', 'B'].map(song)
+  await player.requestSong(player.playlist[0])
+  audio.currentTime = player.currentTime = 10
+  const loading = player.requestSong(player.playlist[1])
+  audio.currentTime = player.currentTime = 37
+  audio.pause()
+  const play = audio.play.bind(audio)
+  audio.play = () => audio.src.endsWith('/B.mp3') ? Promise.reject(new Error('Playback failed')) : play()
+  url.resolve({ status: 1, url: 'https://example.test/B.mp3' })
+  assert.equal(await loading, false)
+  assert.equal(audio.src, 'https://example.test/A.mp3')
+  assert.equal(audio.currentTime, 37)
+  assert.equal(player.currentTime, 37)
+  assert.equal(audio.paused, true)
+  assert.equal(player.isPlaying, false)
+})
+
+test('a superseded first playback clears its source if the next selection also fails', async t => {
+  const playback = deferred()
+  const { player, audio } = createPlayer(t, {
+    getSongUrl: async hash => hash === 'B' ? { status: 0 } : { status: 1, url: `https://example.test/${hash}.mp3` }
+  })
+  player.playlist = ['A', 'B'].map(song)
+  const play = audio.play.bind(audio)
+  audio.play = () => playback.promise.then(play)
+  const loading = player.requestSong(player.playlist[0])
+  await flush()
+  await player.requestSong(player.playlist[1])
+  playback.resolve()
+  await loading
+  await flush()
+  assert.equal(player.currentSong, null)
+  assert.equal(player.loadedSongHash, null)
+  assert.equal(audio.src, '')
+  assert.equal(audio.paused, true)
+  assert.equal(player.isPlaying, false)
+})
+
+test('retaining a song after failure or replay reloads lyrics invalidated by the selection', async t => {
+  for (const selection of ['A', 'B']) {
+    const lyrics = deferred()
+    const lyricRequests = []
+    const { player } = createPlayer(t, {
+      getSongUrl: async hash => hash === 'B' ? { status: 0 } : { status: 1, url: `https://example.test/${hash}.mp3` },
+      getLyric: hash => {
+        lyricRequests.push(hash)
+        return lyricRequests.length === 1 ? lyrics.promise : Promise.resolve({ status: 1, decodeContent: `lyrics ${hash}` })
+      }
+    })
+    player.playlist = ['A', 'B'].map(song)
+    await player.requestSong(player.playlist[0])
+    assert.equal(player.currentLyrics, '')
+    await player.requestSong(player.playlist.find(item => item.hash === selection))
+    await flush()
+    lyrics.resolve({ status: 1, decodeContent: 'discarded old lyrics' })
+    await flush()
+    assert.equal(player.currentSong.hash, 'A', selection)
+    assert.equal(player.currentLyrics, 'lyrics A', selection)
+    assert.deepEqual(lyricRequests, ['A', 'A'])
+    assert.equal(player.pendingTimers.size, 0, selection)
+  }
+})
+
+test('stop and unmount cannot resurrect audio after pending playback or restoration settles', async t => {
+  for (const stage of ['playback', 'restoration', 'replay']) {
+    for (const action of ['stop', 'unmount']) {
+      const playback = deferred()
+      const { component, player, audio, emitted } = createPlayer(t)
+      player.playlist = ['A', 'B'].map(song)
+      await player.requestSong(player.playlist[0])
+      await flush()
+      if (stage === 'replay') audio.pause()
+      const play = audio.play.bind(audio)
+      audio.play = () => {
+        if (stage === 'restoration' && audio.src.endsWith('/B.mp3')) return Promise.reject(new Error('Playback failed'))
+        return playback.promise.then(play)
+      }
+      const loading = player.requestSong(player.playlist[stage === 'replay' ? 0 : 1])
+      await flush()
+      const eventCount = emitted.length
+      if (action === 'stop') player.stopPlayback()
+      else component.beforeUnmount.call(player)
+      playback.resolve()
+      await loading
+      await flush()
+      assert.equal(audio.src, '', `${stage}/${action}`)
+      assert.equal(audio.paused, true, `${stage}/${action}`)
+      assert.equal(player.isPlaying, false, `${stage}/${action}`)
+      assert.equal(emitted.length, eventCount, `${stage}/${action}`)
+    }
+  }
+})
+
+test('stopping pending playback still allows a new selection after the old operation settles', async t => {
+  for (const stage of ['playback', 'restoration', 'replay']) {
+    const playback = deferred()
+    const { player, audio, emitted } = createPlayer(t)
+    player.playlist = ['A', 'B', 'C'].map(song)
+    await player.requestSong(player.playlist[0])
+    if (stage === 'replay') audio.pause()
+    const play = audio.play.bind(audio)
+    audio.play = () => {
+      if (audio.src.endsWith('/C.mp3')) return play()
+      if (stage === 'restoration' && audio.src.endsWith('/B.mp3')) return Promise.reject(new Error('Playback failed'))
+      return playback.promise.then(play)
+    }
+    const loading = player.requestSong(player.playlist[stage === 'replay' ? 0 : 1])
+    await flush()
+    player.stopPlayback()
+    await player.requestSong(player.playlist[2])
+    playback.resolve()
+    await loading
+    await flush()
+    assert.equal(player.currentSong.hash, 'C', stage)
+    assert.equal(player.loadedSongHash, 'C', stage)
+    assert.equal(audio.src, 'https://example.test/C.mp3', stage)
+    assert.equal(audio.paused, false, stage)
+    assert.deepEqual(emitted.filter(event => event.name === 'song-changed').map(event => event.value.hash), ['A', 'C'])
+  }
+})
+
+test('a pending same-song replay cannot pause or overwrite a later successful selection', async t => {
+  const replay = deferred()
+  const { player, audio } = createPlayer(t)
+  player.playlist = ['A', 'B'].map(song)
+  await player.requestSong(player.playlist[0])
+  audio.pause()
+  const play = audio.play.bind(audio)
+  audio.play = () => audio.src.endsWith('/A.mp3') ? replay.promise.then(play) : play()
+  const loading = player.requestSong(player.playlist[0])
+  await flush()
+  await player.requestSong(player.playlist[1])
+  replay.resolve()
+  assert.equal(await loading, false)
+  await flush()
+  assert.equal(player.currentSong.hash, 'B')
+  assert.equal(player.loadedSongHash, 'B')
+  assert.equal(audio.src, 'https://example.test/B.mp3')
+  assert.equal(audio.paused, false)
+})
+
+test('reselecting and repeating the active song do not restart its metadata transition', async t => {
+  let requests = 0
+  const { player, audio } = createPlayer(t, {
+    getSongUrl: async hash => { requests++; return { status: 1, url: `https://example.test/${hash}.mp3` } }
+  })
+  player.playlist = ['A', 'B'].map(song)
+  await player.requestSong(player.playlist[0])
+  await player.playNext()
+  audio.ended = true
+  audio.paused = true
+  audio.currentTime = audio.duration
+  await player.handlePlaylistPlay(player.playlist[1])
+  assert.equal(player.currentSong.hash, 'B')
+  assert.equal(player.trackTransition, 'next')
+  assert.equal(audio.currentTime, 0)
+  assert.equal(requests, 2)
+
+  player.playMode = 'single'
+  audio.currentTime = audio.duration
+  player.handleEnded()
+  await flush()
+  assert.equal(player.trackTransition, 'next')
+  assert.equal(audio.currentTime, 0)
+  assert.equal(requests, 2)
+})
+
+test('track transitions commit with the new song only after its URL and playback succeed', async t => {
+  const url = deferred()
+  const playback = deferred()
+  const { player, audio, emitted } = createPlayer(t, { getSongUrl: () => url.promise })
+  player.playlist = ['A', 'B'].map(song)
+  player.currentSong = player.playlist[0]
+  player.loadedSongHash = 'A'
+  player.trackTransition = 'previous'
+  audio.src = 'https://example.test/A.mp3'
+  audio.play = () => playback.promise
+
+  const loading = player.loadSong(player.playlist[1], 'next')
+  assert.equal(player.trackTransition, 'previous')
+  assert.equal(player.currentSong.hash, 'A')
+  url.resolve({ status: 1, url: 'https://example.test/B.mp3' })
+  await flush()
+  assert.equal(player.trackTransition, 'previous')
+  assert.equal(player.currentSong.hash, 'A')
+  playback.resolve()
+  assert.equal(await loading, true)
+  assert.equal(player.trackTransition, 'next')
+  assert.equal(player.currentSong.hash, 'B')
+  assert.deepEqual(emitted.filter(event => event.name === 'song-changed').map(event => event.value.hash), ['B'])
+})
+
 test('a one-song loop restarts ended audio without fetching the same URL', async t => {
   let requests = 0
   const { player, audio } = createPlayer(t, { getSongUrl: async () => { requests++; return { status: 1, url: 'https://example.test/A.mp3' } } })
@@ -507,6 +915,158 @@ test('lyric mount starts animation updates and unmount releases frames, resize a
   assert.equal(listeners.get('resize').size, 0)
   assert.equal(sandbox.document.body.style.overflow, 'auto')
   assert.equal(lyric.isDisposed, true)
+})
+
+test('lyric transition keys distinguish song changes and asynchronous lyric arrival', t => {
+  const { lyric } = createLyric(t)
+  lyric.lyrics = ''
+  assert.equal(lyric.lyricContentKey, 'A:loading')
+  lyric.lyrics = '[00:00.00]first'
+  assert.equal(lyric.lyricContentKey, 'A:ready')
+  lyric.lyrics = '[00:00.00]updated metadata'
+  assert.equal(lyric.lyricContentKey, 'A:ready', 'parsing updated lyric data must retain the current layer')
+  lyric.song = song('B')
+  assert.equal(lyric.lyricContentKey, 'B:ready')
+  lyric.lyrics = ''
+  assert.equal(lyric.lyricContentKey, 'B:loading')
+  lyric.song = null
+  assert.equal(lyric.lyricContentKey, 'empty:loading')
+
+  for (const type of ['select', 'previous', 'next', 'auto', 'shuffle']) {
+    lyric.trackTransition = type
+    assert.equal(lyric.trackTransitionName, `track-${type}`)
+  }
+  for (const type of [null, undefined, 'unknown', { type: 'click' }]) {
+    lyric.trackTransition = type
+    assert.equal(lyric.trackTransitionName, 'track-select')
+  }
+})
+
+test('changing a lyric layer clears the previous track state and positions arriving lyrics at the latest time', async t => {
+  const { component, lyric, setLine } = createLyric(t)
+  lyric.lyrics = '[00:00.00]old\n[00:10.00]completed\n[00:40.00]next'
+  component.watch.lyrics.handler.call(lyric, lyric.lyrics)
+  const oldLine = setLine(1, 'completed', 500, 300)
+  lyric.syncPlaybackTime(20)
+  lyric.currentCharIndex = 4
+  lyric.styleCache.set('old', { color: 'red' })
+  lyric.lastProgressValues.set('old', 100)
+  lyric.scrollingLyricElement = oldLine.innerText
+  assert.equal(lyric.isBridgeActive, true)
+  assert.equal(lyric.currentLyricIndex, 1)
+
+  lyric.song = song('B')
+  lyric.lyrics = ''
+  lyric.currentPlayTime = 0
+  component.watch.lyrics.handler.call(lyric, lyric.lyrics)
+  component.watch.lyricContentKey.call(lyric)
+  assert.equal(Object.keys(lyric.lyricLineRefs).length, 0)
+  assert.equal(lyric.scrollingLyricElement, null)
+  assert.equal(lyric.currentLyricIndex, 0)
+  assert.equal(lyric.currentCharIndex, 0)
+  assert.equal(lyric.lastPlaybackTime, null)
+  assert.equal(lyric.lineTransitionDuration, 0)
+  assert.equal(lyric.bridgeInfo, null)
+  assert.equal(lyric.isBridgeActive, false)
+  assert.equal(lyric.bridgeProgress, 0)
+  assert.equal(lyric.styleCache.size, 0)
+  assert.equal(lyric.lastProgressValues.size, 0)
+  await flush()
+
+  lyric.currentPlayTime = 15
+  lyric.lyrics = '[00:00.00]first\n[00:10.00]ABCD\n[00:20.00]next'
+  component.watch.lyrics.handler.call(lyric, lyric.lyrics)
+  component.watch.lyricContentKey.call(lyric)
+  const { characters } = setLine(1, 'ABCD')
+  await flush()
+  assert.equal(lyric.internalPlayTime, 15)
+  assert.equal(lyric.currentLyricIndex, 1)
+  assert.equal(lyric.lineTransitionDuration, 0, 'asynchronous lyrics start at their current position')
+  assert.equal(lyric.isBridgeActive, false)
+  assert.equal(characters[0].style.color, 'var(--lyric-accent)')
+  assert.equal(characters[3].style.color, 'var(--lyric-pending)')
+})
+
+test('departing lyric refs cannot remove or replace the next song or its ready lyric layer', t => {
+  const { component, lyric } = createLyric(t)
+  lyric.lyrics = '[00:00.00]old'
+  const oldRef = lyric.createLyricLineRef(0, lyric.lyricContentKey)
+  const oldElement = { track: 'A' }
+  oldRef(oldElement)
+  assert.equal(lyric.lyricLineRefs[0], oldElement)
+
+  lyric.song = song('B')
+  lyric.lyrics = ''
+  component.watch.lyricContentKey.call(lyric)
+  const loadingRef = lyric.createLyricLineRef(0, lyric.lyricContentKey)
+  const loadingElement = { track: 'B', phase: 'loading' }
+  loadingRef(loadingElement)
+  oldRef(null)
+  oldRef(oldElement)
+  assert.equal(lyric.lyricLineRefs[0], loadingElement)
+
+  lyric.lyrics = '[00:00.00]new'
+  component.watch.lyricContentKey.call(lyric)
+  const readyRef = lyric.createLyricLineRef(0, lyric.lyricContentKey)
+  const readyElement = { track: 'B', phase: 'ready' }
+  readyRef(readyElement)
+  loadingRef(null)
+  loadingRef(loadingElement)
+  oldRef(null)
+  assert.equal(lyric.lyricLineRefs[0], readyElement)
+  readyRef(null)
+  assert.equal(lyric.lyricLineRefs[0], undefined, 'the active layer can still release its own refs')
+  readyRef(readyElement)
+  component.beforeUnmount.call(lyric)
+  readyRef(readyElement)
+  assert.equal(Object.keys(lyric.lyricLineRefs).length, 0, 'late callbacks cannot retain nodes after disposal')
+})
+
+test('rapid A to B to A transitions keep the newest A ref when the first A layer finishes leaving', t => {
+  const { component, lyric } = createLyric(t)
+  lyric.lyrics = '[00:00.00]A'
+  const firstARef = lyric.createLyricLineRef(0, lyric.lyricContentKey)
+  const firstAElement = { track: 'A', visit: 1 }
+  firstARef(firstAElement)
+  lyric.song = song('B')
+  component.watch.lyricContentKey.call(lyric)
+  const bRef = lyric.createLyricLineRef(0, lyric.lyricContentKey)
+  bRef({ track: 'B' })
+
+  lyric.song = song('A')
+  component.watch.lyricContentKey.call(lyric)
+  const newestARef = lyric.createLyricLineRef(0, lyric.lyricContentKey)
+  const newestAElement = { track: 'A', visit: 2 }
+  newestARef(newestAElement)
+  firstARef(null)
+  bRef(null)
+  assert.equal(lyric.lyricLineRefs[0], newestAElement)
+  newestARef(null)
+  assert.equal(lyric.lyricLineRefs[0], undefined)
+})
+
+test('late cover failures affect only the current track and the image URL still being shown', t => {
+  const { lyric } = createLyric(t)
+  lyric.song = { ...song('B'), cover: 'https://example.test/{size}/B.jpg' }
+  const currentUrl = lyric.coverUrl
+  const coverError = (key, source) => ({
+    target: { dataset: { trackKey: key }, getAttribute: name => name === 'src' ? source : null }
+  })
+  lyric.handleCoverError(coverError('A', currentUrl))
+  assert.equal(lyric.coverFailed, false, 'departing covers cannot replace the current cover with a fallback')
+  lyric.handleCoverError(coverError('B', 'https://example.test/400/old-B.jpg'))
+  assert.equal(lyric.coverFailed, false, 'an earlier URL for the same track must be ignored')
+  const retired = coverError('B', currentUrl)
+  retired.target.closest = () => ({ inert: true })
+  lyric.handleCoverError(retired)
+  assert.equal(lyric.coverFailed, false, 'returning to the same hash and URL ignores the retired image')
+  const disconnected = coverError('B', currentUrl)
+  disconnected.target.isConnected = false
+  lyric.handleCoverError(disconnected)
+  assert.equal(lyric.coverFailed, false, 'a removed image cannot hide the fresh cover')
+  lyric.handleCoverError(coverError('B', currentUrl))
+  assert.equal(lyric.coverFailed, true)
+  assert.equal(lyric.coverUrl, '')
 })
 
 test('range input moves lyrics with every preview and commits the audio seek only once on release', t => {

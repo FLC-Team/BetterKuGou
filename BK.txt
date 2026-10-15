@@ -2,7 +2,7 @@
 
 本文件保留既有历史资料。当前项目逻辑与维护规则以 BK.md、各目录同名 .md、AGENTS.md 和 agent.md 为准。
 
-## 更新日期：2026-10-14
+## 更新日期：2026-10-15
 
 ## 模块结构
 
@@ -37,6 +37,8 @@
 - `applyTheme(settings)`：解析主题并完整重写视觉变量，管理系统配色监听。
 - `createThemePackage(settings, metadata)`：仅导出视觉参数和主题元数据，不包含账户或播放会话。
 - `saveSessionSnapshot(partial)`：保存播放列表、歌曲、进度、音量和播放模式。
+- `loadSong(song, transition)`：成功播放后同步提交歌曲和操作来源；底栏首次就绪时以 player-ready 触发整栏滑入，避免空壳提前消耗动画，清空队列保留退场；全屏歌词按来源切换封面、标题、歌手和歌词，背景交叉淡化。
+- `resetTrackLyrics()`：按歌曲与歌词 loading/ready 阶段清理旧行引用、桥段及高亮，从最新播放时间定位新歌词；退场引用和封面错误与当前层隔离。
 - `getSafeRequestUrl(originalUrl)`：对 API 日志中的敏感查询参数脱敏。
 - `handleAuthExpired()`：清除已失效的本地登录信息，重置用户页面状态并打开登录页。
 - `loadFavorites()`：兼容多种歌单/歌曲返回字段和数字型收藏歌单 ID，认证失效时不再回退到过期缓存。

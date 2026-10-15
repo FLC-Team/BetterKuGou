@@ -16,6 +16,10 @@ export default {
       type: Object,
       default: null
     },
+    trackTransition: {
+      type: String,
+      default: 'select'
+    },
     lyrics: {
       type: String,
       default: ''
@@ -98,6 +102,14 @@ export default {
     }
   },
   computed: {
+    trackTransitionName() {
+      const type = ['previous', 'next', 'auto', 'select', 'shuffle'].includes(this.trackTransition)
+        ? this.trackTransition : 'select'
+      return `track-${type}`
+    },
+    lyricContentKey() {
+      return `${this.song?.hash || 'empty'}:${this.lyrics ? 'ready' : 'loading'}`
+    },
     coverUrl() {
       const cover = this.song?.cover || this.song?.album_img
       return !this.coverFailed && typeof cover === 'string' ? cover.replace('{size}', '400') : ''
@@ -262,6 +274,9 @@ export default {
       this.cancelSeek()
       this.lastPlaybackTime = null
     },
+    lyricContentKey() {
+      this.resetTrackLyrics()
+    },
     currentPlayTime() {
       if (this.visible && !this.pauseUpdates && !this.isDisposed) this.syncDisplayedTime()
     },
@@ -334,6 +349,50 @@ export default {
     this.onWindowResize()
   },
   methods: {
+    /** 旧层只保留退场画面，不再参与辅助阅读或交互。 */
+    retireTrackLayer(element) {
+      element.setAttribute('aria-hidden', 'true')
+      element.inert = true
+    },
+
+    handleCoverError(event) {
+      if (event.target.isConnected === false || event.target.closest?.('.track-cover')?.inert) return
+      if (event.target.dataset.trackKey === this.song?.hash &&
+          event.target.getAttribute('src') === this.coverUrl) this.coverFailed = true
+    },
+
+    /** 按歌词代次持有行引用，旧层退场的 ref 清理不能删除新层引用。 */
+    createLyricLineRef(index, key) {
+      let previousElement
+      return element => {
+        if (this.isDisposed || key !== this.lyricContentKey) return
+        if (element) {
+          previousElement = element
+          this.lyricLineRefs[index] = element
+        } else if (this.lyricLineRefs[index] === previousElement) {
+          delete this.lyricLineRefs[index]
+        }
+      }
+    },
+
+    /** 新歌及其异步歌词各自定位；不继承上一首的桥段、高亮或长句位移。 */
+    resetTrackLyrics() {
+      this.lyricLineRefs = {}
+      this.scrollingLyricElement = null
+      this.currentLyricIndex = 0
+      this.currentCharIndex = 0
+      this.lastPlaybackTime = null
+      this.lineTransitionDuration = 0
+      this.bridgeInfo = null
+      this.isBridgeActive = false
+      this.bridgeProgress = 0
+      this.styleCache.clear()
+      this.lastProgressValues.clear()
+      this.$nextTick(() => {
+        if (!this.isDisposed && this.visible && !this.pauseUpdates) this.syncDisplayedTime()
+      })
+    },
+
     lockBodyScroll() {
       if (this.previousBodyOverflow === null) this.previousBodyOverflow = document.body.style.overflow
       document.body.style.overflow = 'hidden'

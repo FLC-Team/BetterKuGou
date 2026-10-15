@@ -10,6 +10,38 @@
   -webkit-user-select: none;
 }
 
+/* 音频提前挂载，整栏在第一首歌曲成功加载后入场，切歌不重复播放。 */
+.music-player:not(.player-ready) {
+  visibility: hidden;
+}
+.music-player.player-ready {
+  animation: player-reveal 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.music-player.player-slide-leave-active {
+  animation: player-hide 0.3s cubic-bezier(0.55, 0.06, 0.68, 0.19);
+  pointer-events: none;
+}
+@keyframes player-reveal {
+  from {
+    transform: translateY(calc(100% + 24px));
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+@keyframes player-hide {
+  from {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateY(calc(100% + 24px));
+    opacity: 0;
+  }
+}
+
 /* 网易云选项沿用 BetterKuGou 的底部悬浮胶囊，所有配色仍来自主题包。 */
 .music-player.player-style-netease {
   left: 5%;
@@ -36,7 +68,7 @@
   gap: 12px;
   overflow: hidden;
 }
-.player-style-netease .song-cover {
+.player-style-netease .song-cover-button {
   width: 50px;
   height: 50px;
 }
@@ -214,30 +246,70 @@
 
 /* 左侧：歌曲信息 */
 .song-info-section {
+  --track-enter: translateY(12px);
+  --track-leave: translateY(-10px);
+  --track-duration: 360ms;
   display: flex;
   align-items: center;
   gap: var(--spacing-md);
   min-width: 0;
 }
 
-.song-cover {
+.song-cover-button {
+  position: relative;
   width: 56px;
   height: 56px;
+  padding: 0;
+  border: 0;
   border-radius: var(--radius-sm);
-  object-fit: cover;
+  background: var(--color-background);
+  color: var(--color-text);
+  overflow: hidden;
   flex-shrink: 0;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: box-shadow 0.2s ease;
 }
 
-.song-cover:hover {
-  transform: scale(1.05);
+.song-cover-button:hover {
   box-shadow: var(--shadow-player-cover-hover);
+}
+
+.song-cover-button:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+.song-cover-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.song-cover {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
 }
 
 .song-details {
   flex: 1;
   min-width: 0;
+}
+
+.song-text-viewport {
+  position: relative;
+  overflow: hidden;
+}
+
+.song-title-viewport {
+  --track-delay: 35ms;
+  height: 20px;
+  margin-bottom: 4px;
+}
+
+.song-artist-viewport {
+  --track-delay: 70ms;
+  height: 18px;
 }
 
 .song-name {
@@ -247,7 +319,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin-bottom: 4px;
+  line-height: 20px;
 }
 
 .song-artist {
@@ -256,6 +328,63 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 18px;
+}
+
+/* 方向表达导航，直接选歌向上接入，随机换歌轻缩放，自然续播交叉淡入。 */
+.song-info-section[data-motion='next'] {
+  --track-enter: translateX(22px);
+  --track-leave: translateX(-22px);
+}
+
+.song-info-section[data-motion='previous'] {
+  --track-enter: translateX(-22px);
+  --track-leave: translateX(22px);
+}
+
+.song-info-section[data-motion='shuffle'] {
+  --track-enter: scale(0.88);
+  --track-leave: scale(1.08);
+  --track-duration: 400ms;
+}
+
+.song-info-section[data-motion='auto'] {
+  --track-enter: translateY(0);
+  --track-leave: translateY(0);
+  --track-duration: 480ms;
+}
+
+.song-meta-enter-active,
+.song-meta-leave-active {
+  transition: transform var(--track-duration) cubic-bezier(0.22, 1, 0.36, 1),
+    opacity var(--track-duration) ease;
+  will-change: transform, opacity;
+}
+
+.song-meta-enter-active {
+  transition-delay: var(--track-delay, 0ms);
+}
+
+.song-meta-leave-active {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.song-meta-enter-from {
+  transform: var(--track-enter);
+  opacity: 0;
+}
+
+.song-meta-leave-to {
+  transform: var(--track-leave);
+  opacity: 0;
+}
+
+.song-meta-enter-to,
+.song-meta-leave-from {
+  transform: none;
+  opacity: 1;
 }
 
 /* 中间：播放控制 */
@@ -432,7 +561,7 @@
     padding: var(--spacing-sm) var(--spacing-md);
   }
   
-  .song-cover {
+  .song-cover-button {
     width: 48px;
     height: 48px;
   }
@@ -483,7 +612,7 @@
     grid-column: 1 / -1;
     grid-row: 2;
   }
-  .player-style-netease .song-cover {
+  .player-style-netease .song-cover-button {
     width: 36px;
     height: 36px;
   }
@@ -492,7 +621,17 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .music-player.player-ready, .music-player.player-slide-leave-active {
+    animation: none;
+  }
   .lyric-view-enter-active, .lyric-view-leave-active {
     transition: none;
+  }
+  .song-meta-enter-active, .song-meta-leave-active {
+    transition: none;
+    will-change: auto;
+  }
+  .song-meta-enter-from, .song-meta-leave-to {
+    transform: none;
   }
 }
