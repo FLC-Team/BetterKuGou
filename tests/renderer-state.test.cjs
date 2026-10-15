@@ -103,7 +103,7 @@ function loadSettingsView(store, applyTheme = () => {}) {
     onBeforeUnmount: callback => unmountCallbacks.push(callback)
   })
   const scope = vue.effectScope()
-  const view = scope.run(() => vm.runInContext(`${script}\n;({ localSettings, syncFromStore, persistEditableSettings })`, sandbox))
+  const view = scope.run(() => vm.runInContext(`${script}\n;({ localSettings, syncFromStore, persistEditableSettings, flushEditableSettings, handleExportSettings, handleImportSettings, settingsSaveError, actionMessage, saveState })`, sandbox))
   return {
     ...view,
     dispose() {
@@ -234,7 +234,7 @@ test('artist pagination failures are diagnosed and release the loading guard', a
     .replace('export default', 'module.exports =')
   const diagnostics = []
   const sandbox = vm.createContext({
-    module: { exports: {} }, ContextMenu: {}, nextplayIcon: '',
+    module: { exports: {} }, ContextMenu: {}, ArtworkCover: {}, nextplayIcon: '',
     logger: { error: (...args) => diagnostics.push(args) },
     getArtistAudios: async () => { throw new Error('Network unavailable') }
   })
@@ -335,6 +335,88 @@ test('editing settings preserves live playback sessions and external fields', as
   }
 })
 
+test('failed settings saves keep the draft and a retry commits it without overwriting playback', async () => {
+  const fixture = await queuedSettingsFixture()
+  const view = loadSettingsView(fixture.store)
+  try {
+    view.localSettings.playback.fullscreenLyrics = false
+    const failed = view.flushEditableSettings()
+    await fixture.flush()
+    fixture.requests[0].reject(new Error('Disk full'))
+    assert.equal(await failed, false)
+    assert.equal(view.localSettings.playback.fullscreenLyrics, false)
+    assert.equal(fixture.store.settings.playback.fullscreenLyrics, true)
+    assert.equal(view.saveState.value, 'error')
+    assert.match(view.settingsSaveError.value, /修改仍保留/)
+    const external = fixture.current()
+    external.session.playbackState.currentTime = 42
+    fixture.publish(external)
+    await vue.nextTick()
+    const retry = view.flushEditableSettings()
+    await fixture.flush()
+    fixture.commit(1)
+    assert.equal(await retry, true)
+    assert.equal(fixture.store.settings.playback.fullscreenLyrics, false)
+    assert.equal(fixture.store.settings.session.playbackState.currentTime, 42)
+    assert.equal(view.saveState.value, 'saved')
+  } finally { view.dispose() }
+})
+
+test('settings flush drains edits made during a slow save and accepts normalized server values', async () => {
+  const fixture = await queuedSettingsFixture()
+  const view = loadSettingsView(fixture.store)
+  try {
+    view.localSettings.playback.fullscreenLyrics = false
+    const saving = view.flushEditableSettings()
+    await fixture.flush()
+    view.localSettings.desktopLyrics.fontSize = 'large'
+    await new Promise(resolve => setTimeout(resolve, 540))
+    fixture.commit(0, snapshot => {
+      snapshot.software.defaultPage = 'favorites'
+      snapshot.session.playbackState.currentTime = 64
+      return snapshot
+    })
+    await fixture.flush()
+    assert.equal(fixture.requests.length, 2)
+    fixture.commit(1)
+    assert.equal(await saving, true)
+    assert.equal(fixture.store.settings.desktopLyrics.fontSize, 'large')
+    assert.equal(view.localSettings.software.defaultPage, 'favorites')
+    assert.equal(fixture.store.settings.session.playbackState.currentTime, 64)
+    assert.equal(view.localSettings.session, undefined)
+  } finally { view.dispose() }
+})
+
+test('settings export flushes pending drafts and import/export failures are visible', async () => {
+  const loaded = loadStore()
+  await loaded.initSettings()
+  const store = loaded.useSettingsStore()
+  let exported
+  store.exportSettings = async () => { exported = store.settings.playback.showTranslation; return { path: '/placeholder/settings.json' } }
+  store.importSettings = async () => ({ canceled: true, error: new Error('Invalid JSON') })
+  const view = loadSettingsView(store)
+  try {
+    view.localSettings.playback.showTranslation = false
+    await view.handleExportSettings()
+    assert.equal(exported, false)
+    assert.match(view.actionMessage.value, /已导出/)
+    await view.handleImportSettings()
+    assert.match(view.actionMessage.value, /导入失败/)
+    assert.equal(store.settings.playback.showTranslation, false)
+    view.localSettings.playback.showTranslation = true
+    view.localSettings.playback.showTranslation = false
+    await vue.nextTick()
+    await view.flushEditableSettings()
+    assert.equal(view.saveState.value, 'saved')
+  } finally { view.dispose() }
+  store.exportSettings = async () => ({ canceled: true, error: new Error('Permission denied') })
+  const errorView = loadSettingsView(store)
+  try {
+    await errorView.handleExportSettings()
+    assert.match(errorView.actionMessage.value, /导出失败/)
+  } finally { errorView.dispose() }
+})
+
 test('unsaved theme preview survives playback session revisions without committing the theme', async () => {
   const storeModule = loadStore()
   await storeModule.initSettings()
@@ -432,6 +514,7 @@ test('out-of-order search responses and errors cannot replace newer results', as
     console: quietConsole,
     logger: quietLogger,
     ContextMenu: {},
+    ArtworkCover: {},
     nextplayIcon: '',
     searchMusic: () => {
       const request = deferred()

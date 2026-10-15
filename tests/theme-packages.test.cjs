@@ -42,6 +42,38 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+test('visual adjustments preserve an imported theme and enforce practical input and package boundaries', () => {
+  const packages = loadPackages()
+  const manager = loadModule('src/utils/themeManager.js', { ...packages }, ['createThemePackage'])
+  const adjustments = loadModule('src/themes/themeAdjustments.js', { ...packages, ...manager }, ['adjustTheme', 'resetThemeAdjustments'])
+  const original = packages.normalizeThemePackage(themePackage({ base: 'light', tokens: { '--color-primary': '#123abc', '--shadow-sm': '0 1px 2px #111111' } }))
+  const custom = { theme: original.id, themePackages: [original] }
+  const next = adjustments.adjustTheme(custom, { '--font-size-base': 20, '--lyric-line': 'rgba(1, 2, 3, 0.8)' })
+  const personalized = packages.getThemePackage(next.theme, next)
+  assert.notEqual(next.theme, original.id)
+  assert.equal(next.themePackages.length, 2)
+  assert.equal(personalized.base, 'light')
+  assert.equal(personalized.tokens['--color-primary'], '#123abc')
+  assert.equal(personalized.tokens['--font-size-base'], '20px')
+  assert.deepEqual(plain(next.themePackages[0]), plain(original))
+  const more = adjustments.adjustTheme(next, { '--radius-md': 0 })
+  assert.equal(more.theme, next.theme)
+  assert.equal(more.themePackages.length, 2)
+  assert.equal(packages.getThemePackage(more.theme, more).tokens['--font-size-base'], '20px')
+  for (const patch of [{ '--font-size-xs': 8 }, { '--font-size-base': Infinity }, { '--radius-md': -1 }, { '--lyric-line': 'url(https://example.invalid)' }, { '--nonexistent': '1px' }]) assert.throws(() => adjustments.adjustTheme(next, patch))
+  const reset = adjustments.resetThemeAdjustments(more)
+  const resetTheme = packages.getThemePackage(reset.theme, reset)
+  assert.equal(resetTheme.tokens['--font-size-base'], '16px')
+  assert.equal(resetTheme.tokens['--color-primary'], '#123abc')
+  assert.equal(resetTheme.tokens['--shadow-sm'], '0 1px 2px #111111')
+  const many = { theme: 'light', themePackages: Array.from({ length: 49 }, (_, i) => themePackage({ id: 'installed-' + i })) }
+  const full = adjustments.adjustTheme(many, { '--radius-md': 15 })
+  assert.equal(full.themePackages.length, 50)
+  assert.ok(packages.getThemePackage(full.theme, full))
+  assert.equal(adjustments.adjustTheme(full, { '--radius-md': 16 }).themePackages.length, 50)
+  assert.throws(() => adjustments.adjustTheme({ ...many, themePackages: [...many.themePackages, themePackage({ id: 'personal-adjustments' })] }, { '--radius-md': 12 }), /上限/)
+})
+
 test('theme JSON round trips as a complete portable manifest with inherited base tokens', () => {
   const packages = loadPackages()
   const input = themePackage({

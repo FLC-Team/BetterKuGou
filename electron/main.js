@@ -56,6 +56,8 @@ let currentTrack = {
   cover: null // 可以是文件路径或 dataURL/base64
 }
 let isPlaying = false
+let currentDesktopLyrics = []
+let currentDesktopTime = 0
 // 桌面歌词与灵动岛歌词
 let desktopLyricEnabled = false
 let islandLyricEnabled = false
@@ -243,10 +245,13 @@ function createDesktopLyricWindow() {
   desktopLyricWindow.on('ready-to-show', () => {
     logger.trace('main', '🎵 桌面歌词窗口准备就绪')
     desktopLyricWindow.show()
+    syncDesktopLyricSettings()
     // 发送当前歌曲信息和歌词数据
     if (currentTrack.title !== '暂无播放') {
       desktopLyricWindow.webContents.send('desktop-lyric:song-update', currentTrack)
     }
+    desktopLyricWindow.webContents.send('desktop-lyric:lyric-update', currentDesktopLyrics)
+    desktopLyricWindow.webContents.send('desktop-lyric:time-update', currentDesktopTime)
   })
 
   // 开发环境下打开调试工具
@@ -258,6 +263,34 @@ function createDesktopLyricWindow() {
   updateTrayMenu()
 
   return desktopLyricWindow
+}
+
+/** 桌面歌词只接收已提交的白名单显示偏好，创建和重新打开时应用同一快照。 */
+function syncDesktopLyricSettings(settings) {
+  if (!desktopLyricWindow || desktopLyricWindow.isDestroyed()) return
+  if (!settings) {
+    try { settings = getSettings() } catch (error) {
+      // 托盘可能在初始化完成前打开歌词，先显示默认值，初始化后再由订阅同步。
+      logger.trace('main', '桌面歌词等待设置初始化', error)
+    }
+  }
+  const value = settings?.desktopLyrics || {}
+  desktopLyricWindow.webContents.send('desktop-lyric:settings-update', {
+    fontSize: ['small', 'medium', 'large'].includes(value.fontSize) ? value.fontSize : 'medium',
+    theme: ['classic', 'gradient', 'minimal'].includes(value.theme) ? value.theme : 'classic',
+    locked: typeof value.locked === 'boolean' ? value.locked : false
+  })
+}
+
+/** 广播成功落盘的设置，并同步现有桌面歌词窗口。 */
+function subscribeToSettingsUpdates() {
+  unsubscribeSettings?.()
+  unsubscribeSettings = onSettingsChange((nextSettings) => {
+    BrowserWindow.getAllWindows().forEach((win) => {
+      if (!win.isDestroyed()) win.webContents.send('settings:updated', nextSettings)
+    })
+    syncDesktopLyricSettings(nextSettings)
+  })
 }
 // 存储已注册的全局快捷键映射: accelerator -> action
 const registeredShortcuts = new Map()
@@ -617,11 +650,8 @@ app.whenReady().then(async () => {
     return
   }
 
-  unsubscribeSettings = onSettingsChange((nextSettings) => {
-    BrowserWindow.getAllWindows().forEach((win) => {
-      if (!win.isDestroyed()) win.webContents.send('settings:updated', nextSettings)
-    })
-  })
+  subscribeToSettingsUpdates()
+  syncDesktopLyricSettings(getSettings())
 
   // 启动后端服务器
   backendService.start()
@@ -1086,6 +1116,12 @@ app.on('browser-window-focus', () => {
 // 更新当前歌曲信息: { title, cover }
 ipcMain.on('player:track-update', (_event, payload) => {
   if (payload && typeof payload === 'object') {
+    const trackChanged = (typeof payload.title === 'string' && payload.title !== currentTrack.title) ||
+      (typeof payload.artist === 'string' && payload.artist !== currentTrack.artist)
+    if (trackChanged) {
+      currentDesktopLyrics = []
+      currentDesktopTime = 0
+    }
     if (typeof payload.title === 'string') currentTrack.title = payload.title || '未知歌曲'
     if (payload.cover) currentTrack.cover = payload.cover
     if (typeof payload.artist === 'string') currentTrack.artist = payload.artist
@@ -1095,6 +1131,10 @@ ipcMain.on('player:track-update', (_event, payload) => {
     if (desktopLyricWindow && !desktopLyricWindow.isDestroyed()) {
       logger.trace('main', '🎵 转发歌曲信息到桌面歌词:', payload)
       desktopLyricWindow.webContents.send('desktop-lyric:song-update', payload)
+      if (trackChanged) {
+        desktopLyricWindow.webContents.send('desktop-lyric:lyric-update', [])
+        desktopLyricWindow.webContents.send('desktop-lyric:time-update', 0)
+      }
     }
   }
 })
@@ -1107,6 +1147,8 @@ ipcMain.on('player:playback-state', (_event, state) => {
 
 // 接收并转发歌词数据
 ipcMain.on('player:lyric-update', (_event, lyrics) => {
+  if (!Array.isArray(lyrics)) return
+  currentDesktopLyrics = lyrics
   logger.trace('main', '📡 主进程接收到歌词数据:', lyrics ? lyrics.length : 0, '行')
   if (desktopLyricWindow && !desktopLyricWindow.isDestroyed()) {
     logger.trace('main', '🎵 转发歌词数据到桌面歌词窗口')
@@ -1116,6 +1158,8 @@ ipcMain.on('player:lyric-update', (_event, lyrics) => {
 
 // 接收并转发播放时间
 ipcMain.on('player:time-update', (_event, time) => {
+  if (!Number.isFinite(time) || time < 0) return
+  currentDesktopTime = time
   if (desktopLyricWindow && !desktopLyricWindow.isDestroyed()) {
     // 减少日志频率，避免刷屏
     if (typeof time === 'number' && Math.floor(time / 1000) % 5 === 0) {
@@ -1133,12 +1177,18 @@ ipcMain.on('desktop-lyric:close', () => {
   }
 })
 
-ipcMain.on('desktop-lyric:size-changed', (_event, size) => {
-  logger.trace('main', '🎵 桌面歌词字体大小变更:', size)
-  // 这里可以保存到设置中
+ipcMain.on('desktop-lyric:size-changed', (event, size) => {
+  if (event.sender !== desktopLyricWindow?.webContents || !['small', 'medium', 'large'].includes(size)) return
+  void setSettings({ desktopLyrics: { fontSize: size } }).catch(error => {
+    logger.error('main', '保存桌面歌词大小失败', error)
+    syncDesktopLyricSettings()
+  })
 })
 
-ipcMain.on('desktop-lyric:theme-changed', (_event, theme) => {
-  logger.trace('main', '🎵 桌面歌词主题变更:', theme)
-  // 这里可以保存到设置中
+ipcMain.on('desktop-lyric:theme-changed', (event, theme) => {
+  if (event.sender !== desktopLyricWindow?.webContents || !['classic', 'gradient', 'minimal'].includes(theme)) return
+  void setSettings({ desktopLyrics: { theme } }).catch(error => {
+    logger.error('main', '保存桌面歌词样式失败', error)
+    syncDesktopLyricSettings()
+  })
 })

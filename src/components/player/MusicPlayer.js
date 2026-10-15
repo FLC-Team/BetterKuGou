@@ -4,6 +4,7 @@ import { computed } from 'vue'
 import { getSongUrl, getLyric, getSongDetail } from '../../api/music.js'
 import PlaylistDrawer from './PlaylistDrawer.vue'
 import ContextMenu from '../common/ContextMenu.vue'
+import ArtworkCover from '../common/ArtworkCover.vue'
 import LyricView from './LyricView.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import { useSettingsStore } from '../../stores/settingsStore.js'
@@ -23,6 +24,7 @@ export default {
   components: {
     PlaylistDrawer,
     ContextMenu,
+    ArtworkCover,
     LyricView
   },
   props: {
@@ -59,6 +61,7 @@ export default {
       sound3Icon,
       // 状态
       currentSong: null,
+      trackTransition: 'select',
       isPlaying: false,
       currentTime: 0,
       duration: 0,
@@ -96,8 +99,10 @@ export default {
       trayControlUnsubscribe: null, // 系统托盘控制监听器取消订阅函数
       isDisposed: false,
       pendingSong: null,
+      pendingSongTransition: 'select',
       loadingSongHash: null,
       loadedSongHash: null,
+      audioSourceVersion: 0,
       songRequestId: 0,
       lyricRequestId: 0,
       lyricViewRequestId: 0,
@@ -145,7 +150,8 @@ export default {
     song: {
       handler(newSong) {
         if (!newSong || this.isDisposed) return
-        if (this.currentSong?.hash === newSong.hash && !this.pendingSong &&
+        if (this.currentSong?.hash === newSong.hash && this.loadedSongHash === newSong.hash &&
+            this.$refs.audioPlayer?.getAttribute('src') && !this.pendingSong &&
             !this.isLoadingSong && !this.isSwitchingSong) return
         this.requestSong(newSong)
       },
@@ -320,11 +326,15 @@ export default {
     this.isDragging = false
     this.isComponentReady = false
     this.pendingSong = null
+    this.pendingSongTransition = 'select'
     this.pendingLyricView = false
     this.songRequestId++
+    this.audioSourceVersion++
     this.lyricRequestId++
     this.lyricViewRequestId++
     this.clearPendingTimers()
+    this.isPlaying = false
+    this.loadedSongHash = null
     // 组件销毁前停止 RAF 循环
     this.stopTimeUpdate()
     
@@ -350,11 +360,12 @@ export default {
     contextMenuManager.unregisterMenu(this.closePlayModeMenu)
   },
   methods: {
-    /** 保留最后一次选歌，并使尚未完成的歌曲及歌词响应失效。 */
-    requestSong(song) {
+    /** 将选歌及动效来源一起排队，并使尚未完成的歌曲及歌词响应失效。 */
+    requestSong(song, transition = 'select') {
       if (!song?.hash || this.isDisposed) return Promise.resolve(false)
       this.cancelProgressDrag()
       this.pendingSong = song
+      this.pendingSongTransition = transition
       this.songRequestId++
       this.lyricRequestId++
       return this.drainPendingSong()
@@ -365,46 +376,50 @@ export default {
       if (this.isDisposed || !this.isComponentReady || !this.$refs.audioPlayer ||
           this.isLoadingSong || this.isSwitchingSong || !this.pendingSong) return false
       const song = this.pendingSong
+      const transition = this.pendingSongTransition
       this.pendingSong = null
-      return this.loadSong(song)
+      this.pendingSongTransition = 'select'
+      return this.loadSong(song, transition)
     },
 
     isCurrentSongRequest(requestId) {
       return !this.isDisposed && requestId === this.songRequestId
     },
 
-    /** 获取播放地址后才更新歌曲；过期响应不会写回歌曲、音源或父组件。 */
-    async loadSong(song) {
+    /** 播放成功后提交歌曲；失败或过期时先恢复已提交音源，再处理最新选歌。 */
+    async loadSong(song, transition = 'select') {
       const audioEl = this.$refs.audioPlayer
       if (!song?.hash || this.isDisposed || !audioEl || this.isLoadingSong) return false
       this.cancelProgressDrag()
 
-      if (this.currentSong?.hash === song.hash && this.loadedSongHash === song.hash && audioEl.getAttribute('src')) {
-        const songIndex = this.playlist.findIndex(item => item?.hash === song.hash)
-        if (songIndex !== -1) this.currentIndex = songIndex
-        try {
-          const shouldReplay = audioEl.ended || audioEl.paused
-          if (audioEl.ended) audioEl.currentTime = 0
-          if (shouldReplay) await audioEl.play()
-          return !this.isDisposed
-        } catch (error) {
-          logger.error('MusicPlayer', '重播歌曲失败:', error)
-          return false
-        }
-      }
-
+      const replaying = this.currentSong?.hash === song.hash &&
+        this.loadedSongHash === song.hash && audioEl.getAttribute('src')
       this.isLoadingSong = true
       this.loadingSongHash = song.hash
       const requestId = ++this.songRequestId
-      this.lyricRequestId++
-      const previousSong = this.currentSong
-      const previousIndex = this.currentIndex
-      const previousSource = audioEl.getAttribute('src')
-      const previousTime = audioEl.currentTime
-      const wasPlaying = this.isPlaying
-      let sourceChanged = false
+      let sourceVersion = this.audioSourceVersion
+      const ownsSource = () => !this.isDisposed && this.$refs.audioPlayer === audioEl &&
+        this.audioSourceVersion === sourceVersion
+      let previousPlayback = null
+      let committed = false
+      let playAttempted = false
+      let failed = false
 
       try {
+        if (replaying) {
+          const shouldReplay = audioEl.ended || audioEl.paused
+          if (audioEl.ended) audioEl.currentTime = 0
+          if (shouldReplay) {
+            playAttempted = true
+            await audioEl.play()
+          }
+          if (!this.isCurrentSongRequest(requestId) || !ownsSource()) return false
+          const songIndex = this.playlist.findIndex(item => item?.hash === song.hash)
+          if (songIndex !== -1) this.currentIndex = songIndex
+          return true
+        }
+
+        this.lyricRequestId++
         let audioDetail = song
         if (!song.album_audio_id) {
           const detailResponse = await getSongDetail(song.hash)
@@ -423,15 +438,23 @@ export default {
         if (typeof playUrl !== 'string' || !playUrl) throw new Error('播放地址格式错误')
         if (playUrl.startsWith('http://')) playUrl = playUrl.replace('http://', 'https://')
 
-        audioEl.src = playUrl
-        this.loadedSongHash = song.hash
-        sourceChanged = true
-        await audioEl.play()
-        if (!this.isCurrentSongRequest(requestId)) {
-          audioEl.pause()
-          return false
+        // 地址请求期间旧歌仍会播放，在替换前保存其最新位置和播放状态。
+        previousPlayback = {
+          source: this.loadedSongHash === this.currentSong?.hash ? audioEl.getAttribute('src') : null,
+          hash: this.loadedSongHash,
+          time: audioEl.currentTime,
+          duration: this.duration,
+          playing: this.isPlaying
         }
+        sourceVersion = ++this.audioSourceVersion
+        audioEl.src = playUrl
+        playAttempted = true
+        await audioEl.play()
+        if (!this.isCurrentSongRequest(requestId) || !ownsSource()) return false
 
+        committed = true
+        this.loadedSongHash = song.hash
+        this.trackTransition = transition
         this.currentSong = song
         const songIndex = this.playlist.findIndex(item => item?.hash === song.hash)
         if (songIndex !== -1) this.currentIndex = songIndex
@@ -448,28 +471,47 @@ export default {
         return true
       } catch (error) {
         if (!this.isCurrentSongRequest(requestId)) return false
+        failed = true
         logger.error('MusicPlayer', '加载歌曲失败:', error)
         this.showError(`加载歌曲失败: ${error.response?.data?.msg || error.message}`)
-        this.currentSong = previousSong
-        this.currentIndex = previousIndex
-        if (sourceChanged) {
-          if (previousSource) {
-            audioEl.src = previousSource
-            this.loadedSongHash = previousSong?.hash || null
+        return false
+      } finally {
+        // 请求代次只决定是否提交；音源代次保证停止/卸载后旧任务不能恢复播放。
+        if (!committed && previousPlayback && ownsSource()) {
+          audioEl.pause()
+          sourceVersion = ++this.audioSourceVersion
+          if (previousPlayback.source) {
+            audioEl.src = previousPlayback.source
+            this.loadedSongHash = previousPlayback.hash
+            this.currentTime = previousPlayback.time
+            this.duration = previousPlayback.duration
             try {
-              audioEl.currentTime = previousTime
-              if (wasPlaying) await audioEl.play()
+              audioEl.currentTime = previousPlayback.time
+              if (previousPlayback.playing) await audioEl.play()
             } catch (restoreError) {
-              logger.error('MusicPlayer', '恢复上一首歌曲失败:', restoreError)
+              if (ownsSource()) {
+                audioEl.pause()
+                logger.error('MusicPlayer', '恢复上一首歌曲失败:', restoreError)
+              }
             }
           } else {
             audioEl.removeAttribute('src')
             this.loadedSongHash = null
             audioEl.load()
+            this.currentTime = 0
+            this.duration = 0
           }
         }
-        return false
-      } finally {
+        if (playAttempted && !ownsSource() && !audioEl.getAttribute('src')) audioEl.pause()
+        // App 用 song 同时传递选歌与保存会话，最终失败后回写实际保留的歌曲。
+        if (failed && !committed && this.isCurrentSongRequest(requestId) && !this.pendingSong &&
+            this.currentSong && this.song?.hash === song.hash && this.currentSong.hash !== song.hash) {
+          this.$emit('song-changed', this.currentSong)
+        }
+        if (!committed && ownsSource() && this.isCurrentSongRequest(requestId) && !this.pendingSong &&
+            this.currentSong && this.loadedSongHash === this.currentSong.hash && !this.currentLyrics) {
+          this.loadLyric(this.currentSong)
+        }
         this.isLoadingSong = false
         this.loadingSongHash = null
         if (!this.isDisposed) this.$nextTick(() => this.drainPendingSong())
@@ -500,9 +542,12 @@ export default {
     stopPlayback() {
       this.cancelProgressDrag()
       this.songRequestId++
+      this.audioSourceVersion++
       this.lyricRequestId++
       this.lyricViewRequestId++
       this.pendingSong = null
+      this.pendingSongTransition = 'select'
+      this.trackTransition = 'select'
       this.pendingLyricView = false
       const audioEl = this.$refs.audioPlayer
       if (audioEl) {
@@ -1061,7 +1106,7 @@ export default {
             continue
           }
           
-          const success = await this.loadSong(nextSong)
+          const success = await this.loadSong(nextSong, 'previous')
           if (this.isDisposed || this.pendingSong) return
           if (success) {
             logger.trace('MusicPlayer', '上一曲加载成功:', nextSong.name)
@@ -1096,8 +1141,10 @@ export default {
     },
     
     // 下一曲
-    async playNext() {
+    async playNext(source = 'next') {
       if (this.playlist.length === 0) return
+      // 按钮事件与系统控制都归入手动下一首；自动续播保留独立过渡。
+      const transition = source === 'auto' ? 'auto' : 'next'
       
       // 防止并发切歌，使用更短的锁定时间
       if (this.isSwitchingSong) {
@@ -1149,7 +1196,7 @@ export default {
           this.currentIndex = songIndex
           logger.trace('MusicPlayer', '播放"下一首播放"队列中的歌曲:', nextSong.name, '索引:', this.currentIndex)
           
-          const success = await this.loadSong(nextSong)
+          const success = await this.loadSong(nextSong, transition)
           if (this.isDisposed || this.pendingSong) return
           if (success) {
             logger.trace('MusicPlayer', '下一首播放成功:', nextSong.name)
@@ -1240,7 +1287,8 @@ export default {
           continue
         }
         
-        const success = await this.loadSong(nextSong)
+        const success = await this.loadSong(nextSong,
+          transition === 'next' && this.playMode === 'shuffle' ? 'shuffle' : transition)
           if (this.isDisposed || this.pendingSong) return
         if (success) {
           logger.trace('MusicPlayer', '下一曲加载成功:', nextSong.name)
@@ -1335,7 +1383,7 @@ export default {
           logger.error('MusicPlayer', '单曲循环重播失败:', error)
         })
       } else {
-        this.playNext()
+        this.playNext('auto')
       }
     },
     
@@ -1624,7 +1672,7 @@ export default {
       if (wasCurrentSong) {
         const nextIndex = index < updatedPlaylist.length ? index : 0
         this.currentIndex = nextIndex
-        await this.requestSong(updatedPlaylist[nextIndex])
+        await this.requestSong(updatedPlaylist[nextIndex], 'next')
       } else {
         const currentIndex = updatedPlaylist.findIndex(song => song?.hash === this.currentSong?.hash)
         if (currentIndex !== -1) this.currentIndex = currentIndex

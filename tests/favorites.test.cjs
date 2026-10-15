@@ -35,6 +35,7 @@ function loadFavorites({ props = {}, api = {}, cache = {} } = {}) {
   const sandbox = vm.createContext({
     module: { exports: {} },
     ContextMenu: {},
+    ArtworkCover: {},
     nextplayIcon: 'nextplay.svg',
     contextMenuManager: menuManager,
     logger,

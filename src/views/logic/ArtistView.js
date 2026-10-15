@@ -1,12 +1,15 @@
 
+import ArtworkCover from '../../components/common/ArtworkCover.vue'
 import { logger } from '../../utils/logger.js'
 import { getArtistDetail, getArtistAudios, getArtistAlbums, followArtist, unfollowArtist, findArtistByName, getImagesByHash, getAlbumInfo } from '../../api/music.js'
 
 export default {
+  components: { ArtworkCover },
   name: 'ArtistView',
   props: {
     artistId: { type: [String, Number], default: null },
-    artistName: { type: String, default: '' }
+    artistName: { type: String, default: '' },
+    currentSong: { type: Object, default: null }
   },
   emits: ['play', 'navigate'],
   data() {

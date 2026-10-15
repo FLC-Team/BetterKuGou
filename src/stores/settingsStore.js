@@ -13,6 +13,11 @@ const baseDefaultSettings = Object.freeze({
     enqueueFullPlaylist: true,
     showTranslation: true // 默认显示翻译
   },
+  desktopLyrics: {
+    fontSize: 'medium',
+    theme: 'classic',
+    locked: false
+  },
   download: {
     downloadPath: '',
     cachePath: '',
@@ -44,6 +49,7 @@ const baseDefaultSettings = Object.freeze({
   },
   software: {
     autoLaunch: false,
+    minimizeToTray: false,
     restorePlaylist: true,
     restorePlaybackState: true,
     defaultPage: 'home'
@@ -225,7 +231,16 @@ function migrateSettings(rawSettings, defaults) {
     migrated = mergeDeep(cloneDeep(defaults), migrated)
   }
 
-  return mergeDeep(cloneDeep(defaults), migrated)
+  const normalized = mergeDeep(cloneDeep(defaults), migrated)
+  const desktop = normalized.desktopLyrics || {}
+  if (!normalized.playback || typeof normalized.playback !== 'object' || Array.isArray(normalized.playback)) normalized.playback = cloneDeep(defaults.playback)
+  normalized.playback.showTranslation = typeof normalized.playback.showTranslation === 'boolean' ? normalized.playback.showTranslation : true
+  normalized.desktopLyrics = {
+    fontSize: ['small', 'medium', 'large'].includes(desktop.fontSize) ? desktop.fontSize : 'medium',
+    theme: ['classic', 'gradient', 'minimal'].includes(desktop.theme) ? desktop.theme : 'classic',
+    locked: typeof desktop.locked === 'boolean' ? desktop.locked : false
+  }
+  return normalized
 }
 
 async function initSettings() {

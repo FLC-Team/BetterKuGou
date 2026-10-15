@@ -2,10 +2,13 @@
   <div class="lyric-view" v-if="visible" @click="closeLyricView" @keydown.esc.stop="closeLyricView" role="dialog" aria-label="歌曲歌词">
     <!-- 模糊背景 -->
     <div class="lyric-background">
-      <img v-if="coverUrl"
-           :src="coverUrl"
-           alt=""
-           class="background-image">
+      <Transition name="track-background" @before-leave="retireTrackLayer">
+        <img v-if="coverUrl"
+             :key="coverUrl"
+             :src="coverUrl"
+             alt=""
+             class="background-image">
+      </Transition>
       <div class="background-overlay"></div>
     </div>
 
@@ -15,22 +18,35 @@
       <div class="album-section">
         <!-- 专辑封面 -->
         <div class="album-cover-wrapper">
-          <img v-if="coverUrl"
-               :src="coverUrl"
-               alt="专辑封面" 
-               @error="coverFailed = true"
-               class="album-cover">
-          <div v-else class="album-cover-placeholder">
-            <svg viewBox="0 0 1024 1024" width="120" height="120" fill="currentColor">
-              <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64z"/>
-            </svg>
-          </div>
+          <Transition :name="trackTransitionName" @before-leave="retireTrackLayer">
+            <div :key="song?.hash || 'empty'" class="track-piece track-cover">
+              <img v-if="coverUrl"
+                   :src="coverUrl"
+                   :data-track-key="song?.hash"
+                   alt="专辑封面"
+                   @error="handleCoverError"
+                   class="album-cover">
+              <div v-else class="album-cover-placeholder">
+                <svg viewBox="0 0 1024 1024" width="120" height="120" fill="currentColor">
+                  <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64z"/>
+                </svg>
+              </div>
+            </div>
+          </Transition>
         </div>
 
         <!-- 歌曲信息 -->
         <div class="song-info">
-          <h2 class="song-title">{{ getSongName(song) }}</h2>
-          <p class="song-artist">{{ getSingerNames(song) }}</p>
+          <div class="track-text-stage">
+            <Transition :name="trackTransitionName" @before-leave="retireTrackLayer">
+              <h2 :key="song?.hash || 'empty'" class="song-title track-piece track-title">{{ getSongName(song) }}</h2>
+            </Transition>
+          </div>
+          <div class="track-text-stage">
+            <Transition :name="trackTransitionName" @before-leave="retireTrackLayer">
+              <p :key="song?.hash || 'empty'" class="song-artist track-piece track-artist">{{ getSingerNames(song) }}</p>
+            </Transition>
+          </div>
         </div>
 
         <div class="playback-panel">
@@ -119,11 +135,13 @@
 
       <!-- 右侧歌词 -->
       <div class="lyrics-section">
-        <div class="lyrics-container" ref="lyricsContainer">
+        <Transition :name="trackTransitionName" @before-leave="retireTrackLayer">
+        <div :key="lyricContentKey" class="lyrics-container track-piece track-lyrics" ref="lyricsContainer">
+          <div v-if="!lyrics" class="lyric-loading" role="status">正在加载歌词…</div>
           
           <!-- 所有歌词行，通过transform控制位置实现动画 -->
           <div 
-            v-for="(line, index) in parsedLyrics" 
+            v-for="(line, index) in (lyrics ? parsedLyrics : [])"
             :key="index"
             class="lyric-line"
             :class="{ 
@@ -133,7 +151,7 @@
               'has-translation': showTranslation && line.translation
             }"
             :style="getLyricLineStyle(index)"
-            :ref="el => { if (el) lyricLineRefs[index] = el; else delete lyricLineRefs[index] }"
+            :ref="createLyricLineRef(index, lyricContentKey)"
           >
             <!-- 主要歌词（原文） -->
             <div class="main-lyric">
@@ -196,7 +214,7 @@
           <!-- 桥段进度条（覆盖在正在播放的歌词位置） -->
           <transition name="bridge-fade">
             <div 
-              v-if="isBridgeActive && bridgeInfo" 
+              v-if="lyrics && isBridgeActive && bridgeInfo"
               class="bridge-progress-bar overlay"
               :style="{
                 transform: `translate(-50%, -50%) scaleX(${Math.max(0.05, (100 - bridgeProgress) / 100)})`,
@@ -206,6 +224,7 @@
           </transition>
 
         </div>
+        </Transition>
       </div>
 
       <!-- 关闭按钮 -->
