@@ -1,4 +1,14 @@
 .favorite-view .collection-art { transform: rotate(-3deg); }
 .favorite-view .collection-copy { padding-block: 6px; }
 .favorite-view .sort-button:hover { color: var(--color-primary); }
+.favorite-view .playlist-search { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 18px; margin-bottom: 18px; }
+.favorite-view .playlist-search-field { display: flex; align-items: center; gap: 9px; flex: 1 1 280px; max-width: 460px; min-width: 0; padding: 0 12px; min-height: 40px; border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text-secondary); background: var(--color-background-light); }
+.favorite-view .playlist-search-field:focus-within { border-color: var(--color-primary); }
+.favorite-view .playlist-search-field > svg { flex: 0 0 auto; }
+.favorite-view .playlist-search-field input { flex: 1; min-width: 0; width: 100%; border: 0; outline: 0; background: transparent; color: var(--color-text); font: inherit; font-size: var(--font-size-xs); line-height: 1.6; }
+.favorite-view .playlist-search-field input::placeholder { color: var(--color-text-tertiary); }
+.favorite-view .playlist-search-field input::-webkit-search-cancel-button { display: none; }
+.favorite-view .clear-search { flex: 0 0 26px; height: 28px; border-radius: var(--radius-sm); color: var(--color-text-secondary); font-size: 20px; }
+.favorite-view .clear-search:hover { color: var(--color-primary); }
+.favorite-view .playlist-search-count { color: var(--color-text-secondary); font-size: calc(var(--font-size-xs) - 1px); }
 @media (prefers-reduced-motion: reduce) { .favorite-view .collection-art { transform: none; } }

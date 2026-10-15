@@ -58,6 +58,7 @@ let currentTrack = {
 let isPlaying = false
 let currentDesktopLyrics = []
 let currentDesktopTime = 0
+let desktopAppearanceGeneration = 0
 // 桌面歌词与灵动岛歌词
 let desktopLyricEnabled = false
 let islandLyricEnabled = false
@@ -267,6 +268,7 @@ function createDesktopLyricWindow() {
 
 /** 桌面歌词只接收已提交的白名单显示偏好，创建和重新打开时应用同一快照。 */
 function syncDesktopLyricSettings(settings) {
+  const generation = ++desktopAppearanceGeneration
   if (!desktopLyricWindow || desktopLyricWindow.isDestroyed()) return
   if (!settings) {
     try { settings = getSettings() } catch (error) {
@@ -275,10 +277,27 @@ function syncDesktopLyricSettings(settings) {
     }
   }
   const value = settings?.desktopLyrics || {}
-  desktopLyricWindow.webContents.send('desktop-lyric:settings-update', {
+  const preferences = {
     fontSize: ['small', 'medium', 'large'].includes(value.fontSize) ? value.fontSize : 'medium',
     theme: ['classic', 'gradient', 'minimal'].includes(value.theme) ? value.theme : 'classic',
     locked: typeof value.locked === 'boolean' ? value.locked : false
+  }
+  const custom = settings?.custom
+  const hasDesktopStyles = Array.isArray(custom?.themePackages) && custom.themePackages.some(theme => theme?.id === custom.theme && theme.desktopCss)
+  // Ordinary preference/session broadcasts must not briefly remove an active appearance sheet.
+  if (custom && !hasDesktopStyles) preferences.appearance = null
+  desktopLyricWindow.webContents.send('desktop-lyric:settings-update', preferences)
+  // Builtins retain the independent classic/gradient/minimal appearance. A selected package may add desktop rules.
+  if (!hasDesktopStyles) return
+  const win = desktopLyricWindow
+  loadThemeCatalog().then(catalog => {
+    if (generation !== desktopAppearanceGeneration || win !== desktopLyricWindow || win.isDestroyed()) return
+    const theme = catalog.getThemePackage(custom.theme, custom)
+    const appearance = theme?.desktopCss ? { tokens: theme.tokens, css: catalog.compileThemeCss(theme.desktopCss, 'desktop') } : null
+    win.webContents.send('desktop-lyric:settings-update', { ...preferences, appearance })
+  }).catch(error => {
+    logger.warn('main', '桌面歌词主题应用失败，保留默认外观', error)
+    if (generation === desktopAppearanceGeneration && win === desktopLyricWindow && !win.isDestroyed()) win.webContents.send('desktop-lyric:settings-update', { ...preferences, appearance: null })
   })
 }
 

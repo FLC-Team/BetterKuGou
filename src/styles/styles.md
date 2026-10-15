@@ -17,6 +17,7 @@
 
 - `src/main.js` 只导入全局入口，避免散落的重复样式引入。
 - 主题管理器在 documentElement 设置 CSS 变量，组件沿同一变量体系取值。
+- 高级主题 CSS 经共享 AST 校验与作用域编译后由 themeManager 管理唯一 style；区域编辑沿同一 CSS 文本，覆盖页面 scoped 样式，恢复/编辑入口被排除。既有窗口结构令牌仍在 variables.css，用户可通过区域或高级 CSS 调整已存在元素的布局。
 - 视觉变量白名单与默认值以 `themes/default-dark.json` 为准，格式、分享和制作说明见 [themes.md](../themes/themes.md)。
 - 页面专用样式保留 scoped，不在全局入口堆积单页选择器。
 - 公共加载状态使用 CSS spinner，应用 Logo 由 public 维护。

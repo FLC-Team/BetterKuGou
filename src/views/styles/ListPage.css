@@ -36,6 +36,8 @@
 .list-page .col-title { display: flex; align-items: center; gap: 13px; min-width: 0; }
 .list-page .song-cover { width: 46px; height: 46px; flex: 0 0 46px; border-radius: var(--radius-sm); object-fit: cover; }
 .list-page .song-info { min-width: 0; flex: 1; }
+.list-page .song-title-line { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.list-page .song-title-line > .song-name { flex: 0 1 auto; width: auto; min-width: 0; }
 .list-page .song-name { display: block; width: 100%; color: var(--color-text); font-size: calc(var(--font-size-sm) - 1px); font-weight: 500; line-height: 1.7; text-align: left; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; border-radius: 3px; }
 .list-page button.song-name:hover { color: var(--color-primary); }
 .list-page .quality-badge { display: inline; margin-left: 6px; padding: 0 3px; border: 1px solid color-mix(in srgb, var(--color-primary) 50%, transparent); border-radius: 3px; font-size: 8px; font-weight: 500; color: var(--color-primary); vertical-align: 1px; }

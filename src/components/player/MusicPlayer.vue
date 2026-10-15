@@ -150,6 +150,12 @@
 
       <!-- 右侧:音量和其他控制 -->
       <div class="player-extras-section">
+        <div class="quality-control" :title="`音质偏好，${qualityStatus}；可用音质取决于歌曲与账号权限`">
+          <select aria-label="音质偏好" :value="qualityPreference" @change="changeQuality($event.target.value)" @keydown.stop>
+            <option v-for="option in qualityOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
+          <span class="quality-current" role="status">{{ qualityStatus }}</span>
+        </div>
         <!-- 默认样式：显示播放模式按钮 -->
         <button 
           v-if="playerStyle !== 'netease'"
@@ -184,6 +190,12 @@
           <img :src="playlistIcon" alt="播放列表" width="18" height="18" />
         </button>
       </div>
+    </div>
+
+    <div v-if="qualityFeedback" class="quality-feedback" role="status">
+      <span>{{ qualityFeedback }}</span>
+      <button type="button" @click="retryQualityChange">重试</button>
+      <button type="button" aria-label="关闭音质提示" @click="qualityMessage = ''; qualitySaveMessage = ''">×</button>
     </div>
 
     <!-- 音频元素 -->
@@ -234,6 +246,10 @@
           :play-mode="playMode"
           :is-favorite="isFavorite"
           :pause-updates="isLoadingSong || isSwitchingSong"
+          :quality-options="qualityOptions"
+          :quality-preference="qualityPreference"
+          :quality-status="qualityStatus"
+          :quality-message="qualityFeedback"
           @close="closeLyrics"
           @toggle-play="togglePlay"
           @previous="playPrevious"
@@ -241,6 +257,8 @@
           @toggle-play-mode="cyclePlayMode"
           @toggle-favorite="toggleFavorite"
           @seek="handleSeek"
+          @change-quality="changeQuality"
+          @retry-quality="retryQualityChange"
         />
       </Transition>
     </Teleport>

@@ -57,10 +57,13 @@
           <div class="col-title">
             <ArtworkCover :src="getCoverUrl(song.Image || song.img) || ''" class="song-cover" />
             <div class="song-info">
-              <button type="button" class="song-name" @click.stop="playSong(song)" @dblclick.stop :title="getSongName(song)">
-                {{ getSongName(song) }}
-                <span v-if="(song.FileSize && song.FileSize >= 5000000) || (song.filesize && song.filesize >= 5000000)" class="quality-badge">SQ</span>
-              </button>
+              <div class="song-title-line">
+                <button type="button" class="song-name" @click.stop="playSong(song)" @dblclick.stop :title="getSongName(song)">
+                  {{ getSongName(song) }}
+                  <span v-if="(song.FileSize && song.FileSize >= 5000000) || (song.filesize && song.filesize >= 5000000)" class="quality-badge">SQ</span>
+                </button>
+                <SongBadges :song="song" />
+              </div>
               <button type="button" class="artist-link mobile-artist" @click.stop="goArtist(song)" @dblclick.stop>{{ getSingerNames(song) }}</button>
             </div>
           </div>
@@ -98,6 +101,7 @@
 
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
+import SongBadges from '../components/common/SongBadges.vue'
 import { logger } from '../utils/logger.js'
 
 import { searchMusic } from '../api/music.js'
@@ -108,6 +112,7 @@ export default {
   name: 'SearchView',
   components: {
     ArtworkCover,
+    SongBadges,
     ContextMenu
   },
   emits: ['play', 'play-all', 'play-next', 'navigate'],

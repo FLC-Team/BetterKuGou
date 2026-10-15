@@ -13,5 +13,10 @@ export const {
   parseThemePackage,
   serializeThemePackage,
   listThemePackages,
-  getThemePackage
+  getThemePackage,
+  validateThemeCss,
+  compileThemeCss,
+  validateThemeSelector,
+  getThemeCssRule,
+  updateThemeCssRule
 } = createThemeCatalog(defaultDark, defaultLight)

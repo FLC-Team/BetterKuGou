@@ -12,6 +12,7 @@ function createArtist(t, hotRequest = () => Promise.reject(new Error('temporary 
   const failures = []
   const sandbox = {
     ArtworkCover: {},
+    SongBadges: {},
     process: { env: { NODE_ENV: 'test' } },
     logger: {
       trace() {},
@@ -113,6 +114,7 @@ function createHome(t, songs = []) {
     return promise
   }
   const sandbox = {
+    SongBadges: {},
     logger: { trace() {}, error() {} },
     Date: class { toDateString() { return currentDay } },
     localStorage: { getItem: key => memory.get(key) ?? null },

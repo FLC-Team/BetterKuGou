@@ -82,7 +82,12 @@
 .control-btn.play-btn:hover { background: var(--lyric-play-hover); }
 .favorite-btn.active { color: var(--lyric-favorite); }
 .mode-icon { display: block; width: 20px; height: 20px; background: currentColor; mask: var(--mode-icon) center / contain no-repeat; -webkit-mask: var(--mode-icon) center / contain no-repeat; }
-.lyric-tools { display: flex; justify-content: center; margin-top: 12px; }
+.lyric-tools { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.lyric-quality { display: inline-flex; align-items: center; gap: 6px; color: var(--lyric-text-secondary); font-size: 12px; }
+.lyric-quality select { max-width: 140px; padding: 4px 6px; border: 1px solid var(--lyric-track); border-radius: 4px; background: var(--lyric-background); color: var(--lyric-text); font: inherit; cursor: pointer; }
+.lyric-quality select:focus-visible, .lyric-quality-status button:focus-visible { outline: 2px solid var(--lyric-text); outline-offset: 3px; }
+.lyric-quality-status { min-height: 16px; margin-top: 5px; text-align: center; color: var(--lyric-text-muted); font-size: 11px; line-height: 1.5; }
+.lyric-quality-status button { margin-left: 8px; background: transparent; color: var(--lyric-text); cursor: pointer; }
 .translation-btn { width: auto; height: 28px; gap: 6px; padding: 0 10px; border-radius: 4px; font-size: 12px; }
 .translation-btn svg { width: 15px; height: 15px; }
 .translation-btn.active { color: var(--lyric-text); background: var(--lyric-active-hover); }

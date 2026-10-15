@@ -17,6 +17,7 @@
 - 主题包列表保存在 `custom.themePackages`，选择的包 ID 使用原 `custom.theme`；旧配置自动补全空列表，不迁移或删除已有配色。
 - `custom.themeAdjustmentId` 仅标识设置页创建的个性主题包；精调保留原包并复用该 ID 更新，不创建另一套主题来源。
 - `desktopLyrics` 默认 fontSize=medium、theme=classic、locked=false；双端补全旧配置，只接收 small/medium/large、classic/gradient/minimal 与布尔锁定。歌词翻译 showTranslation 默认 true，非布尔导入值回退默认，合法 false 保留。
+- `playback.quality` 默认字符串 128；双端仅接收 128/320/flac/high，补全旧配置，非法导入值回退 128。它表示所选音质偏好，当前音源的真实格式和码率由播放器独立维护。
 - `updateSettings()` 默认合并，`overwriteSettings()` 替换，均保留响应式对象引用。
 - `saveSessionSnapshot()` 合并队列、当前歌曲、索引及播放时间、音量和模式。
 
@@ -39,6 +40,7 @@
 | 配置 | 实际消费与设置入口 |
 | --- | --- |
 | playback.fullscreenLyrics / enqueueFullPlaylist / showTranslation | App 自动歌词、列表入队和 LyricView 翻译；设置“播放与歌词”，翻译也可在全屏歌词内切换。 |
+| playback.quality | 播放器请求的普通音质偏好；底栏与全屏歌词快速切换当前歌，设置“播放与歌词”选择后续歌曲偏好。 |
 | desktopLyrics.fontSize / theme / locked | 独立歌词窗口字号、配色和锁定；设置与窗口现有工具栏双向同步，锁定在设置中恢复。 |
 | custom.playerStyle / theme / customTheme / themePackages | 播放栏布局、完整主题及旧三色配色；设置“外观与主题”，精调只编辑已有消费的视觉令牌。 |
 | shortcuts.enableGlobal / keys | App 与主进程快捷键；设置“快捷键”，注册探测只检查可用性。 |

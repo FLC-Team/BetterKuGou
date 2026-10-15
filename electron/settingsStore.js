@@ -89,6 +89,7 @@ function ensureSchema(settings) {
   const desktop = isPlainObject(normalized.desktopLyrics) ? normalized.desktopLyrics : {}
   if (!isPlainObject(normalized.playback)) normalized.playback = cloneDeep(defaultsCache.playback)
   normalized.playback.showTranslation = typeof normalized.playback.showTranslation === 'boolean' ? normalized.playback.showTranslation : true
+  normalized.playback.quality = ['128', '320', 'flac', 'high'].includes(normalized.playback.quality) ? normalized.playback.quality : '128'
   normalized.desktopLyrics = {
     fontSize: ['small', 'medium', 'large'].includes(desktop.fontSize) ? desktop.fontSize : 'medium',
     theme: ['classic', 'gradient', 'minimal'].includes(desktop.theme) ? desktop.theme : 'classic',
@@ -159,7 +160,8 @@ function createDefaults(app) {
     playback: {
       fullscreenLyrics: true,
       enqueueFullPlaylist: true,
-      showTranslation: true
+      showTranslation: true,
+      quality: '128'
     },
     desktopLyrics: {
       fontSize: 'medium',

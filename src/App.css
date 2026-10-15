@@ -53,6 +53,7 @@
 .page-switch-leave-to { opacity: 0; }
 
 @media (max-width: 600px) {
+  .has-player { --page-player-space: 120px; }
   .has-floating-player { --page-player-space: 140px; }
 }
 

@@ -457,7 +457,15 @@
   align-items: center;
   justify-content: flex-end;
   gap: var(--spacing-md);
+  min-width: 0;
 }
+
+.quality-control { display: flex; flex-direction: column; align-items: center; min-width: 0; gap: 3px; }
+.quality-control select { max-width: 120px; padding: 4px 5px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-background-light); color: var(--color-text); font: inherit; font-size: 11px; cursor: pointer; }
+.quality-control select:focus-visible, .quality-feedback button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.quality-current { font-size: 10px; color: var(--color-text-secondary); white-space: nowrap; }
+.quality-feedback { position: absolute; right: 12px; bottom: calc(100% + 10px); display: flex; align-items: center; gap: 10px; max-width: min(540px, calc(100vw - 32px)); padding: 10px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-background-light); color: var(--color-text); box-shadow: var(--shadow-playlist); font-size: 12px; line-height: 1.5; }
+.quality-feedback button { flex-shrink: 0; background: transparent; color: var(--color-primary); cursor: pointer; padding: 3px; }
 
 .icon-btn {
   width: 32px;
@@ -573,6 +581,8 @@
   .volume-control {
     display: none;
   }
+  .player-extras-section { gap: 4px; }
+  .quality-control select { max-width: 105px; }
 }
 
 /* 歌词背景作为完整窗口从底部滑入，反向滑出。 */
@@ -598,6 +608,14 @@
   }
 }
 @media (max-width: 600px) {
+  .music-player:not(.player-style-netease) .player-main {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 12px;
+  }
+  .music-player:not(.player-style-netease) .player-controls-section {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
   .music-player.player-style-netease {
     left: 12px;
     right: 12px;

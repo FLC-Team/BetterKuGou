@@ -40,7 +40,10 @@
 
           <!-- 歌曲信息 -->
           <div class="song-info">
-            <div class="song-name">{{ getSongName(song) }}</div>
+            <div class="song-title-line">
+              <div class="song-name">{{ getSongName(song) }}</div>
+              <SongBadges :song="song" />
+            </div>
             <div class="song-artist">{{ getSingerNames(song) }}</div>
           </div>
 
@@ -107,12 +110,14 @@ import { logger } from '../../utils/logger.js'
 
 import { TransitionGroup } from 'vue'
 import ContextMenu from '../common/ContextMenu.vue'
+import SongBadges from '../common/SongBadges.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 
 export default {
   name: 'PlaylistDrawer',
   components: {
     ContextMenu,
+    SongBadges,
     TransitionGroup
   },
   props: {
@@ -621,6 +626,9 @@ export default {
   white-space: nowrap;
   margin-bottom: 4px;
 }
+
+.song-title-line { display: flex; align-items: center; gap: 7px; min-width: 0; margin-bottom: 4px; }
+.song-title-line > .song-name { min-width: 0; margin-bottom: 0; }
 
 .song-artist {
   font-size: var(--font-size-xs);

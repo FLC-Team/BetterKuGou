@@ -111,10 +111,17 @@
               <span class="mode-icon" :style="playModeIconStyle" aria-hidden="true"></span>
             </button>
           </div>
-          <div v-if="hasTranslation" class="lyric-tools">
+          <div class="lyric-tools">
+            <label class="lyric-quality" title="音质偏好；可用音质取决于歌曲与账号权限">
+              <span>音质</span>
+              <select aria-label="全屏歌词音质偏好" :value="qualityPreference" @change="$emit('change-quality', $event.target.value)" @keydown.stop>
+                <option v-for="option in qualityOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+              </select>
+            </label>
             <!-- 翻译切换按钮 -->
             <button 
               type="button"
+              v-if="hasTranslation"
               class="control-btn translation-btn" 
               :class="{ active: showTranslation }" 
               @click="toggleTranslation" 
@@ -129,6 +136,10 @@
               </svg>
               <span>翻译</span>
             </button>
+          </div>
+          <div class="lyric-quality-status" role="status">
+            <span>{{ qualityMessage || qualityStatus }}</span>
+            <button v-if="qualityMessage" type="button" @click="$emit('retry-quality')">重试</button>
           </div>
         </div>
       </div>

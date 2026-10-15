@@ -29,6 +29,8 @@ function loadFavorites({ props = {}, api = {}, cache = {} } = {}) {
     unregisterMenu(callback) { if (this.active === callback) this.active = null }
   }
   const logger = { trace() {}, info() {}, warn() {}, error() {} }
+  const metadata = vm.createContext({})
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/utils/songMetadata.js'), 'utf8').replace(/^export /gm, ''), metadata)
   const source = fs.readFileSync(path.join(__dirname, '../src/views/logic/FavoriteView.js'), 'utf8')
     .replace(/^import\b[^\n]+$/gm, '')
     .replace('export default', 'module.exports =')
@@ -36,6 +38,8 @@ function loadFavorites({ props = {}, api = {}, cache = {} } = {}) {
     module: { exports: {} },
     ContextMenu: {},
     ArtworkCover: {},
+    SongBadges: {},
+    filterSongs: metadata.filterSongs,
     nextplayIcon: 'nextplay.svg',
     contextMenuManager: menuManager,
     logger,
@@ -337,4 +341,168 @@ test('matching owned cloud cache causes no redundant notification and foreign ca
     await favorites.view.loadFavorites(true)
     assert.equal(favorites.emitted.filter(([name]) => name === 'favorites-changed').length, owner === 'account-a' ? 0 : 1)
   }
+})
+
+test('a 925-song playlist loads every page and searches names, artists and albums beyond the first page', async () => {
+  const tracks = Array.from({ length: 925 }, (_, index) => ({ hash: `song-${index}`, name: `Song ${index}` }))
+  tracks[902] = { ...tracks[902], name: 'Late Night', singerinfo: [{ name: 'The Artist' }], albuminfo: { name: 'Night Album' } }
+  const favorites = loadFavorites({
+    props: { playlistId: 91 },
+    api: { getPlaylistTracks: async (_id, number, size) => page(tracks.slice((number - 1) * size, number * size), tracks.length) }
+  })
+  await favorites.view.loadFavorites()
+  assert.equal(favorites.view.favoriteList.length, 925)
+  assert.deepEqual(favorites.calls.tracks.map(call => call[1]), [1, 2, 3, 4])
+  const complete = favorites.view.favoriteList
+  const row = complete[902]
+  for (const keyword of ['late NIGHT', 'the ARTIST', 'night ALBUM']) {
+    favorites.view.searchQuery = keyword
+    assert.equal(favorites.view.filteredFavoriteList.length, 1)
+    assert.equal(favorites.view.filteredFavoriteList[0], row)
+    assert.equal(favorites.view.filteredFavoriteList[0].index, 903)
+  }
+  favorites.view.searchQuery = 'not-in-this-playlist'
+  assert.equal(favorites.view.filteredFavoriteList.length, 0)
+  assert.equal(favorites.view.favoriteList, complete)
+  favorites.view.searchQuery = '  '
+  assert.equal(favorites.view.filteredFavoriteList, complete)
+  favorites.view.searchQuery = ''
+  assert.equal(favorites.view.hasSearchQuery, false)
+  assert.equal(favorites.calls.tracks.length, 4, 'local searches never refetch or trim the playlist')
+})
+
+test('search and sorting keep row identity, whole-playlist playback and right-click operations', async () => {
+  const favorites = loadFavorites({
+    props: { playlistId: 91 },
+    api: { getPlaylistTracks: async () => page([{ hash: 'a', name: 'A' }, { hash: 'b', name: 'Matched B' }, { hash: 'c', name: 'Matched C' }]) }
+  })
+  await favorites.view.loadFavorites()
+  const complete = favorites.view.favoriteList
+  favorites.view.searchQuery = 'matched'
+  favorites.view.sortOrder = 'desc'
+  assert.equal(favorites.view.filteredFavoriteList.map(song => song.hash).join(','), 'c,b')
+  assert.equal(complete.map(song => song.hash).join(','), 'a,b,c')
+  favorites.view.playAll()
+  assert.equal(favorites.emitted.at(-1)[1], complete)
+  favorites.view.settings.playback.enqueueFullPlaylist = true
+  const selected = favorites.view.filteredFavoriteList[0]
+  favorites.view.playSong(selected)
+  assert.equal(favorites.emitted.at(-1)[0], 'play-all')
+  assert.equal(favorites.emitted.at(-1)[1].map(song => song.hash).join(','), 'c,a,b')
+  assert.equal(favorites.emitted.at(-1)[1][0], complete[2])
+  favorites.view.showContextMenu({ clientX: 12, clientY: 24 }, selected)
+  await Promise.resolve()
+  favorites.view.contextMenuItems.find(item => item.label === '下一首播放').action()
+  assert.equal(favorites.emitted.at(-1)[1], selected)
+  assert.equal(favorites.view.favoriteList, complete)
+  favorites.unmount()
+})
+
+test('cached playlists retain separate search text on reactivation, refresh, and reset it on identity changes', async () => {
+  const first = loadFavorites({ props: { playlistId: 1 } })
+  const second = loadFavorites({ props: { playlistId: 2 } })
+  await first.view.loadFavorites()
+  await second.view.loadFavorites()
+  first.view.searchQuery = 'first query'
+  second.view.searchQuery = 'second query'
+  first.deactivate()
+  await first.activate()
+  await first.view.loadFavorites(true)
+  assert.equal(first.view.searchQuery, 'first query')
+  assert.equal(second.view.searchQuery, 'second query')
+  first.view.playlistId = 3
+  await first.view.loadFavorites()
+  assert.equal(first.view.searchQuery, '')
+  first.view.searchQuery = 'private query'
+  first.storage.set('kugou_userid', 'account-b')
+  await first.view.loadFavorites()
+  assert.equal(first.view.searchQuery, '')
+})
+
+test('server page-size caps do not skip playlist rows and incomplete pages preserve the old complete list', async () => {
+  const tracks = Array.from({ length: 925 }, (_, index) => ({ hash: `song-${index}` }))
+  let truncated = false
+  const favorites = loadFavorites({
+    props: { playlistId: 91 },
+    api: { getPlaylistTracks: async (_id, number, size) => page(tracks.slice((number - 1) * size, (number - 1) * size + (truncated && number === 2 ? 0 : Math.min(size, 100))), tracks.length) }
+  })
+  await favorites.view.loadFavorites()
+  assert.equal(favorites.view.favoriteList.length, 925)
+  assert.equal(new Set(favorites.view.favoriteList.map(song => song.hash)).size, 925)
+  assert.equal(favorites.calls.tracks[0][2], 300)
+  assert.equal(favorites.calls.tracks[1][2], 100)
+  const complete = favorites.view.favoriteList
+  truncated = true
+  await favorites.view.loadFavorites(true)
+  assert.equal(favorites.view.favoriteList, complete)
+  assert.match(favorites.view.errorMessage, /未加载完整/)
+})
+
+test('missing playlist totals keep loading full pages until the actual final page', async () => {
+  for (const length of [925, 900]) {
+    const tracks = Array.from({ length }, (_, index) => ({ hash: `song-${index}` }))
+    const favorites = loadFavorites({
+      props: { playlistId: 91 },
+      api: { getPlaylistTracks: async (_id, number, size) => ({ status: 1, data: { songs: tracks.slice((number - 1) * size, number * size) } }) }
+    })
+    await favorites.view.loadFavorites()
+    assert.equal(favorites.view.favoriteList.length, length)
+    assert.equal(favorites.calls.tracks.length, 4, 'exact full-page totals need the empty next page to establish completion')
+    assert.equal(favorites.view.loaded, true)
+  }
+})
+
+test('missing totals combined with a server page-size cap still load the playlist tail', async () => {
+  for (const length of [925, 900, 25]) {
+    const tracks = Array.from({ length }, (_, index) => ({ hash: `song-${index}`, name: `Track ${index}` }))
+    const favorites = loadFavorites({
+      props: { playlistId: 91 },
+      api: { getPlaylistTracks: async (_id, number, size) => ({ status: 1, data: {
+        songs: tracks.slice((number - 1) * size, (number - 1) * size + Math.min(size, 100))
+      } }) }
+    })
+    await favorites.view.loadFavorites()
+    assert.equal(favorites.view.favoriteList.length, length)
+    assert.equal(new Set(favorites.view.favoriteList.map(song => song.hash)).size, length)
+    assert.equal(favorites.calls.tracks[0][2], 300)
+    assert.equal(favorites.calls.tracks[1][2], Math.min(length, 100))
+    assert.equal(favorites.calls.tracks.length, length === 25 ? 2 : 10)
+    favorites.view.searchQuery = `Track ${length - 1}`
+    assert.equal(favorites.view.filteredFavoriteList.at(-1).hash, `song-${length - 1}`)
+    assert.equal(favorites.view.loaded, true)
+    assert.equal(favorites.view.errorMessage, '')
+  }
+})
+
+test('a repeated full page without totals stops the load and preserves the last complete playlist', async () => {
+  const repeatedPage = Array.from({ length: 100 }, (_, index) => ({ hash: `repeated-${index}` }))
+  let refreshing = false
+  const favorites = loadFavorites({
+    props: { playlistId: 91 },
+    api: { getPlaylistTracks: async () => refreshing ? { status: 1, data: { songs: repeatedPage } } : page([{ hash: 'complete-old-song' }]) }
+  })
+  await favorites.view.loadFavorites()
+  const complete = favorites.view.favoriteList
+  refreshing = true
+  await favorites.view.loadFavorites(true)
+  assert.equal(favorites.calls.tracks.length, 3, 'a repeated full page must not trigger an unbounded third refresh request')
+  assert.equal(favorites.view.favoriteList, complete)
+  assert.equal(favorites.view.favoriteList[0].hash, 'complete-old-song')
+  assert.match(favorites.view.errorMessage, /分页未前进/)
+  assert.equal(favorites.view.loading, false)
+})
+
+test('repeated songs across distinct pages remain in the complete playlist', async () => {
+  const tracks = [{ hash: 'repeat' }, { hash: 'a' }, { hash: 'repeat' }, { hash: 'b' }]
+  const favorites = loadFavorites({
+    props: { playlistId: 91 },
+    api: { getPlaylistTracks: async (_id, number, size) => ({ status: 1, data: {
+      songs: tracks.slice((number - 1) * size, (number - 1) * size + Math.min(size, 2))
+    } }) }
+  })
+  await favorites.view.loadFavorites()
+  assert.equal(favorites.view.favoriteList.map(song => song.hash).join(','), 'repeat,a,repeat,b')
+  assert.equal(favorites.view.favoriteList.map(song => song.index).join(','), '1,2,3,4')
+  assert.equal(favorites.calls.tracks.length, 3)
+  assert.equal(favorites.view.errorMessage, '')
 })

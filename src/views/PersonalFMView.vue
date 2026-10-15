@@ -37,6 +37,7 @@
             <span class="fm-play-icon" aria-hidden="true">▶</span>
             <span class="fm-song-title">{{ song.songname || song.filename }}</span>
           </button>
+          <SongBadges :song="song" />
           <button type="button" class="artist-link" @click="goArtist(song)">{{ song.singername || song.author_name || '未知歌手' }}</button>
         </article>
       </div>
@@ -46,13 +47,14 @@
 
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
+import SongBadges from '../components/common/SongBadges.vue'
 import { logger } from '../utils/logger.js'
 
 import { getPersonalFM } from '../api/music.js'
 import { useSettingsStore } from '../stores/settingsStore.js'
 
 export default {
-  components: { ArtworkCover },
+  components: { ArtworkCover, SongBadges },
   name: 'PersonalFMView',
   emits: ['navigate', 'play'],
   props: {

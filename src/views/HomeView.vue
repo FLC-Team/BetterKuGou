@@ -76,6 +76,7 @@
               </span>
               <span class="song-name" :title="song.songname || song.filename || song.name">{{ song.songname || song.filename || song.name || '未知歌曲' }}</span>
             </button>
+            <SongBadges :song="song" />
             <button class="artist-link" type="button" :title="song.singername || song.author_name" :disabled="!song.singername && !song.author_name" @click.stop="goArtistFromAISong(song)">{{ song.singername || song.author_name || '未知歌手' }}</button>
           </article>
         </div>
@@ -101,6 +102,7 @@
   </div>
 </template>
 <script>
+import SongBadges from '../components/common/SongBadges.vue'
 import { logger } from '../utils/logger.js'
 
 import { 
@@ -119,6 +121,7 @@ function getAccountIdentity() {
 
 export default {
   name: 'HomeView',
+  components: { SongBadges },
   props: {
     favoritesRevision: { type: Number, default: 0 }
   },

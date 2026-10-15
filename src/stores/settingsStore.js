@@ -11,7 +11,8 @@ const baseDefaultSettings = Object.freeze({
   playback: {
     fullscreenLyrics: true,
     enqueueFullPlaylist: true,
-    showTranslation: true // 默认显示翻译
+    showTranslation: true, // 默认显示翻译
+    quality: '128'
   },
   desktopLyrics: {
     fontSize: 'medium',
@@ -235,6 +236,7 @@ function migrateSettings(rawSettings, defaults) {
   const desktop = normalized.desktopLyrics || {}
   if (!normalized.playback || typeof normalized.playback !== 'object' || Array.isArray(normalized.playback)) normalized.playback = cloneDeep(defaults.playback)
   normalized.playback.showTranslation = typeof normalized.playback.showTranslation === 'boolean' ? normalized.playback.showTranslation : true
+  normalized.playback.quality = ['128', '320', 'flac', 'high'].includes(normalized.playback.quality) ? normalized.playback.quality : '128'
   normalized.desktopLyrics = {
     fontSize: ['small', 'medium', 'large'].includes(desktop.fontSize) ? desktop.fontSize : 'medium',
     theme: ['classic', 'gradient', 'minimal'].includes(desktop.theme) ? desktop.theme : 'classic',

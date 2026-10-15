@@ -147,9 +147,10 @@ export const getSongDetail = (hash) => {
  * @param {string} hash - 歌曲 hash
  * @param {number} album_id - 专辑 ID
  * @param {number} album_audio_id - 专辑音频 ID
+ * @param {string} quality - 普通音质：128、320、flac 或 high
  * @returns {Promise}
  */
-export const getSongUrl = (hash, album_id = 0, album_audio_id = 0) => {
+export const getSongUrl = (hash, album_id = 0, album_audio_id = 0, quality = '128') => {
   // 获取认证信息
   const token = localStorage.getItem('kugou_token') || ''
   const userid = localStorage.getItem('kugou_userid') || '0'
@@ -160,7 +161,7 @@ export const getSongUrl = (hash, album_id = 0, album_audio_id = 0) => {
     hash,
     album_id: album_id.toString(),
     album_audio_id: album_audio_id.toString(),
-    quality: '128'
+    quality: ['128', '320', 'flac', 'high'].includes(quality) ? quality : '128'
   })
   
   // 如果已登录，添加 cookie 参数（参考 BetterKugou 的方式）

@@ -55,6 +55,22 @@ export default {
     pauseUpdates: {
       type: Boolean,
       default: false
+    },
+    qualityOptions: {
+      type: Array,
+      default: () => []
+    },
+    qualityPreference: {
+      type: String,
+      default: '128'
+    },
+    qualityStatus: {
+      type: String,
+      default: ''
+    },
+    qualityMessage: {
+      type: String,
+      default: ''
     }
   },
   setup() {

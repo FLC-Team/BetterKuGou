@@ -103,7 +103,7 @@ function loadSettingsView(store, applyTheme = () => {}) {
     onBeforeUnmount: callback => unmountCallbacks.push(callback)
   })
   const scope = vue.effectScope()
-  const view = scope.run(() => vm.runInContext(`${script}\n;({ localSettings, syncFromStore, persistEditableSettings, flushEditableSettings, handleExportSettings, handleImportSettings, settingsSaveError, actionMessage, saveState })`, sandbox))
+  const view = scope.run(() => vm.runInContext(`${script}\n;({ localSettings, syncFromStore, persistEditableSettings, flushEditableSettings, prepareThemeRecovery, handleExportSettings, handleImportSettings, settingsSaveError, actionMessage, saveState })`, sandbox))
   return {
     ...view,
     dispose() {
@@ -234,7 +234,7 @@ test('artist pagination failures are diagnosed and release the loading guard', a
     .replace('export default', 'module.exports =')
   const diagnostics = []
   const sandbox = vm.createContext({
-    module: { exports: {} }, ContextMenu: {}, ArtworkCover: {}, nextplayIcon: '',
+    module: { exports: {} }, ContextMenu: {}, ArtworkCover: {}, SongBadges: {}, nextplayIcon: '',
     logger: { error: (...args) => diagnostics.push(args) },
     getArtistAudios: async () => { throw new Error('Network unavailable') }
   })
@@ -447,6 +447,102 @@ test('unsaved theme preview survives playback session revisions without committi
   }
 })
 
+test('appearance recovery discards pending theme drafts while preserving unrelated settings edits', async () => {
+  const fixture = await queuedSettingsFixture()
+  const view = loadSettingsView(fixture.store)
+  try {
+    view.localSettings.custom.theme = 'light'
+    view.localSettings.custom.themePackages = [{ id: 'unsaved-appearance' }]
+    view.localSettings.custom.themeAdjustmentId = 'unsaved-appearance'
+    view.localSettings.custom.customTheme.primary = '#123abc'
+    view.localSettings.custom.playerStyle = 'netease'
+    view.localSettings.playback.showTranslation = false
+    await vue.nextTick()
+    const release = await view.prepareThemeRecovery('dark')
+    assert.equal(fixture.requests.length, 0, 'preparing recovery cancels the pending appearance debounce')
+    const restoring = fixture.store.updateSettings({ custom: { theme: 'dark' } })
+    await fixture.flush()
+    fixture.commit(0)
+    await restoring
+    await release()
+    assert.equal(view.localSettings.custom.theme, 'dark')
+    assert.equal(view.localSettings.custom.themePackages.length, 0)
+    assert.equal(view.localSettings.custom.themeAdjustmentId, fixture.store.settings.custom.themeAdjustmentId)
+    assert.equal(view.localSettings.custom.customTheme.primary, fixture.store.settings.custom.customTheme.primary)
+    assert.equal(view.localSettings.custom.playerStyle, 'netease')
+    assert.equal(view.localSettings.playback.showTranslation, false)
+    const savingOthers = view.flushEditableSettings()
+    await fixture.flush()
+    assert.equal(fixture.requests[1].payload.custom.theme, 'dark', 'the next autosave must not reselect the discarded appearance')
+    assert.equal(fixture.requests[1].payload.custom.themePackages.length, 0)
+    assert.equal(fixture.requests[1].payload.custom.playerStyle, 'netease')
+    assert.equal(fixture.requests[1].payload.playback.showTranslation, false)
+    fixture.commit(1)
+    assert.equal(await savingOthers, true)
+    assert.equal(fixture.store.settings.custom.theme, 'dark')
+  } finally { view.dispose() }
+})
+
+test('appearance recovery waits for an in-flight save and supersedes theme edits made while it drains', async () => {
+  const fixture = await queuedSettingsFixture()
+  const view = loadSettingsView(fixture.store)
+  try {
+    view.localSettings.custom.theme = 'light'
+    const earlierSave = view.flushEditableSettings()
+    await fixture.flush()
+    let prepared = false
+    const preparing = view.prepareThemeRecovery('dark').then(release => { prepared = true; return release })
+    view.localSettings.custom.theme = 'another-unsaved-appearance'
+    view.localSettings.custom.playerStyle = 'netease'
+    await fixture.flush()
+    assert.equal(prepared, false)
+    assert.equal(fixture.requests.length, 1, 'recovery must queue behind the captured settings transaction')
+    fixture.commit(0)
+    const release = await preparing
+    await earlierSave
+    assert.equal(view.localSettings.custom.theme, 'dark')
+    assert.equal(view.localSettings.custom.playerStyle, 'netease')
+    const restoring = fixture.store.updateSettings({ custom: { theme: 'dark' } })
+    await fixture.flush()
+    fixture.commit(1)
+    await restoring
+    await release()
+    const savingOthers = view.flushEditableSettings()
+    await fixture.flush()
+    assert.equal(fixture.requests[2].payload.custom.theme, 'dark')
+    assert.equal(fixture.requests[2].payload.custom.playerStyle, 'netease')
+    fixture.commit(2)
+    assert.equal(await savingOthers, true)
+    assert.equal(fixture.store.settings.custom.theme, 'dark')
+  } finally { view.dispose() }
+})
+
+test('failed appearance recovery releases the settings editor without replaying the discarded theme', async () => {
+  const fixture = await queuedSettingsFixture()
+  const view = loadSettingsView(fixture.store)
+  try {
+    view.localSettings.custom.theme = 'light'
+    view.localSettings.custom.playerStyle = 'netease'
+    await vue.nextTick()
+    const release = await view.prepareThemeRecovery('dark')
+    const restoring = fixture.store.updateSettings({ custom: { theme: 'dark' } })
+    const rejection = assert.rejects(restoring, /Disk full/)
+    await fixture.flush()
+    fixture.requests[0].reject(new Error('Disk full'))
+    await rejection
+    await release()
+    assert.equal(view.localSettings.custom.theme, 'dark')
+    assert.equal(view.localSettings.custom.playerStyle, 'netease')
+    const savingOthers = view.flushEditableSettings()
+    await fixture.flush()
+    assert.equal(fixture.requests[1].payload.custom.theme, 'dark', 'rollback cannot resurrect the old theme draft in a later save')
+    assert.equal(fixture.requests[1].payload.custom.playerStyle, 'netease')
+    fixture.commit(1)
+    assert.equal(await savingOthers, true)
+    assert.equal(fixture.store.settings.custom.theme, 'dark')
+  } finally { view.dispose() }
+})
+
 test('leaving settings flushes pending edits', async () => {
   const storeModule = loadStore()
   await storeModule.initSettings()
@@ -515,6 +611,7 @@ test('out-of-order search responses and errors cannot replace newer results', as
     logger: quietLogger,
     ContextMenu: {},
     ArtworkCover: {},
+    SongBadges: {},
     nextplayIcon: '',
     searchMusic: () => {
       const request = deferred()

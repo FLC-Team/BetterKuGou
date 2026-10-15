@@ -26,7 +26,10 @@
           <div class="col-title">
             <ArtworkCover :src="song.cover || ''" class="song-cover" />
             <div class="song-info">
-              <button type="button" class="song-name" @click.stop="$emit('play', song)" @dblclick.stop :title="getSongName(song.name)">{{ getSongName(song.name) }}</button>
+              <div class="song-title-line">
+                <button type="button" class="song-name" @click.stop="$emit('play', song)" @dblclick.stop :title="getSongName(song.name)">{{ getSongName(song.name) }}</button>
+                <SongBadges :song="song" />
+              </div>
               <span class="mobile-artist">{{ getSingerNames(song.singerinfo, song) || '未知歌手' }}</span>
             </div>
           </div>
@@ -46,12 +49,13 @@
 
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
+import SongBadges from '../components/common/SongBadges.vue'
 import { logger } from '../utils/logger.js'
 
 import { getAlbumDetail, getAlbumSongs, getImagesByHash } from '../api/music.js'
 
 export default {
-  components: { ArtworkCover },
+  components: { ArtworkCover, SongBadges },
   name: 'AlbumDetailView',
   props: {
     albumId: { type: [String, Number], required: false },

@@ -2,9 +2,11 @@
 import { logger } from '../../utils/logger.js'
 import { getUserPlaylists, getPlaylistTracks } from '../../api/music.js'
 import ArtworkCover from '../../components/common/ArtworkCover.vue'
+import SongBadges from '../../components/common/SongBadges.vue'
 import ContextMenu from '../../components/common/ContextMenu.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import { useSettingsStore } from '../../stores/settingsStore.js'
+import { filterSongs } from '../../utils/songMetadata.js'
 
 // 引入图标
 import nextplayIcon from '../../assets/icons/nextplay.svg'
@@ -14,6 +16,7 @@ export default {
   emits: ['play', 'play-all', 'play-next', 'remove-from-playlist', 'search', 'navigate', 'favorites-changed'],
   components: {
     ArtworkCover,
+    SongBadges,
     ContextMenu
   },
   props: {
@@ -43,6 +46,7 @@ export default {
       menuGeneration: 0,
       errorMessage: '',
       favoriteList: [],
+      searchQuery: '',
       favoritePlaylistId: null, // 收藏歌单的 ID
       contextMenuVisible: false,
       contextMenuPosition: { x: 0, y: 0 },
@@ -75,6 +79,10 @@ export default {
         return sortedList.sort((a, b) => b.index - a.index)
       }
     },
+    filteredFavoriteList() {
+      return filterSongs(this.sortedFavoriteList, this.searchQuery)
+    },
+    hasSearchQuery() { return this.searchQuery.trim().length > 0 },
     contextMenuItems() {
       if (!this.currentContextSong) return []
       
@@ -184,6 +192,7 @@ export default {
         this.loading = false
         this.loaded = false
         this.favoriteList = []
+        this.searchQuery = ''
         this.favoritePlaylistId = null
         this.errorMessage = ''
         this.closeContextMenu()
@@ -236,18 +245,31 @@ export default {
         }
         if (!this.isCurrentRequest(generation, scope)) return
         this.favoritePlaylistId = playlistId
-        const pageSize = 300
+        let pageSize = 300
         const firstResponse = await getPlaylistTracks(playlistId, 1, pageSize)
         if (!this.isCurrentRequest(generation, scope)) return
         let songs = this.readPlaylistPage(firstResponse, 1)
-        const rawTotal = Number(firstResponse.data.count ?? firstResponse.data.total ?? songs.length)
-        const total = Number.isFinite(rawTotal) && rawTotal >= 0 ? rawTotal : songs.length
-        const pages = Math.ceil(total / pageSize)
-        for (let page = 2; page <= pages; page += 1) {
+        const rawTotal = Number(firstResponse.data.count ?? firstResponse.data.total)
+        const total = Number.isFinite(rawTotal) && rawTotal >= 0 ? rawTotal : null
+        // Some servers cap page length. Use the returned length as the next
+        // request's offset size so no songs between pages are skipped.
+        if (songs.length > 0 && songs.length < pageSize && (total === null || total > songs.length)) pageSize = songs.length
+        let lastPageLength = songs.length
+        const seenPages = total === null ? new Set([JSON.stringify(songs)]) : null
+        // A missing total does not mean the first full page is the whole list.
+        for (let page = 2; total !== null ? songs.length < total && lastPageLength > 0 : lastPageLength === pageSize; page += 1) {
           const response = await getPlaylistTracks(playlistId, page, pageSize)
           if (!this.isCurrentRequest(generation, scope)) return
-          songs = songs.concat(this.readPlaylistPage(response, page))
+          const pageSongs = this.readPlaylistPage(response, page)
+          lastPageLength = pageSongs.length
+          if (seenPages && lastPageLength === pageSize) {
+            const signature = JSON.stringify(pageSongs)
+            if (seenPages.has(signature)) throw new Error('歌单分页未前进，请刷新重试')
+            seenPages.add(signature)
+          }
+          songs = songs.concat(pageSongs)
         }
+        if (total !== null && songs.length < total) throw new Error('歌单曲目未加载完整，请刷新重试')
         if (!this.isCurrentRequest(generation, scope)) return
         const previousSeeds = this.isPlaylistView ? null : this.readFavoriteSeedSignature(scope)
         this.favoriteList = songs.map((song, index) => ({ ...song, index: index + 1 }))

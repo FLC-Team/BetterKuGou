@@ -2,6 +2,7 @@
 .personal-fm-view .fm-dot { color: var(--color-primary); }
 .personal-fm-view .fm-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 28px 24px; }
 .personal-fm-view .fm-card { position: relative; min-width: 0; }
+.personal-fm-view .fm-card > .song-badges { margin-top: 5px; }
 .personal-fm-view .fm-play { display: block; position: relative; width: 100%; text-align: left; color: var(--color-text); border-radius: var(--radius-md); }
 .personal-fm-view .fm-cover { width: 100%; aspect-ratio: 1; border-radius: var(--radius-md); font-size: 36px; }
 .personal-fm-view .fm-play-icon { position: absolute; right: 14px; bottom: 50px; display: grid; place-items: center; width: 37px; height: 37px; border-radius: 50%; background: var(--color-background-light); color: var(--color-text); box-shadow: var(--shadow-card); opacity: 0; transition: opacity var(--transition-fast); font-size: 13px; padding-left: 2px; }

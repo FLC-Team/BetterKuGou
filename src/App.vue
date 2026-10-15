@@ -19,6 +19,18 @@ import { clearLoginInfo, getLoginInfo, isLoggedIn } from './api/auth.js'
 import { getUserPlaylists, KUGOU_AUTH_EXPIRED_EVENT } from './api/music.js'
 import { useSettingsStore } from './stores/settingsStore.js'
 import { cloneDeep } from './utils/objectUtils.js'
+import ThemeStudio from './components/common/ThemeStudio.vue'
+import ThemeRecovery from './components/common/ThemeRecovery.vue'
+
+const themeStudioOpen = ref(false)
+const settingsViewRef = ref(null)
+async function openThemeStudio() {
+  if (settingsViewRef.value && !await settingsViewRef.value.flushEditableSettings()) return
+  themeStudioOpen.value = true
+}
+async function prepareThemeRecovery(base) {
+  return settingsViewRef.value?.prepareThemeRecovery(base)
+}
 
 logger.trace('App', 'App.vue loaded')
 
@@ -1179,8 +1191,10 @@ function performMemoryCleanup() {
                 @back="handleBackToMain" @loginSuccess="handleLoginSuccess"
               />
               <SettingsView
+                ref="settingsViewRef"
                 v-else-if="currentView === 'settings'" key="settings" class="page-view view-settings"
                 @close="handleCloseSettings" @settings-changed="handleSettingsChanged"
+                @open-theme-studio="themeStudioOpen = true"
               />
               <HomeView
                 v-else-if="currentView === 'home'" key="home" class="page-view view-home"
@@ -1268,6 +1282,8 @@ function performMemoryCleanup() {
       />
     </Transition>
   </div>
+  <ThemeStudio v-if="themeStudioOpen" @close="themeStudioOpen = false" />
+  <ThemeRecovery :prepare-restore="prepareThemeRecovery" @open-editor="openThemeStudio" />
 </template>
 
 <style src="./App.css" scoped></style>

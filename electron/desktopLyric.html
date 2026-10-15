@@ -251,7 +251,7 @@
     }
   </style>
 </head>
-<body>
+<body data-bk-theme-root="desktop">
   <div class="lyric-container" id="lyricContainer">
     <div class="lock-indicator">🔒</div>
     <div class="control-menu">
@@ -329,6 +329,7 @@
       }))
 
       subscriptions.push(lyricAPI.onSettingsUpdate((settings) => {
+        if (Object.prototype.hasOwnProperty.call(settings, 'appearance')) applyAppearance(settings.appearance)
         if (settings.fontSize) currentSize = settings.fontSize
         if (settings.theme) currentTheme = settings.theme
         if (typeof settings.locked === 'boolean') isLocked = settings.locked
@@ -358,6 +359,20 @@
         container.classList.remove('locked')
         document.body.classList.remove('locked')
       }
+    }
+
+    /** Only the main process sends this already validated, window-scoped visual snapshot. Replace, never append. */
+    function applyAppearance(appearance) {
+      const root = document.documentElement
+      const previous = root.dataset.appearanceTokens ? root.dataset.appearanceTokens.split(' ') : []
+      previous.forEach(name => root.style.removeProperty(name))
+      const tokens = appearance?.tokens || {}
+      Object.entries(tokens).forEach(([name, value]) => root.style.setProperty(name, value))
+      root.dataset.appearanceTokens = Object.keys(tokens).join(' ')
+      let sheet = document.getElementById('desktop-appearance-css')
+      if (!appearance?.css) { if (sheet) sheet.remove(); return }
+      if (!sheet) { sheet = document.createElement('style'); sheet.id = 'desktop-appearance-css'; document.head.appendChild(sheet) }
+      sheet.textContent = appearance.css
     }
 
     // 循环切换字体大小
