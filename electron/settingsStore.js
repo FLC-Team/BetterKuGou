@@ -86,6 +86,14 @@ function ensureSchema(settings) {
   } else {
     normalized = mergeDeep(defaultsCache, normalized)
   }
+  const desktop = isPlainObject(normalized.desktopLyrics) ? normalized.desktopLyrics : {}
+  if (!isPlainObject(normalized.playback)) normalized.playback = cloneDeep(defaultsCache.playback)
+  normalized.playback.showTranslation = typeof normalized.playback.showTranslation === 'boolean' ? normalized.playback.showTranslation : true
+  normalized.desktopLyrics = {
+    fontSize: ['small', 'medium', 'large'].includes(desktop.fontSize) ? desktop.fontSize : 'medium',
+    theme: ['classic', 'gradient', 'minimal'].includes(desktop.theme) ? desktop.theme : 'classic',
+    locked: typeof desktop.locked === 'boolean' ? desktop.locked : false
+  }
   return normalized
 }
 
@@ -150,7 +158,13 @@ function createDefaults(app) {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     playback: {
       fullscreenLyrics: true,
-      enqueueFullPlaylist: true
+      enqueueFullPlaylist: true,
+      showTranslation: true
+    },
+    desktopLyrics: {
+      fontSize: 'medium',
+      theme: 'classic',
+      locked: false
     },
     download: {
       downloadPath: path.join(downloadsDir, 'BetterKugou'),

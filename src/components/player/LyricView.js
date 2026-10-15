@@ -224,6 +224,11 @@ export default {
 
   },
   watch: {
+    'settingsStore.settings.playback.showTranslation'(value) {
+      this.showTranslation = value ?? true
+      this.styleCache.clear()
+      this.handleLongLyric()
+    },
     visible(newVal) {
       if (newVal) {
         this.startUpdateLoop() // 启动RAF循环

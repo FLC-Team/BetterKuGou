@@ -280,7 +280,7 @@
     let currentSong = null
     
     // 性能优化相关
-    let lastUpdateTime = 0
+    let lastUpdateTime = -Infinity
     let updateRAFId = null
     let currentLyricIndex = -1
     let lastRenderedHTML = ''
@@ -405,7 +405,12 @@
 
     // 更新歌词
     function updateLyrics(lyrics) {
-      
+      lastUpdateTime = -Infinity
+      currentLyricIndex = -1
+      lastRenderedHTML = ''
+      cachedCharElements = null
+      lastProcessedWordIndex = -1
+      karaokeUpdateCache.clear()
       currentLyrics = lyrics || []
       updateCurrentLyric()
     }

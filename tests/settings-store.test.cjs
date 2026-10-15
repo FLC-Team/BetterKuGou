@@ -48,6 +48,26 @@ function createStore() {
   }
 }
 
+test('desktop lyric preferences supplement old settings and reject invalid display values', async () => {
+  const fixture = createStore()
+  await fixture.store.initSettingsStore(fixture.app)
+  assert.equal(fixture.store.getSettings().playback.showTranslation, true)
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.store.getSettings().desktopLyrics)), { fontSize: 'medium', theme: 'classic', locked: false })
+  await fixture.store.setSettings({ desktopLyrics: { fontSize: 'large', theme: 'minimal', locked: true } })
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.store.getSettings().desktopLyrics)), { fontSize: 'large', theme: 'minimal', locked: true })
+  await fixture.store.setSettings({ desktopLyrics: { fontSize: 900, theme: 'arbitrary-css', locked: 'false' } })
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.store.getSettings().desktopLyrics)), { fontSize: 'medium', theme: 'classic', locked: false })
+  assert.deepEqual(JSON.parse(fixture.files.get(fixture.settingsPath)).desktopLyrics, { fontSize: 'medium', theme: 'classic', locked: false })
+  for (const playback of [null, 'invalid', false, [], 1]) {
+    await fixture.store.setSettings({ playback })
+    assert.equal(fixture.store.getSettings().playback.showTranslation, true)
+  }
+  await fixture.store.setSettings({ playback: { showTranslation: false } })
+  assert.equal(fixture.store.getSettings().playback.showTranslation, false)
+  await fixture.store.setSettings({ playback: { showTranslation: 'false' } })
+  assert.equal(fixture.store.getSettings().playback.showTranslation, true)
+})
+
 test('failed settings writes preserve the committed cache and later transactions still work', async () => {
   const fixture = createStore()
   const { store } = fixture

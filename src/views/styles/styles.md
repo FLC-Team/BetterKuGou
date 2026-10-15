@@ -12,7 +12,7 @@
 - `ArtistView.css`：歌手圆形封面、四标签、专辑网格和资料区域；曲目复用列表公共规则。
 - `FavoriteView.css`：收藏/歌单封面的轻微倾斜与排序控件；其余列表布局复用公共规则。
 - `PersonalFMView.css`：私人 FM 封面卡片、播放入口、当前曲目和响应式网格。
-- `SettingsView.css`：设置分组、表单、快捷键及预览布局。
+- `SettingsView.css`：设置杂志式标题、固定分组导航、单一内部滚动区、表单与快捷键；窄窗切换横向导航，保存失败的 sticky 提示保持可见。
 
 ## 设计与保障
 
@@ -22,6 +22,7 @@
 - 卡片、滑块、开关及设置聚焦阴影分别使用 `--shadow-card` / `--shadow-card-soft`、`--shadow-control` / `--shadow-control-hover`、`--shadow-toggle`、`--shadow-settings-focus` / `--shadow-shortcut-focus`。
 - 页面专属选择器保持在此目录，不改写全局 reset 或主题定义。
 - 列表共享规则限定在 `.list-page` 内，曲目网格只作用于 `.song-list` 的直接行，不覆盖歌手专辑卡与 FM 卡片；每个页面自行 scoped 引入，未加入全局入口。
+- 时长与操作使用独立网格轨道，表头保留对应操作空位；所有容器断点同步轨道和隐藏列，430px 以下操作与时长上下排列，专辑时长保留垂直居中。
 - 页面根节点保留 App 管理的滚动和播放器底部空间；内层 `.list-content` 只负责排版宽度及留白。歌手/专辑按钮使用内嵌焦点环避免被截断容器裁切，隐藏操作在 focus-within 时可见。
 - 调整样式时核对对应页面模板和不同窗口尺寸的表现。
 

@@ -58,6 +58,7 @@
           <div class="col-artist">歌手</div>
           <div class="col-album">专辑</div>
           <div class="col-duration">时长</div>
+          <div class="col-actions-label"><span class="visually-hidden">操作</span></div>
         </div>
 
         <div
@@ -90,8 +91,7 @@
             </button>
           </div>
     <div class="col-album"><button type="button" class="album-link" @click.stop="goAlbum(song)" @dblclick.stop>{{ song.albuminfo?.name || song.remark || '-' }}</button></div>
-          <div class="col-duration">
-            {{ formatDuration(song.timelen) }}
+          <div class="col-duration">{{ formatDuration(song.timelen) }}</div>
             <div class="action-buttons">
               <button type="button" class="icon-btn play-btn-inline" @click.stop="playSong(song)" title="播放歌曲" @dblclick.stop>
                 <svg viewBox="0 0 1024 1024" width="16" height="16" fill="currentColor">
@@ -104,7 +104,6 @@
                 </svg>
               </button>
             </div>
-          </div>
         </div>
       </div>
 

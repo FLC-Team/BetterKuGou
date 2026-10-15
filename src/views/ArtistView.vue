@@ -29,6 +29,7 @@
             <div class="col-artist">歌手</div>
             <div class="col-album">专辑</div>
             <div class="col-duration">时长</div>
+          <div class="col-actions-label"><span class="visually-hidden">操作</span></div>
           </div>
           <div v-for="(song, idx) in hotSongs" :key="song.hash || idx" class="song-item" :class="{ playing: !!song.hash && currentSong?.hash === song.hash }" :aria-current="song.hash && currentSong?.hash === song.hash ? 'true' : undefined" @dblclick="play(song)">
             <div class="col-index">
@@ -52,16 +53,14 @@
             <div class="col-album">
               <button type="button" class="album-link" @click.stop="goAlbum(song)" @dblclick.stop>{{ song.albuminfo?.name || song.remark || '-' }}</button>
             </div>
-            <div class="col-duration">
-              {{ formatDuration(song.timelen) }}
-              <div class="action-buttons">
+            <div class="col-duration">{{ formatDuration(song.timelen) }}</div>
+            <div class="action-buttons">
                 <button type="button" class="icon-btn play-btn-inline" @click.stop="play(song)" title="播放" @dblclick.stop>
                   <svg viewBox="0 0 1024 1024" width="16" height="16" fill="currentColor">
                     <path d="M719.4 499.1l-296.1-215A15.9 15.9 0 00398 297v430c0 13.1 14.8 20.5 25.3 12.9l296.1-215a15.9 15.9 0 000-25.8z"/>
                   </svg>
                 </button>
               </div>
-            </div>
           </div>
           <div v-if="initialLoadComplete && hotSongs.length === 0" class="empty"><p>暂无热门歌曲</p></div>
           <div v-else-if="!initialLoadComplete" class="loading-container"><span class="loading-spinner" role="status" aria-label="加载中"></span><p>正在加载热门歌曲…</p></div>
@@ -75,6 +74,7 @@
             <div class="col-artist">歌手</div>
             <div class="col-album">专辑</div>
             <div class="col-duration">时长</div>
+          <div class="col-actions-label"><span class="visually-hidden">操作</span></div>
           </div>
           <div v-for="(song, idx) in songs" :key="song.hash || idx" class="song-item" :class="{ playing: !!song.hash && currentSong?.hash === song.hash }" :aria-current="song.hash && currentSong?.hash === song.hash ? 'true' : undefined" @dblclick="play(song)">
             <div class="col-index">
@@ -98,16 +98,14 @@
             <div class="col-album">
               <button type="button" class="album-link" @click.stop="goAlbum(song)" @dblclick.stop>{{ song.albuminfo?.name || song.remark || '-' }}</button>
             </div>
-            <div class="col-duration">
-              {{ formatDuration(song.timelen) }}
-              <div class="action-buttons">
+            <div class="col-duration">{{ formatDuration(song.timelen) }}</div>
+            <div class="action-buttons">
                 <button type="button" class="icon-btn play-btn-inline" @click.stop="play(song)" title="播放" @dblclick.stop>
                   <svg viewBox="0 0 1024 1024" width="16" height="16" fill="currentColor">
                     <path d="M719.4 499.1l-296.1-215A15.9 15.9 0 00398 297v430c0 13.1 14.8 20.5 25.3 12.9l296.1-215a15.9 15.9 0 000-25.8z"/>
                   </svg>
                 </button>
               </div>
-            </div>
           </div>
           <div ref="sentinel" class="sentinel" />
           <div v-if="loadingMore" class="loading" role="status">加载中...</div>
