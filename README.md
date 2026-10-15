@@ -1,6 +1,5 @@
 # BetterKuGou
 
-# 本项目已停止开发
 
 > 本项目前端与客户端由本仓库维护，后端接口基于 [MakcRe/KuGouMusicApi](https://github.com/MakcRe/KuGouMusicApi) 项目，致谢原作者的开源贡献。
 
