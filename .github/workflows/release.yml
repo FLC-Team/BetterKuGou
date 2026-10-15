@@ -47,12 +47,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release/BetterKuGou-*.exe
+            release/BetterKuGou-*-setup.exe
             release/BetterKuGou-*.AppImage
             release/BetterKuGou-*.deb
             release/BetterKuGou-*.rpm
             release/BetterKuGou-*.dmg
-            release/BetterKuGou-*.zip
           body_path: updata_log.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -62,10 +61,9 @@ jobs:
         with:
           name: BetterKuGou-${{ matrix.os }}-${{ github.run_number }}
           path: |
-            release/BetterKuGou-*.exe
+            release/BetterKuGou-*-setup.exe
             release/BetterKuGou-*.AppImage
             release/BetterKuGou-*.deb
             release/BetterKuGou-*.rpm
             release/BetterKuGou-*.dmg
-            release/BetterKuGou-*.zip
           if-no-files-found: warn
