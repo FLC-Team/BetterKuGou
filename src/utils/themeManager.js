@@ -1,42 +1,7 @@
-const DARK_THEME = {
-  '--color-primary': '#377db6',
-  '--color-primary-hover': '#3b55e4',
-  '--color-primary-active': '#f75050',
-  '--color-primary-light': 'rgba(55, 125, 182, 0.15)',
-  '--color-primary-rgb': '55, 125, 182',
-  '--color-background': '#1a1a1a',
-  '--color-background-light': '#2c2c2c',
-  '--color-background-lighter': '#3a3a3a',
-  '--color-text': '#ffffff',
-  '--color-text-secondary': '#a0a0a0',
-  '--color-text-tertiary': '#707070',
-  '--color-border': '#404040',
-  '--color-border-light': '#505050',
-  '--sidebar-bg': '#1a1a1a',
-  '--titlebar-bg': '#1a1a1a',
-  '--titlebar-icon-color': '#888888',
-  '--titlebar-icon-hover': '#ffffff'
-}
+import { BUILTIN_THEMES, getThemePackage, normalizeThemePackage } from '../themes/themePackages.js'
 
-const LIGHT_THEME = {
-  '--color-primary': '#3366ff',
-  '--color-primary-hover': '#274bdb',
-  '--color-primary-active': '#1a34b8',
-  '--color-primary-light': 'rgba(51, 102, 255, 0.12)',
-  '--color-primary-rgb': '51, 102, 255',
-  '--color-background': '#f5f7fb',
-  '--color-background-light': '#ffffff',
-  '--color-background-lighter': '#edf1f7',
-  '--color-text': '#1f1f1f',
-  '--color-text-secondary': '#4a4a4a',
-  '--color-text-tertiary': '#707070',
-  '--color-border': '#d9dce3',
-  '--color-border-light': '#e5e9f0',
-  '--sidebar-bg': '#ffffff',
-  '--titlebar-bg': '#ffffff',
-  '--titlebar-icon-color': '#666666',
-  '--titlebar-icon-hover': '#000000'
-}
+const DARK_THEME = BUILTIN_THEMES[0].tokens
+const LIGHT_THEME = BUILTIN_THEMES[1].tokens
 
 const SUPPORTED_THEMES = {
   dark: DARK_THEME,
@@ -57,7 +22,7 @@ function componentToHex(component) {
 }
 
 function normalizeHex(hex) {
-  if (!hex) return null
+  if (typeof hex !== 'string') return null
   let value = hex.trim()
   if (!value) return null
   if (value[0] !== '#') {
@@ -69,7 +34,7 @@ function normalizeHex(hex) {
     const b = value[3]
     value = `#${r}${r}${g}${g}${b}${b}`
   }
-  if (value.length !== 7) {
+  if (!/^#[a-f\d]{6}$/i.test(value)) {
     return null
   }
   return value.toLowerCase()
@@ -169,22 +134,31 @@ function buildCustomPalette(settings) {
 
   palette['--sidebar-bg'] = background
   palette['--titlebar-bg'] = background
+  palette['--color-background-lighter-rgb'] = hexToRgbString(palette['--color-background-lighter'])
+  palette['--gradient-primary'] = `linear-gradient(135deg, ${primary} 0%, ${hover} 100%)`
+  palette['--shadow-primary'] = `rgba(${primaryRgb}, 0.4)`
+  palette['--shadow-primary-hover'] = `rgba(${primaryRgb}, 0.6)`
+  palette['--bg-focus'] = `rgba(${primaryRgb}, 0.1)`
+  palette['--bg-focus-medium'] = `rgba(${primaryRgb}, 0.2)`
+  palette['--lyric-accent'] = primary
 
   return palette
 }
 
-function applyPalette(palette) {
+function applyPalette(theme) {
   if (typeof document === 'undefined') return
   const root = document.documentElement
-  Object.entries(palette).forEach(([key, value]) => {
+  Object.entries(theme.tokens).forEach(([key, value]) => {
     root.style.setProperty(key, value)
   })
+  root.style.colorScheme = theme.base
+  root.dataset.theme = theme.id
+  root.dataset.themeBase = theme.base
 }
 
 function handleSystemChange(event) {
-  if (!latestSettings) return
-  const palette = event.matches ? SUPPORTED_THEMES.dark : SUPPORTED_THEMES.light
-  applyPalette(palette)
+  if (!latestSettings || !['system', 'auto'].includes(latestSettings.custom?.theme)) return
+  applyPalette(BUILTIN_THEMES[event.matches ? 0 : 1])
 }
 
 function ensureSystemListener() {
@@ -207,48 +181,53 @@ function removeSystemListener() {
   systemListener = null
 }
 
+/** 从唯一设置来源解析主题；旧配色模式继续兼容，损坏或缺失主题回退默认包。 */
+function resolveTheme(settings = {}) {
+  const custom = settings.custom || {}
+  const choice = custom.theme || 'dark'
+  if (['system', 'auto'].includes(choice)) {
+    const dark = typeof window !== 'undefined' && window.matchMedia
+      ? window.matchMedia('(prefers-color-scheme: dark)').matches : true
+    return BUILTIN_THEMES[dark ? 0 : 1]
+  }
+  if (choice === 'custom') {
+    const tokens = buildCustomPalette(custom)
+    return { id: 'custom', name: '自定义配色', base: getLuminance(tokens['--color-background']) > 0.55 ? 'light' : 'dark', tokens }
+  }
+  return getThemePackage(choice, custom) || BUILTIN_THEMES[0]
+}
+
+/** 整包重写所有视觉变量，避免切换时遗留上一个主题的圆角、字体或颜色。 */
 function applyTheme(settings) {
   latestSettings = settings || {}
-  const themeChoice = latestSettings?.custom?.theme || 'dark'
-
-  if (themeChoice === 'system') {
-    const media = ensureSystemListener()
-    const palette = media && media.matches ? SUPPORTED_THEMES.dark : SUPPORTED_THEMES.light
-    applyPalette(palette)
-    return
-  }
-
-  removeSystemListener()
-
-  if (themeChoice === 'custom') {
-    const palette = buildCustomPalette(latestSettings.custom)
-    applyPalette(palette)
-    return
-  }
-
-  const palette = SUPPORTED_THEMES[themeChoice] || SUPPORTED_THEMES.dark
-  applyPalette(palette)
+  const choice = latestSettings.custom?.theme
+  if (['system', 'auto'].includes(choice)) ensureSystemListener()
+  else removeSystemListener()
+  applyPalette(resolveTheme(latestSettings))
 }
 
 function getThemeSnapshot(theme = 'dark') {
-  if (theme === 'system') {
-    if (typeof window !== 'undefined' && window.matchMedia) {
-      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-    }
-    return 'dark'
-  }
-  if (theme === 'custom') {
-    const background = latestSettings?.custom?.customTheme?.background
-    if (background) {
-      return getLuminance(background) > 0.55 ? 'light' : 'dark'
-    }
-    return 'dark'
-  }
-  return theme
+  return resolveTheme({ custom: { ...latestSettings?.custom, theme } }).base
+}
+
+/** 导出完整视觉快照，不带播放队列、快捷键、路径或账号设置。 */
+function createThemePackage(settings, metadata = {}) {
+  const resolved = resolveTheme(settings)
+  const installed = getThemePackage(resolved.id, settings?.custom)
+  const shareId = !['dark', 'light', 'custom'].includes(resolved.id) ? resolved.id
+    : `theme-${globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`}`
+  return normalizeThemePackage({
+    format: 'betterkugou-theme', schemaVersion: 1, id: metadata.id || shareId,
+    name: metadata.name || resolved.name, version: metadata.version || installed?.version || '1.0.0',
+    author: metadata.author ?? installed?.author ?? '', description: metadata.description ?? installed?.description ?? '',
+    base: resolved.base, tokens: { ...resolved.tokens }
+  })
 }
 
 export {
   applyTheme,
   getThemeSnapshot,
+  resolveTheme,
+  createThemePackage,
   SUPPORTED_THEMES
 }

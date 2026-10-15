@@ -1,3 +1,5 @@
+const logger = require('./logger')
+
 const PLATFORM = process.platform
 const IS_WINDOWS = PLATFORM === 'win32'
 const IS_MAC = PLATFORM === 'darwin'
@@ -24,7 +26,7 @@ function getAutoLaunchEnabled(app) {
     const settings = app.getLoginItemSettings(options)
     return Boolean(settings?.openAtLogin)
   } catch (err) {
-    console.warn('[autoLaunch] 读取自启状态失败:', err)
+    logger.warn('autoLaunch', '读取自启状态失败', err)
     throw Object.assign(new Error('AUTO_LAUNCH_READ_FAILED'), { code: 'AUTO_LAUNCH_READ_FAILED', cause: err })
   }
 }
@@ -44,7 +46,7 @@ function setAutoLaunchEnabled(app, enabled) {
     app.setLoginItemSettings(options)
     return getAutoLaunchEnabled(app)
   } catch (err) {
-    console.error('[autoLaunch] 设置自启失败:', err)
+    logger.error('autoLaunch', '设置自启失败', err)
     throw Object.assign(new Error('AUTO_LAUNCH_WRITE_FAILED'), { code: 'AUTO_LAUNCH_WRITE_FAILED', cause: err })
   }
 }

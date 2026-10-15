@@ -1,6 +1,7 @@
 const fs = require('fs')
 const fsp = fs.promises
 const path = require('path')
+const logger = require('./logger')
 
 const {
   isAutoLaunchSupported,
@@ -17,6 +18,21 @@ let defaultsCache = null
 let settingsCache = null
 let appRef = null
 let initPromise = null
+let commitQueue = Promise.resolve()
+
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+/** 拒绝能改变对象原型的字段，先完整检查再执行合并，避免部分更新。 */
+function assertSafeKeys(value, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object' || seen.has(value)) return
+  seen.add(value)
+  Object.keys(value).forEach((key) => {
+    if (UNSAFE_KEYS.has(key)) {
+      throw new TypeError(`Unsafe settings key: ${key}`)
+    }
+    assertSafeKeys(value[key], seen)
+  })
+}
 
 function isPlainObject(value) {
   return Object.prototype.toString.call(value) === '[object Object]'
@@ -34,6 +50,7 @@ function cloneDeep(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+/** 创建合并副本；输入的原型字段由事务入口和 Schema 验证统一拒绝。 */
 function mergeDeep(target, source) {
   if (!isPlainObject(target) && !Array.isArray(target)) {
     return cloneDeep(source)
@@ -55,6 +72,7 @@ function mergeDeep(target, source) {
 }
 
 function ensureSchema(settings) {
+  assertSafeKeys(settings)
   let normalized = cloneDeep(settings)
   if (!isPlainObject(normalized)) {
     normalized = {}
@@ -77,7 +95,7 @@ function notifyListeners() {
     try {
       listener(snapshot)
     } catch (err) {
-      console.error('[settingsStore] listener error:', err)
+      logger.error('settingsStore', 'listener error', err)
     }
   })
 }
@@ -88,15 +106,39 @@ async function readSettingsFromDisk() {
     return JSON.parse(raw)
   } catch (err) {
     if (err.code !== 'ENOENT') {
-      console.warn('[settingsStore] 读取设置文件失败，将使用默认值:', err)
+      logger.warn('settingsStore', '读取设置文件失败，将使用默认值', err)
+      if (err instanceof SyntaxError) {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+        const backupPath = settingsFilePath.replace(/\.json$/i, `.corrupt-${timestamp}.json`)
+        try {
+          await fsp.rename(settingsFilePath, backupPath)
+          logger.warn('settingsStore', `损坏的设置已备份到 ${backupPath}`)
+        } catch (backupError) {
+          logger.warn('settingsStore', '备份损坏设置失败', backupError)
+        }
+      }
     }
     return null
   }
 }
 
+/** 临时文件原子替换正式设置；失败时清理本次临时文件并保留原文件。 */
 async function writeSettingsToDisk(settings) {
   const data = JSON.stringify(settings, null, 2)
-  await fsp.writeFile(settingsFilePath, data, 'utf8')
+  const temporaryPath = `${settingsFilePath}.${process.pid}.tmp`
+  try {
+    await fsp.writeFile(temporaryPath, data, 'utf8')
+    await fsp.rename(temporaryPath, settingsFilePath)
+  } catch (error) {
+    try {
+      await fsp.unlink(temporaryPath)
+    } catch (cleanupError) {
+      if (cleanupError.code !== 'ENOENT') {
+        logger.warn('settingsStore', '清理设置临时文件失败', cleanupError)
+      }
+    }
+    throw error
+  }
 }
 
 function createDefaults(app) {
@@ -119,6 +161,7 @@ function createDefaults(app) {
     custom: {
       playerStyle: 'default',
       theme: 'dark',
+      themePackages: [],
       customTheme: {
         primary: '#667eea',
         hover: '#764ba2',
@@ -161,32 +204,33 @@ async function initSettingsStore(app) {
       await writeSettingsToDisk(stored)
     }
 
-    settingsCache = ensureSchema(stored)
+    const initialized = ensureSchema(stored)
 
-    if (!settingsCache.software) {
-      settingsCache.software = {}
+    if (!initialized.software) {
+      initialized.software = {}
     }
 
     if (isAutoLaunchSupported()) {
       try {
-        const applied = setAutoLaunchEnabled(app, Boolean(settingsCache.software.autoLaunch))
-        settingsCache.software.autoLaunch = applied
+        const applied = setAutoLaunchEnabled(app, Boolean(initialized.software.autoLaunch))
+        initialized.software.autoLaunch = applied
       } catch (err) {
-        console.warn('[settingsStore] 初始化自启设置失败，将以系统实际状态为准:', err)
+        logger.warn('settingsStore', '初始化自启设置失败，将以系统实际状态为准', err)
         try {
           const actual = getAutoLaunchEnabled(app)
-          settingsCache.software.autoLaunch = actual
+          initialized.software.autoLaunch = actual
         } catch (readErr) {
-          console.warn('[settingsStore] 读取系统自启状态失败，默认关闭:', readErr)
-          settingsCache.software.autoLaunch = false
+          logger.warn('settingsStore', '读取系统自启状态失败，默认关闭', readErr)
+          initialized.software.autoLaunch = false
         }
       }
     } else {
-      settingsCache.software.autoLaunch = false
+      initialized.software.autoLaunch = false
     }
 
     // 如果 ensureSchema 增补了字段或修正了自启状态，写回磁盘
-    await writeSettingsToDisk(settingsCache)
+    await writeSettingsToDisk(initialized)
+    settingsCache = initialized
 
     return settingsCache
   })()
@@ -200,10 +244,24 @@ function getSettings() {
   return cloneDeep(settingsCache)
 }
 
+/** 按调用顺序执行整个设置事务，成功落盘后才发布缓存和通知。 */
 async function setSettings(nextSettings, { merge = true } = {}) {
   if (!settingsCache) {
     throw new Error('Settings store not initialized')
   }
+  if (!isPlainObject(nextSettings)) {
+    throw new TypeError('Settings payload must be an object')
+  }
+  assertSafeKeys(nextSettings)
+  const payload = cloneDeep(nextSettings)
+  const task = commitQueue.then(() => commitSettings(payload, merge))
+  // 调用者仍能收到本次失败，后续事务继续使用最后一次成功的缓存。
+  commitQueue = task.catch(() => {})
+  return task
+}
+
+/** 队列内读取已提交状态，协调系统自启设置与磁盘提交，失败时保留旧缓存。 */
+async function commitSettings(nextSettings, merge) {
   let updated
   if (merge) {
     updated = mergeDeep(settingsCache, nextSettings)
@@ -238,14 +296,25 @@ async function setSettings(nextSettings, { merge = true } = {}) {
         if (!autoLaunchError.code) {
           autoLaunchError.code = 'AUTO_LAUNCH_WRITE_FAILED'
         }
-        autoLaunchError.cause = autoLaunchError.cause || err.cause || err
+        autoLaunchError.cause = autoLaunchError.cause || readErr
         autoLaunchError.details = { readError: readErr }
       }
     }
   }
 
+  try {
+    await writeSettingsToDisk(updated)
+  } catch (error) {
+    if (isAutoLaunchSupported() && appRef && updated.software.autoLaunch !== settingsCache.software.autoLaunch) {
+      try {
+        setAutoLaunchEnabled(appRef, Boolean(settingsCache.software.autoLaunch))
+      } catch (rollbackError) {
+        logger.warn('settingsStore', '设置写入失败后恢复系统自启状态失败', rollbackError)
+      }
+    }
+    throw error
+  }
   settingsCache = updated
-  await writeSettingsToDisk(settingsCache)
   notifyListeners()
 
   if (autoLaunchError) {
@@ -309,7 +378,7 @@ async function ensureCacheDirectory() {
   try {
     await fsp.mkdir(cacheDir, { recursive: true })
   } catch (err) {
-    console.warn('[settingsStore] 创建缓存目录失败:', err)
+    logger.warn('settingsStore', '创建缓存目录失败', err)
   }
 }
 

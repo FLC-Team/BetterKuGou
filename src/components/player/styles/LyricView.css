@@ -1,0 +1,124 @@
+.lyric-view {
+  --album-size: clamp(160px, min(25vw, 34vh), 340px);
+  --base-font-size: clamp(20px, 2.2vw, 32px);
+  --current-font-size: clamp(24px, 2.5vw, 36px);
+  position: fixed;
+  inset: 0;
+  z-index: 9990;
+  padding-top: var(--titlebar-height);
+  background: var(--lyric-background);
+  color: var(--lyric-text);
+}
+.lyric-background { position: absolute; inset: 0; overflow: hidden; }
+.background-image { width: 100%; height: 100%; object-fit: cover; filter: blur(50px); transform: scale(1.12); opacity: 0.45; }
+.background-overlay { position: absolute; inset: 0; background: var(--lyric-overlay); }
+
+/* 两栏共享实际可用高度，封面始终有独立的方形尺寸。 */
+.lyric-container {
+  position: relative;
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(260px, 36%) minmax(0, 1fr);
+  gap: clamp(24px, 4vw, 72px);
+  padding: 32px clamp(28px, 5vw, 96px);
+}
+.album-section {
+  width: min(100%, 340px);
+  min-width: 0;
+  align-self: center;
+  justify-self: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+}
+.album-cover-wrapper { width: var(--album-size); aspect-ratio: 1; flex-shrink: 0; }
+.album-cover, .album-cover-placeholder {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: calc(var(--radius-sm) * 1.5);
+  box-shadow: var(--shadow-cover);
+}
+.album-cover-placeholder { display: flex; align-items: center; justify-content: center; background: var(--lyric-cover-placeholder); color: var(--lyric-cover-placeholder-text); }
+.song-info { width: 100%; text-align: center; min-width: 0; }
+.song-title {
+  color: var(--lyric-text);
+  font-size: clamp(21px, 2vw, 28px);
+  font-weight: 600;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.song-artist { margin-top: 8px; font-size: 14px; color: var(--lyric-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.playback-panel { width: 100%; max-width: 320px; }
+.lyric-progress {
+  display: block;
+  width: 100%;
+  height: 22px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+.lyric-progress::-webkit-slider-runnable-track { height: 3px; border-radius: 2px; background: linear-gradient(to right, var(--lyric-text) 0 var(--progress), var(--lyric-track) var(--progress) 100%); }
+.lyric-progress::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 11px; height: 11px; margin-top: -4px; border-radius: 50%; background: var(--lyric-text); }
+.lyric-progress:disabled { opacity: 0.35; cursor: default; }
+.time-display { display: flex; justify-content: space-between; color: var(--lyric-text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.playback-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; }
+.control-btn, .close-btn { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 36px; height: 36px; color: var(--lyric-control); background: transparent; border-radius: 50%; cursor: pointer; transition: color 0.15s ease, background-color 0.15s ease; }
+.control-btn:hover, .close-btn:hover { color: var(--lyric-text); background: var(--lyric-hover); }
+.control-btn:focus-visible, .close-btn:focus-visible, .lyric-progress:focus-visible { outline: 2px solid var(--lyric-text); outline-offset: 4px; }
+.control-btn.play-btn { width: 52px; height: 52px; color: var(--lyric-background); background: var(--lyric-text); }
+.control-btn.play-btn:hover { background: var(--lyric-play-hover); }
+.favorite-btn.active { color: var(--lyric-favorite); }
+.mode-icon { display: block; width: 20px; height: 20px; background: currentColor; mask: var(--mode-icon) center / contain no-repeat; -webkit-mask: var(--mode-icon) center / contain no-repeat; }
+.lyric-tools { display: flex; justify-content: center; margin-top: 12px; }
+.translation-btn { width: auto; height: 28px; gap: 6px; padding: 0 10px; border-radius: 4px; font-size: 12px; }
+.translation-btn svg { width: 15px; height: 15px; }
+.translation-btn.active { color: var(--lyric-text); background: var(--lyric-active-hover); }
+.close-btn { position: absolute; top: 8px; left: 8px; z-index: 20; }
+
+.lyrics-section { min-width: 0; min-height: 0; overflow: hidden; }
+.lyrics-container { position: relative; width: 100%; height: 100%; overflow: hidden; mask-image: linear-gradient(transparent, #000 12%, #000 88%, transparent); }
+.lyric-line { padding: 8px 20px; margin: 0; font-size: var(--base-font-size); text-align: center; line-height: 1.35; color: var(--lyric-line); }
+/* 外层负责纵向定位，内层文字负责横向位移，两个 transform 互不覆盖。 */
+.main-lyric { width: 100%; overflow: hidden; padding: 7px 0; }
+.lyric-text { width: max-content; min-width: 100%; white-space: nowrap; text-align: center; }
+.translation-lyric { font-size: 0.55em; font-weight: 400; line-height: 1.4; color: var(--lyric-translation); overflow-wrap: anywhere; margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.karaoke-char { display: inline-block; vertical-align: baseline; font-weight: 500; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; transition: transform 0.15s ease-out, color 0.1s ease; }
+.karaoke-char.is-space { width: 0.25em; min-width: 0.25em; white-space: pre; pointer-events: none; }
+.bridge-progress-bar { height: 3px; width: min(280px, 70%); border-radius: 2px; pointer-events: none; transform-origin: center; transition: transform 0.05s linear; }
+.bridge-progress-bar.overlay { position: absolute; top: 50%; left: 50%; z-index: 20; }
+.bridge-fade-enter-active, .bridge-fade-leave-active { transition: opacity 0.2s ease; }
+.bridge-fade-enter-from, .bridge-fade-leave-to { opacity: 0; }
+
+@media (max-height: 600px) {
+  .lyric-view { --album-size: clamp(120px, 30vh, 190px); --base-font-size: 20px; --current-font-size: 24px; }
+  .lyric-container { padding-top: 16px; padding-bottom: 16px; }
+  .album-section { gap: 12px; }
+  .song-title { font-size: 20px; }
+  .song-artist { margin-top: 4px; }
+  .playback-controls { margin-top: 8px; }
+  .control-btn.play-btn { width: 44px; height: 44px; }
+  .lyric-tools { margin-top: 6px; }
+}
+@media (max-width: 700px) {
+  .lyric-view { --album-size: clamp(90px, 17vh, 150px); --base-font-size: 18px; --current-font-size: 22px; }
+  .lyric-container { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); gap: 20px; padding: 20px; }
+  .album-section { display: grid; grid-template-columns: var(--album-size) minmax(0, 1fr); width: 100%; max-width: 520px; gap: 10px 20px; }
+  .album-cover-wrapper { grid-row: span 2; }
+  .song-info { text-align: left; }
+  .song-title { font-size: 18px; }
+  .playback-panel { max-width: none; }
+  .playback-controls { margin-top: 4px; gap: 6px; }
+  .lyric-tools { position: absolute; top: 8px; right: 8px; margin: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lyric-line, .karaoke-char, .control-btn { transition: none !important; }
+  .background-image { transform: none; }
+}

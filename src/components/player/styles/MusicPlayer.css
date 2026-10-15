@@ -1,0 +1,498 @@
+.music-player {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--color-background-light);
+  border-top: 1px solid var(--color-border);
+  z-index: 1000;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 网易云选项沿用 BetterKuGou 的底部悬浮胶囊，所有配色仍来自主题包。 */
+.music-player.player-style-netease {
+  left: 5%;
+  right: 5%;
+  bottom: 20px;
+  max-width: 1200px;
+  margin-inline: auto;
+  background: transparent;
+  border: 0;
+}
+.player-style-netease .player-main {
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 1.5fr) minmax(0, 1fr);
+  min-height: 80px;
+  max-width: none;
+  padding: 10px 20px;
+  gap: 20px;
+  background: color-mix(in srgb, var(--color-background-light) 92%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: 15px;
+  box-shadow: var(--shadow-playlist);
+  backdrop-filter: blur(10px);
+}
+.player-style-netease .song-info-section {
+  gap: 12px;
+  overflow: hidden;
+}
+.player-style-netease .song-cover {
+  width: 50px;
+  height: 50px;
+}
+.player-style-netease .song-info-section .favorite-btn {
+  display: none;
+}
+.player-style-netease .song-name {
+  font-size: 14px;
+  font-weight: 500;
+}
+.player-style-netease .player-controls-section {
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+.player-style-netease .netease-controls {
+  gap: 12px;
+}
+.player-style-netease .control-btn {
+  width: 30px;
+  height: 30px;
+}
+.player-style-netease .play-btn {
+  width: 36px;
+  height: 36px;
+  background: transparent;
+  color: var(--color-text);
+}
+.player-style-netease .play-btn svg {
+  width: 30px;
+  height: 30px;
+}
+.player-style-netease .play-btn:hover {
+  color: var(--color-primary);
+  background: var(--bg-hover);
+}
+.player-style-netease .player-extras-section {
+  min-width: 0;
+  gap: 8px;
+}
+.player-style-netease .volume-slider {
+  width: clamp(40px, 6vw, 80px);
+}
+.player-style-netease .netease-progress-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.player-style-netease .netease-progress-wrapper .time-text {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  min-width: 32px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.player-style-netease .netease-progress-wrapper .progress-bar-container {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ============ 默认样式（原有样式）============ */
+
+/* 进度条 */
+.progress-bar-container {
+  height: 4px;
+  background: var(--bg-hover);
+  cursor: pointer;
+  position: relative;
+  border-radius: 2px;
+  padding: 6px 0; /* 增加上下内边距，避免滑块被裁剪 */
+  margin: -6px 0; /* 负外边距补偿，保持整体高度不变 */
+}
+
+.progress-bar {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  left: 0;
+  width: 100%;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  margin: 0;
+  padding: 0;
+  outline: none;
+}
+
+/* Webkit/Blink 浏览器样式 */
+.progress-bar::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 4px;
+  background: linear-gradient(
+    to right,
+    var(--color-primary) 0%,
+    var(--color-primary) var(--progress, 0%),
+    var(--bg-hover) var(--progress, 0%),
+    var(--bg-hover) 100%
+  );
+  border-radius: 2px;
+  border: none;
+}
+
+.progress-bar::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: var(--color-text);
+  border-radius: 50%;
+  cursor: pointer;
+  margin-top: -4px;
+  box-shadow: var(--shadow-slider);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.progress-bar:hover::-webkit-slider-thumb {
+  opacity: 1;
+}
+
+.progress-bar-container:hover .progress-bar::-webkit-slider-runnable-track {
+  background: linear-gradient(
+    to right,
+    var(--color-primary-hover) 0%,
+    var(--color-primary-hover) var(--progress, 0%),
+    var(--bg-hover) var(--progress, 0%),
+    var(--bg-hover) 100%
+  );
+}
+
+/* Firefox 浏览器样式 */
+.progress-bar::-moz-range-track {
+  width: 100%;
+  height: 4px;
+  background: var(--bg-hover);
+  border-radius: 2px;
+  border: none;
+}
+
+.progress-bar::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: var(--color-text);
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+  box-shadow: var(--shadow-slider);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.progress-bar:hover::-moz-range-thumb {
+  opacity: 1;
+}
+
+.progress-bar::-moz-range-progress {
+  background: var(--color-primary);
+  height: 4px;
+  border-radius: 2px;
+}
+
+/* 播放器主体 */
+.player-main {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  padding: var(--spacing-md) var(--spacing-lg);
+  gap: var(--spacing-lg);
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+/* 左侧：歌曲信息 */
+.song-info-section {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  min-width: 0;
+}
+
+.song-cover {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.song-cover:hover {
+  transform: scale(1.05);
+  box-shadow: var(--shadow-player-cover-hover);
+}
+
+.song-details {
+  flex: 1;
+  min-width: 0;
+}
+
+.song-name {
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-bottom: 4px;
+}
+
+.song-artist {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 中间：播放控制 */
+.player-controls-section {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.control-buttons {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+}
+
+.control-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+}
+
+.control-btn:hover {
+  background: var(--color-background);
+  color: var(--color-primary);
+}
+
+.control-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.play-btn {
+  width: 48px;
+  height: 48px;
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+.play-btn:hover {
+  background: var(--color-primary-hover);
+  transform: scale(1.05);
+}
+
+.time-info {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  display: flex;
+  gap: var(--spacing-xs);
+  align-items: center;
+  white-space: nowrap;
+  margin-left: var(--spacing-md);
+}
+
+.separator {
+  opacity: 0.5;
+}
+
+/* 右侧：音量和其他控制 */
+.player-extras-section {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--spacing-md);
+}
+
+.icon-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+}
+
+/* SVG 图标样式重置 */
+.icon-btn img {
+  width: 18px;
+  height: 18px;
+  filter: var(--icon-filter);
+  transition: filter var(--transition-fast);
+}
+
+.icon-btn:hover {
+  background: var(--color-background);
+  color: var(--color-text);
+}
+
+.icon-btn:hover img {
+  filter: var(--icon-hover-filter);
+}
+
+.favorite-btn.active {
+  color: var(--color-error);
+}
+
+.favorite-btn.active:hover {
+  color: var(--color-error-hover);
+}
+
+/* 音量控制 */
+.volume-control {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.volume-slider {
+  width: 100px;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--color-border);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: var(--color-primary);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.volume-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: var(--color-primary);
+  border-radius: 50%;
+  cursor: pointer;
+  border: none;
+}
+
+.volume-slider:hover::-webkit-slider-thumb {
+  background: var(--color-primary-hover);
+}
+
+.volume-slider:hover::-moz-range-thumb {
+  background: var(--color-primary-hover);
+}
+
+/* 响应式 */
+@media (max-width: 1024px) {
+  .player-main {
+    grid-template-columns: 1fr auto 1fr;
+    max-width: 100%;
+  }
+  
+  .volume-slider {
+    width: 80px;
+  }
+}
+
+@media (max-width: 768px) {
+  .player-main {
+    grid-template-columns: 1fr auto auto;
+    padding: var(--spacing-sm) var(--spacing-md);
+  }
+  
+  .song-cover {
+    width: 48px;
+    height: 48px;
+  }
+  
+  .time-info {
+    display: none;
+  }
+  
+  .volume-control {
+    display: none;
+  }
+}
+
+/* 歌词背景作为完整窗口从底部滑入，反向滑出。 */
+.lyric-view-enter-active, .lyric-view-leave-active {
+  transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+.lyric-view-enter-from, .lyric-view-leave-to {
+  transform: translateY(100%);
+}
+.lyric-view-enter-to, .lyric-view-leave-from {
+  transform: translateY(0);
+}
+
+@media (max-width: 900px) {
+  .player-style-netease .player-main {
+    grid-template-columns: minmax(0, 1fr) minmax(220px, 1.4fr) auto;
+    gap: 12px;
+    padding-inline: 16px;
+  }
+  .player-style-netease .volume-slider {
+    display: none;
+  }
+}
+@media (max-width: 600px) {
+  .music-player.player-style-netease {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+  }
+  .player-style-netease .player-main {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 12px;
+    padding: 10px 14px;
+  }
+  .player-style-netease .player-controls-section {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .player-style-netease .song-cover {
+    width: 36px;
+    height: 36px;
+  }
+  .player-style-netease .netease-controls {
+    gap: 16px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lyric-view-enter-active, .lyric-view-leave-active {
+    transition: none;
+  }
+}

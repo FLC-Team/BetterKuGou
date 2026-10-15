@@ -1,0 +1,157 @@
+.sidebar-space {
+  flex: 0 0 calc(var(--sidebar-width) + 2vw);
+  min-width: 0;
+  transition: flex-basis 0.3s ease;
+}
+
+.sidebar-space.sidebar-hidden { flex-basis: 0; }
+
+/* BetterKuGou 浮栏布局；视觉颜色来自 BK 现有主题变量。 */
+.sidebar-container {
+  --sidebar-expanded-width: 180px;
+  position: fixed;
+  left: 1%;
+  top: 20%;
+  bottom: 20%;
+  width: var(--sidebar-width);
+  background: var(--color-background-light);
+  border: 1px solid var(--color-border);
+  border-radius: var(--sidebar-radius);
+  display: flex;
+  flex-direction: column;
+  padding: 10px 0;
+  transition: width 0.3s ease, transform 0.3s ease, visibility 0s;
+  overflow: hidden;
+  z-index: var(--z-dropdown);
+  box-shadow: var(--shadow-sidebar);
+}
+
+.sidebar-container.expanded { width: var(--sidebar-expanded-width); }
+.sidebar-container.is-hidden {
+  transform: translateX(calc(-100% - 2vw));
+  visibility: hidden;
+  pointer-events: none;
+  transition: width 0.3s ease, transform 0.3s ease, visibility 0s 0.3s;
+}
+
+.sidebar-restore {
+  position: fixed;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+  background: var(--color-background-light);
+  border: 1px solid var(--color-border);
+  border-left: 0;
+  border-radius: 0 12px 12px 0;
+  box-shadow: var(--shadow-sidebar);
+  cursor: pointer;
+  z-index: var(--z-dropdown);
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+.sidebar-restore svg { width: 18px; height: 18px; }
+.sidebar-restore:hover { color: var(--color-text); background: var(--color-background-lighter); }
+.sidebar-restore:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+
+.sidebar-top, .sidebar-bottom { flex-shrink: 0; }
+
+.sidebar-scrollable {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  direction: rtl;
+}
+.sidebar-scrollable > * { direction: ltr; }
+.sidebar-scrollable::-webkit-scrollbar { width: 6px; }
+.sidebar-scrollable::-webkit-scrollbar-track { background: transparent; }
+.sidebar-scrollable::-webkit-scrollbar-thumb {
+  background: var(--color-border-light);
+  border-radius: 3px;
+}
+.sidebar-scrollable::-webkit-scrollbar-thumb:hover { background: var(--color-text-tertiary); }
+.sidebar-container:not(.expanded) .sidebar-scrollable::-webkit-scrollbar { width: 0; }
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 12px 15px;
+  text-align: left;
+  cursor: pointer;
+  position: relative;
+  color: var(--color-text-secondary);
+  transition: background-color 0.2s ease, color 0.2s ease;
+  user-select: none;
+}
+.sidebar-item:hover {
+  background: var(--color-background-lighter);
+  color: var(--color-text);
+}
+.sidebar-item.active { color: var(--color-primary); }
+.sidebar-item:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-primary);
+}
+.sidebar-item.requires-login { opacity: 0.65; }
+
+.sidebar-icon-wrapper {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.sidebar-icon {
+  width: 24px;
+  height: 24px;
+  display: block;
+  background: currentColor;
+  mask: var(--sidebar-icon-url) center / contain no-repeat;
+  -webkit-mask: var(--sidebar-icon-url) center / contain no-repeat;
+}
+.sidebar-icon-img { width: 24px; height: 24px; object-fit: cover; }
+.user-avatar-icon { border-radius: 50%; }
+.sidebar-label {
+  margin-left: 15px;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.active-indicator-slider {
+  position: absolute;
+  right: 0;
+  width: 3px;
+  height: 20px;
+  background: var(--color-primary);
+  border-radius: 2px 0 0 2px;
+  pointer-events: none;
+  transition: top 0.3s ease, opacity 0.2s ease;
+}
+.sidebar-divider {
+  height: 1px;
+  background: var(--color-border);
+  margin: 8px 15px;
+  opacity: 0.3;
+  flex-shrink: 0;
+}
+.sidebar-label-enter-active, .sidebar-label-leave-active { transition: opacity 0.2s ease; }
+.sidebar-label-enter-from, .sidebar-label-leave-to { opacity: 0; }
+
+/* 较矮窗口仍保留歌单滚动区，且底部控件不会压到播放器。 */
+@media (max-height: 600px) {
+  .sidebar-container { top: calc(var(--titlebar-height) + 16px); bottom: 100px; }
+  .sidebar-item { padding-top: 8px; padding-bottom: 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-space, .sidebar-container, .sidebar-container.is-hidden, .sidebar-restore, .sidebar-item, .active-indicator-slider,
+  .sidebar-label-enter-active, .sidebar-label-leave-active { transition: none; }
+}

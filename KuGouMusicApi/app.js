@@ -1,8 +1,6 @@
 #!/usr/bin/env node
-// import { startService } from './server';
-async function start() {
-  // await startService();
-  require('./server').startService();
-}
-
-start();
+// 服务构建失败时保留错误上下文，通知父进程而不是产生未处理的 Promise 拒绝。
+require('./server').startService().catch((error) => {
+  console.error('[API startup]', error);
+  process.exitCode = 1;
+});

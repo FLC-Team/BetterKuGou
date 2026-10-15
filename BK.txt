@@ -1,0 +1,87 @@
+# BetterKuGou 项目逻辑速查
+
+本文件保留既有历史资料。当前项目逻辑与维护规则以 BK.md、各目录同名 .md、AGENTS.md 和 agent.md 为准。
+
+## 更新日期：2026-10-14
+
+## 模块结构
+
+- `src/App.vue`：根级页面切换、登录状态、播放队列、会话恢复和快捷键。
+- `src/views/`：主页、搜索、收藏、排行、歌手、专辑、登录、推荐和设置页面。
+  - `logic/ArtistView.js`、`logic/FavoriteView.js`：复杂页面逻辑。
+  - `styles/`：Artist、Favorite、Settings 的 scoped 样式。
+- `src/components/`：可复用组件。
+  - `common/`：`ContextMenu.vue`。
+  - `layout/`：`TitleBar.vue`、`Sidebar.vue`、`UserMenu.vue`。
+  - `player/`：播放器、歌词、播放列表及独立逻辑/样式。
+- `src/api/`：登录与音乐 HTTP 封装，目标为 `localhost:6500`；识别酷狗认证失效响应并通知根组件退出假登录状态。
+- `src/stores/settingsStore.js`：渲染侧设置、迁移和播放会话快照。
+- `src/themes/`：内置深色/浅色主题包、共享校验目录及可导入示例；完整文件格式见 themes.md。
+- `src/components/common/ThemePackages.vue`：主题切换、文件导入更新、移除及独立视觉快照导出。
+- `electron/main.js`：窗口、托盘、IPC、快捷键和应用退出编排。
+- `electron/services/backendService.js`：本地 API 启停、健康检查和超时清理。
+- `electron/settingsStore.js`：主进程设置的串行原子持久化与损坏文件备份。
+- `KuGouMusicApi/server.js`：动态 API 路由、缓存、请求转发和敏感参数脱敏。
+
+## 关键函数
+
+- `createBackendService(options)`：创建独立的 API 生命周期服务。
+- `backendService.start()`：解析开发/生产 API 路径并通过 `utilityProcess.fork()` 启动。
+- `backendService.checkHealth()`：请求本地根路由并向渲染进程广播连接状态。
+- `backendService.stop()`：清理定时器、终止 Utility Process，超时后按 PID 清理进程树。
+- `performApplicationCleanup()`：清理快捷键、窗口、后端服务、托盘和内存任务。
+- `initSettingsStore(app)`：加载、迁移、补全并保存用户设置。
+- `writeSettingsToDisk(settings)`：串行写临时文件，再原子替换 `settings.json`。
+- `initSettings()`：渲染侧优先读取 Electron 设置，浏览器预览时回退 LocalStorage。
+- `createThemeCatalog(defaultDark, defaultLight)`：渲染和主进程共用的主题包校验、补全、去重与目录 API。
+- `applyTheme(settings)`：解析主题并完整重写视觉变量，管理系统配色监听。
+- `createThemePackage(settings, metadata)`：仅导出视觉参数和主题元数据，不包含账户或播放会话。
+- `saveSessionSnapshot(partial)`：保存播放列表、歌曲、进度、音量和播放模式。
+- `getSafeRequestUrl(originalUrl)`：对 API 日志中的敏感查询参数脱敏。
+- `handleAuthExpired()`：清除已失效的本地登录信息，重置用户页面状态并打开登录页。
+- `loadFavorites()`：兼容多种歌单/歌曲返回字段和数字型收藏歌单 ID，认证失效时不再回退到过期缓存。
+
+## 数据流
+
+1. Vite 启动 Electron，Electron 初始化设置与系统托盘。
+2. 主进程调用 `backendService.start()` 启动端口 6500 的本地 API。
+3. Vue 通过 `settingsAPI` 加载设置；`App.vue` 恢复会话并渲染 `views/index.js` 暴露的页面。
+4. 页面调用 `src/api/auth.js` 或 `src/api/music.js`，本地 API 再请求酷狗服务；若返回认证错误 `20017`，`music.js` 派发认证失效事件，由 `App.vue` 清理会话并显示登录页。
+5. `MusicPlayer.js` 管理音频、歌词和队列；状态经 `saveSessionSnapshot()` 写回主进程。
+6. 应用退出时统一停止本地 API，不保留端口监听进程。
+7. 主题文件校验后进入 custom.themePackages，选择的 ID 写入 custom.theme；themeManager 解析完整变量应用到根元素，切换和启动恢复共用设置流程。
+
+## 依赖关系
+
+- 运行依赖：Vue 3、Axios。
+- 开发/打包：Vite、`vite-plugin-electron`、Electron、electron-builder。
+- 本地 API 依赖独立维护在 `KuGouMusicApi/package.json`，根项目 `postinstall` 自动安装其生产依赖。
+- electron-builder 将 `KuGouMusicApi/` 复制到 `resources/backend/`，不依赖系统 Node.js。
+
+## 维护约束
+
+- 页面只进入 `src/views/`；通用组件进入 `src/components/<类别>/`。
+- 新复杂服务优先从 `electron/main.js` 抽到 `electron/services/`。
+- Logo 统一使用 `public/logo.png`，Electron 加载页、托盘和渲染页面共同复用；加载状态统一使用全局 `.loading-spinner`。
+- 项目当前没有插件加载器，不恢复空的 `plugins/`、`config/` 或第二套 `globalState`。
+- 修改目录或关键调用关系后同步本文件和 `PROJECT_STRUCTURE.md`。
+
+## 构建命令
+
+- 开发：`npm run electron:dev`
+- 编译：`npm run build`
+- 当前平台目录包：`npm run electron:build -- --dir`
+- Windows 安装包：`npm run build:win`
+- 输出：`dist/`、`dist-electron/`、`release/`
+
+## 最近变更记录
+
+- [2026-07-19] 修复“我喜欢的音乐”无法打开：识别失效 token、退出假登录状态，并兼容新版歌单/歌曲字段与数字型 `list_id`。
+- [2026-07-19] 页面迁移到 `src/views/`，组件按 `common/layout/player` 分层并增加公共出口。
+- [2026-07-19] MusicPlayer、LyricView、ArtistView、FavoriteView 拆分模板、逻辑和 scoped 样式。
+- [2026-07-19] 后端生命周期从 `electron/main.js` 抽取到 `electron/services/backendService.js`。
+- [2026-07-19] 删除未接入入口的 main/globalState/loggerManager/plugin/config 草案及冗余开发脚本。
+- [2026-07-19] 删除两份重复 Logo 和 1.8 MB 加载 GIF，Electron 与渲染页面统一公共 Logo 和 CSS 加载状态。
+- [2026-07-19] 清理旧构建依赖和 renderer 兼容插件，修正 GitHub Release 输出目录。
+- [2026-07-19] 设置持久化采用串行原子替换，损坏 JSON 自动备份。
+- [2026-07-19] API 日志对 token、cookie、password 等敏感参数脱敏。
