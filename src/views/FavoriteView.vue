@@ -15,6 +15,15 @@
 
       <div class="section-heading"><h2>曲目</h2><span>每一首，都是喜欢的理由</span></div>
 
+      <div class="playlist-search" role="search" aria-label="歌单内搜索">
+        <div class="playlist-search-field">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4 4" /></svg>
+          <input ref="playlistSearch" v-model="searchQuery" type="search" aria-label="搜索此歌单的歌曲、歌手或专辑" placeholder="搜索此歌单的歌曲、歌手或专辑" autocomplete="off" @keydown.esc.stop.prevent="searchQuery = ''" />
+          <button v-if="searchQuery" type="button" class="clear-search" aria-label="清空歌单搜索" @click="searchQuery = ''; $refs.playlistSearch?.focus()">×</button>
+        </div>
+        <p class="playlist-search-count" role="status" aria-live="polite">{{ hasSearchQuery ? `找到 ${filteredFavoriteList.length} 首 / 共 ${favoriteList.length} 首` : `共 ${favoriteList.length} 首歌曲` }}</p>
+      </div>
+
       <div v-if="errorMessage && favoriteList.length > 0" class="refresh-error" role="alert">
         <span>{{ errorMessage }}</span>
         <button type="button" class="action-btn" :disabled="loading" @click="loadFavorites(true)">重试</button>
@@ -45,6 +54,12 @@
         </button>
       </div>
 
+      <div v-else-if="filteredFavoriteList.length === 0" class="empty-state">
+        <p class="empty-text">没有找到匹配的歌曲</p>
+        <p class="empty-hint">试试其他歌名、歌手或专辑，或清空搜索查看全部歌曲。</p>
+        <button type="button" class="action-btn" @click="searchQuery = ''">清空搜索</button>
+      </div>
+
       <!-- 歌曲列表 -->
       <div v-else class="song-list">
         <div class="list-header">
@@ -62,7 +77,7 @@
         </div>
 
         <div
-          v-for="(song, index) in sortedFavoriteList"
+          v-for="song in filteredFavoriteList"
           :key="song.hash"
           class="song-item"
           :class="{ playing: isCurrentlyPlaying(song) }"
@@ -71,16 +86,19 @@
           @contextmenu.prevent.stop="showContextMenu($event, song)"
         >
           <div class="col-index">
-            <span class="index-number">{{ String(index + 1).padStart(2, '0') }}</span>
+            <span class="index-number">{{ String(song.index).padStart(2, '0') }}</span>
           </div>
 
           <div class="col-title">
             <ArtworkCover :src="song.cover || ''" class="song-cover" />
             <div class="song-info">
-              <button type="button" class="song-name" @click.stop="playSong(song)" @dblclick.stop :title="getSongName(song.name)">
-                {{ getSongName(song.name) }}
-                <span v-if="song.relate_goods && song.relate_goods.some(g => g.level >= 5)" class="quality-badge">SQ</span>
-              </button>
+              <div class="song-title-line">
+                <button type="button" class="song-name" @click.stop="playSong(song)" @dblclick.stop :title="getSongName(song.name)">
+                  {{ getSongName(song.name) }}
+                  <span v-if="song.relate_goods && song.relate_goods.some(g => g.level >= 5)" class="quality-badge">SQ</span>
+                </button>
+                <SongBadges :song="song" />
+              </div>
               <button type="button" class="artist-link mobile-artist" @click.stop="goArtist(song)" @dblclick.stop>{{ getSingerNames(song.singerinfo, song) || song.singername || song.author_name || (song.name?.includes(' - ') ? song.name.split(' - ')[0] : '未知歌手') }}</button>
             </div>
           </div>

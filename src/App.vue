@@ -1,24 +1,156 @@
 <script setup>
 import { logger } from './utils/logger.js'
 
-import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ref, computed, defineAsyncComponent, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { TitleBar, Sidebar, MusicPlayer } from './components/index.js'
-import {
-  LoginView,
-  HomeView,
-  FavoriteView,
-  SettingsView,
-  PersonalFMView,
-  DailyRecommendView,
-  RankDetailView,
-  SearchView,
-  ArtistView,
-  AlbumDetailView
-} from './views/index.js'
+import HomeView from './views/HomeView.vue'
 import { clearLoginInfo, getLoginInfo, isLoggedIn } from './api/auth.js'
 import { getUserPlaylists, KUGOU_AUTH_EXPIRED_EVENT } from './api/music.js'
 import { useSettingsStore } from './stores/settingsStore.js'
 import { cloneDeep } from './utils/objectUtils.js'
+import ThemeRecovery from './components/common/ThemeRecovery.vue'
+
+/** 非首页界面首次使用时加载，保留原组件名供 KeepAlive 缓存。 */
+function createLazyView(name, loader) {
+  return defineAsyncComponent({
+    loader,
+    onError(error, _retry, fail) {
+      logger.error('App', `加载${name}界面失败`, error)
+      fail()
+    }
+  })
+}
+
+const LoginView = createLazyView('登录', () => import('./views/LoginView.vue'))
+const FavoriteView = createLazyView('收藏与歌单', () => import('./views/FavoriteView.vue'))
+const SettingsView = createLazyView('设置', () => import('./views/SettingsView.vue'))
+const PersonalFMView = createLazyView('私人 FM', () => import('./views/PersonalFMView.vue'))
+const DailyRecommendView = createLazyView('每日推荐', () => import('./views/DailyRecommendView.vue'))
+const RankDetailView = createLazyView('排行榜', () => import('./views/RankDetailView.vue'))
+const SearchView = createLazyView('搜索', () => import('./views/SearchView.vue'))
+const ArtistView = createLazyView('歌手', () => import('./views/ArtistView.vue'))
+const AlbumDetailView = createLazyView('专辑', () => import('./views/AlbumDetailView.vue'))
+const ThemeStudio = createLazyView('外观编辑器', () => import('./components/common/ThemeStudio.vue'))
+
+const themeStudioOpen = ref(false)
+const settingsViewRef = ref(null)
+const preparingInstall = ref(false)
+let installPreparationRequestId = null
+let unsubscribeInstallPreparation = null
+const installBlockedEvents = ['pointerdown', 'click', 'keydown', 'input', 'change', 'submit']
+
+function blockInputDuringInstall(event) {
+  if (!preparingInstall.value) return
+  event.preventDefault()
+  event.stopImmediatePropagation()
+}
+
+function setInstallPreparation(active) {
+  preparingInstall.value = active
+  for (const name of installBlockedEvents) {
+    if (active) document.addEventListener(name, blockInputDuringInstall, true)
+    else document.removeEventListener(name, blockInputDuringInstall, true)
+  }
+}
+
+/** 安装器明确请求后，等草稿和最终会话落盘才确认；取消使迟到的保存结果失效。 */
+async function handleInstallPreparation(message) {
+  const api = window.electronAPI?.updates
+  if (!message || typeof message.requestId !== 'string') return
+  if (message.phase === 'canceled') {
+    if (installPreparationRequestId !== message.requestId) return
+    installPreparationRequestId = null
+    setInstallPreparation(false)
+    resetAutoLyricTimer()
+    queueSessionPersist()
+    return
+  }
+  if (message.phase !== 'prepare' || installPreparationRequestId || !api?.completePrepareForInstall) return
+  const requestId = message.requestId
+  installPreparationRequestId = requestId
+  setInstallPreparation(true)
+  clearAutoLyricTimer()
+  if (sessionPersistTimer) clearTimeout(sessionPersistTimer)
+  sessionPersistTimer = null
+  const isCurrent = () => installPreparationRequestId === requestId && !isAppUnmounting
+  try {
+    await nextTick()
+    if (!isCurrent()) return
+    if (!settingsReady.value) throw new Error('设置尚未就绪，无法准备更新')
+    if (settingsViewRef.value && !await settingsViewRef.value.flushEditableSettings()) {
+      throw new Error('设置草稿保存失败')
+    }
+    if (!isCurrent()) return
+    await nextTick()
+    // MediaSession、已开始的异步选歌及自然续播不经过 DOM。写入期间若它们
+    // 改变歌曲、队列或跳转位置，重新保存，不能确认一个已过期的快照。
+    while (isCurrent()) {
+      const snapshot = collectSessionSnapshot()
+      if (hasPlayer.value && shouldPersistSession() && !Object.keys(snapshot).length) {
+        throw new Error('歌曲尚未加载完成，无法确认最终播放会话')
+      }
+      const capturedAt = Date.now()
+      if (Object.keys(snapshot).length) await saveSessionSnapshot(snapshot)
+      if (!isCurrent()) return
+      await flushPendingSettings()
+      await nextTick()
+      if (!isCurrent()) return
+      if (sameInstallSession(snapshot, collectSessionSnapshot(), capturedAt)) break
+    }
+    if (!isCurrent()) return
+    const result = await api.completePrepareForInstall(requestId, { success: true })
+    if (isCurrent() && (result?.success === false || result?.accepted === false)) {
+      installPreparationRequestId = null
+      setInstallPreparation(false)
+      resetAutoLyricTimer()
+    }
+  } catch (error) {
+    if (!isCurrent()) return
+    logger.error('App', '安装前保存状态失败', error)
+    try {
+      await api.completePrepareForInstall(requestId, { success: false, errorCode: 'SAVE_FAILED' })
+    } catch (reportError) {
+      logger.error('App', '报告安装准备失败时通信异常', reportError)
+    } finally {
+      if (isCurrent()) {
+        installPreparationRequestId = null
+        setInstallPreparation(false)
+        resetAutoLyricTimer()
+      }
+    }
+  }
+}
+
+/** 自然播放时间允许前进，选歌、暂停、音量、队列和实际跳转必须重新保存。 */
+function sameInstallSession(saved, current, capturedAt) {
+  const withoutClock = value => {
+    const copy = { ...value }
+    if (copy.playbackState) {
+      copy.playbackState = { ...copy.playbackState }
+      delete copy.playbackState.currentTime
+      delete copy.playbackState.duration
+    }
+    return copy
+  }
+  if (JSON.stringify(withoutClock(saved)) !== JSON.stringify(withoutClock(current))) return false
+  if (!saved.playbackState || !current.playbackState) return true
+  const elapsed = saved.playbackState.isPlaying ? Math.max(0, Date.now() - capturedAt) / 1000 : 0
+  const savedTime = Number(saved.playbackState.currentTime)
+  const currentTime = Number(current.playbackState.currentTime)
+  if (saved.playbackState.isPlaying) {
+    // 缓冲中 isPlaying 仍可能为 true；停留原位置也是有效的自然播放状态。
+    return currentTime >= savedTime - .05 && currentTime <= savedTime + elapsed + 1
+  }
+  return Math.abs(currentTime - savedTime) <= .05
+}
+
+async function openThemeStudio() {
+  if (settingsViewRef.value && !await settingsViewRef.value.flushEditableSettings()) return
+  themeStudioOpen.value = true
+}
+async function prepareThemeRecovery(base) {
+  return settingsViewRef.value?.prepareThemeRecovery(base)
+}
 
 logger.trace('App', 'App.vue loaded')
 
@@ -252,6 +384,7 @@ const handleCreatePlaylist = () => {
 
 // 处理播放歌曲
 const handlePlay = (song) => {
+  restoredPlaybackState.value = null
   logger.trace('App', '🎵 [App.vue] handlePlay 调用:', song.name || song.filename)
   logger.trace('App', '🎵 [App.vue] 歌曲 hash:', song.hash)
   logger.trace('App', '🎵 [App.vue] 旧 currentSong:', currentSong.value?.name)
@@ -279,36 +412,12 @@ const handlePlayAll = async (songs) => {
   }
 
   try {
-    // 使用批量更新策略，避免频繁的响应式更新
-    const batch = async () => {
-      // 分批添加歌曲，避免一次性处理大量数据导致UI卡顿
-      const batchSize = 100
-      const batches = []
-      for (let i = 0; i < songs.length; i += batchSize) {
-        batches.push(songs.slice(i, i + batchSize))
-      }
-
-      // 先添加第一批歌曲并开始播放（避免先清空导致播放器重置）
-      if (batches.length > 0) {
-        // 直接设置第一批歌曲，不先清空
-        playlist.value = [...batches[0]]
-        playlistIndex.value = 0
-        currentSong.value = songs[0]
-
-        // 等待第一首歌曲开始加载
-        await nextTick()
-
-        // 异步添加剩余批次
-        if (batches.length > 1) {
-          for (let i = 1; i < batches.length; i++) {
-            await nextTick() // 每批之间给UI更新的机会
-            playlist.value = [...playlist.value, ...batches[i]]
-          }
-        }
-      }
-    }
-
-    await batch()
+    // 一次发布完整队列，避免 nextTick 微任务分批反复渲染和覆盖后续选歌。
+    restoredPlaybackState.value = null
+    playlist.value = [...songs]
+    playlistIndex.value = 0
+    currentSong.value = songs[0]
+    await nextTick()
 
     if (process.env.NODE_ENV === 'development') {
       logger.trace('App', '已添加', songs.length, '首歌曲到播放列表')
@@ -374,6 +483,7 @@ const handleSearchRequest = async (keywords) => {
 // 处理清空播放列表
 const handleClearPlaylist = () => {
   logger.trace('App', '清空播放列表')
+  restoredPlaybackState.value = null
 
   playlist.value = []
   playlistIndex.value = 0
@@ -385,6 +495,7 @@ const handlePlaylistUpdated = (songs) => {
   if (!Array.isArray(songs)) return
   playlist.value = songs
   if (songs.length === 0) {
+    restoredPlaybackState.value = null
     playlistIndex.value = 0
     currentSong.value = null
     return
@@ -400,6 +511,7 @@ const {
   settings,
   ready: settingsReady,
   saveSessionSnapshot,
+  flushPendingSettings,
   getSessionSnapshot,
   defaults: getSettingsDefaults
 } = useSettingsStore()
@@ -407,9 +519,11 @@ const {
 const defaultSessionTemplate = cloneDeep(getSettingsDefaults().session)
 const hasAppliedDefaultPage = ref(false)
 const hasRestoredSession = ref(false)
+const restoredPlaybackState = ref(null)
 let sessionPersistTimer = null
+let sessionCheckpointTimer = null
 let isRestoringSession = false
-let cleanupPlaybackSessionRestore = null
+const SESSION_CHECKPOINT_INTERVAL = 5000
 
 // 歌词界面显示状态
 const isLyricViewVisible = ref(false)
@@ -455,6 +569,7 @@ const handleNext = () => {
 const handleSongChanged = (song) => {
   logger.trace('App', '🎵 [App.vue] handleSongChanged - 歌曲已切换:', song.name || song.filename)
   logger.trace('App', '🎵 [App.vue] 歌曲 hash:', song.hash)
+  restoredPlaybackState.value = null
   // 避免对相同歌曲重复赋值，减少不必要的触发
   if (!currentSong.value || currentSong.value.hash !== song.hash) {
     currentSong.value = song
@@ -464,6 +579,7 @@ const handleSongChanged = (song) => {
   if (index !== -1) {
     playlistIndex.value = index
   }
+  void queueSessionPersist({ immediate: true })
 
   // 🔧 新的智能自动全屏逻辑：
   // - 如果用户已经在歌词界面，保持在歌词界面
@@ -549,6 +665,7 @@ const handleFavoritesChanged = () => {
 
 // 快捷键处理
 const handleKeyDown = (event) => {
+  if (preparingInstall.value) return
   // 如果正在输入,忽略快捷键
   const target = event.target
   if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
@@ -711,6 +828,7 @@ watch(
 onMounted(() => {
   if (window.electronAPI?.onGlobalShortcut) {
     unsubscribeGlobalShortcut = window.electronAPI.onGlobalShortcut((action) => {
+      if (preparingInstall.value) return
       logger.trace('App', '🌐 全局快捷键触发:', action)
 
       // 执行对应的操作
@@ -755,6 +873,8 @@ onMounted(() => {
 // 应用启动时检查登录状态
 onMounted(() => {
 
+  unsubscribeInstallPreparation = window.electronAPI?.updates?.onPrepareForInstall?.(handleInstallPreparation)
+
   // 添加快捷键监听
   document.addEventListener('keydown', handleKeyDown)
 
@@ -773,6 +893,7 @@ onMounted(() => {
     window.addEventListener('beforeunload', handleBeforeUnload)
     window.addEventListener(KUGOU_AUTH_EXPIRED_EVENT, handleAuthExpired)
   }
+  startSessionCheckpoint()
 
   // 监听内存清理事件
   if (window.electronAPI && window.electronAPI.onMemoryCleanup) {
@@ -784,12 +905,15 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   isAppUnmounting = true
+  installPreparationRequestId = null
+  setInstallPreparation(false)
+  unsubscribeInstallPreparation?.()
   playlistDirectoryRequestId++
   playlistDirectoryTask = null
   shortcutGeneration += 1
   unsubscribeGlobalShortcut?.()
   unsubscribeMemoryCleanup?.()
-  cleanupPlaybackSessionRestore?.()
+  stopSessionCheckpoint()
   // 移除快捷键监听
   document.removeEventListener('keydown', handleKeyDown)
 
@@ -866,30 +990,27 @@ function shouldPersistSession() {
 }
 
 function collectSessionSnapshot() {
+  const player = musicPlayerRef.value
+  const confirmed = hasPlayer.value ? player?.getPlaybackSnapshot?.() : null
+  // 父级 currentSong 也承载待选目标。首曲尚未确认或新队列尚未接管音源时，
+  // 保留磁盘上的有效会话，不能把新歌身份与旧音源进度拼在一起。
+  if (hasPlayer.value && (!confirmed || !playlist.value.some(song => song.hash === confirmed.currentSong.hash))) return {}
   const snapshot = {}
   if (settings.software?.restorePlaylist) {
     snapshot.playlist = cloneDeep(playlist.value)
-    snapshot.playlistIndex = playlistIndex.value
-    snapshot.currentSong = cloneDeep(currentSong.value)
+    snapshot.currentSong = cloneDeep(confirmed?.currentSong || null)
+    snapshot.playlistIndex = confirmed ? playlist.value.findIndex(song => song.hash === confirmed.currentSong.hash) : 0
   }
 
   if (settings.software?.restorePlaybackState) {
-    const player = musicPlayerRef.value
-    const audio = player?.$refs?.audioPlayer
-    snapshot.playbackState = {
-      isPlaying: player?.isPlaying ?? false,
-      currentTime: audio?.currentTime ?? 0,
-      duration: audio?.duration ?? 0,
-      volume: player?.volume ?? 80,
-      playMode: player?.playMode ?? 'loop'
-    }
+    snapshot.playbackState = cloneDeep(confirmed?.playbackState || defaultSessionTemplate.playbackState)
   }
 
   return snapshot
 }
 
 function queueSessionPersist({ immediate = false } = {}) {
-  if (!settingsReady.value) return
+  if (!settingsReady.value || !hasRestoredSession.value || isRestoringSession || isAppUnmounting || preparingInstall.value) return
 
   if (!shouldPersistSession()) {
     return
@@ -908,8 +1029,9 @@ function queueSessionPersist({ immediate = false } = {}) {
   }
 
   if (immediate) {
-    void persist()
-    return
+    if (sessionPersistTimer) clearTimeout(sessionPersistTimer)
+    sessionPersistTimer = null
+    return persist()
   }
 
   if (sessionPersistTimer) {
@@ -921,67 +1043,23 @@ function queueSessionPersist({ immediate = false } = {}) {
   }, 300)
 }
 
-async function applyPlaybackSession(state) {
-  if (!state) return
-  const player = musicPlayerRef.value
-  const audio = player?.$refs?.audioPlayer
-  if (!player || !audio) return
-  cleanupPlaybackSessionRestore?.()
-  const songHash = currentSong.value?.hash
-
-  const applyState = () => {
-    if (isAppUnmounting || currentSong.value?.hash !== songHash) return
-    if (state.playMode) {
-      player.playMode = state.playMode
-    }
-    if (typeof state.volume === 'number') {
-      player.volume = state.volume
-      audio.volume = Math.min(1, Math.max(0, state.volume / 100))
-    }
-    if (typeof state.currentTime === 'number') {
-      const targetTime = Math.max(0, state.currentTime)
-      audio.currentTime = Number.isFinite(targetTime) ? targetTime : 0
-      player.currentTime = audio.currentTime
-    }
-    if (typeof state.duration === 'number') {
-      player.duration = state.duration
-    }
-    if (state.isPlaying) {
-      audio.play().then(() => {
-        if (!isAppUnmounting && currentSong.value?.hash === songHash) player.isPlaying = !audio.paused
-      }).catch(error => {
-        if (isAppUnmounting || currentSong.value?.hash !== songHash) return
-        player.isPlaying = false
-        logger.warn('App', '恢复播放失败:', error)
-      })
-    } else {
-      audio.pause()
-      player.isPlaying = false
-    }
-  }
-
-  if (audio.readyState >= 1) {
-    applyState()
-    return
-  }
-
-  const handleLoaded = () => {
-    cleanupPlaybackSessionRestore?.()
-    applyState()
-  }
-
-  cleanupPlaybackSessionRestore = () => {
-    audio.removeEventListener('loadedmetadata', handleLoaded)
-    audio.removeEventListener('loadeddata', handleLoaded)
-    cleanupPlaybackSessionRestore = null
-  }
-
-  audio.addEventListener('loadedmetadata', handleLoaded)
-  audio.addEventListener('loadeddata', handleLoaded)
+/** 持续播放也定期落盘；等待本次保存后再计时，慢磁盘不会累积检查点任务。 */
+function startSessionCheckpoint() {
+  stopSessionCheckpoint()
+  sessionCheckpointTimer = setTimeout(async () => {
+    sessionCheckpointTimer = null
+    await queueSessionPersist({ immediate: true })
+    if (!isAppUnmounting) startSessionCheckpoint()
+  }, SESSION_CHECKPOINT_INTERVAL)
 }
 
-async function restoreSessionIfNeeded() {
-  if (hasRestoredSession.value || !settingsReady.value) return
+function stopSessionCheckpoint() {
+  if (sessionCheckpointTimer) clearTimeout(sessionCheckpointTimer)
+  sessionCheckpointTimer = null
+}
+
+function restoreSessionIfNeeded() {
+  if (hasRestoredSession.value || isRestoringSession || !settingsReady.value) return
   const session = getSessionSnapshot()
   const shouldRestorePlaylist = Boolean(settings.software?.restorePlaylist && Array.isArray(session.playlist) && session.playlist.length > 0)
   const shouldRestorePlayback = Boolean(settings.software?.restorePlaybackState && session.playbackState)
@@ -1000,12 +1078,10 @@ async function restoreSessionIfNeeded() {
       playlistIndex.value = playlistLength > 0 ? targetIndex : 0
       const fallbackSong = playlistLength > 0 ? (session.playlist?.[targetIndex] || session.playlist?.[0] || null) : null
       currentSong.value = cloneDeep(session.currentSong || fallbackSong)
-    }
-
-    await nextTick()
-
-    if (shouldRestorePlayback) {
-      await applyPlaybackSession(session.playbackState)
+      const actualIndex = playlist.value.findIndex(song => song.hash === currentSong.value?.hash)
+      if (actualIndex !== -1) playlistIndex.value = actualIndex
+      restoredPlaybackState.value = shouldRestorePlayback && currentSong.value?.hash
+        ? { ...cloneDeep(session.playbackState), songHash: currentSong.value.hash } : null
     }
 
     hasRestoredSession.value = true
@@ -1017,9 +1093,11 @@ async function restoreSessionIfNeeded() {
 watch(
   [settingsReady, () => settings.session, () => settings.software?.restorePlaylist, () => settings.software?.restorePlaybackState],
   () => {
-    void restoreSessionIfNeeded().catch(error => {
+    try {
+      restoreSessionIfNeeded()
+    } catch (error) {
       logger.error('App', '恢复播放会话失败:', error)
-    })
+    }
   },
   { immediate: true }
 )
@@ -1039,7 +1117,7 @@ watch(playlist, () => {
 }, { deep: true })
 
 watch(currentSong, () => {
-  cleanupPlaybackSessionRestore?.()
+  if (currentSong.value?.hash !== restoredPlaybackState.value?.songHash) restoredPlaybackState.value = null
   if (isRestoringSession) return
   queueSessionPersist({ immediate: true })
 })
@@ -1060,7 +1138,7 @@ watch(currentSong, (newVal, oldVal) => {
 }, { deep: true })
 
 watch(
-  () => musicPlayerRef.value?.isPlaying,
+  [() => musicPlayerRef.value?.isPlaying, () => musicPlayerRef.value?.volume, () => musicPlayerRef.value?.playMode],
   () => {
     if (isRestoringSession) return
     queueSessionPersist({ immediate: true })
@@ -1142,6 +1220,14 @@ function performMemoryCleanup() {
 </script>
 
 <template>
+  <Teleport to="body">
+    <div v-if="preparingInstall" class="install-preparation" role="status" aria-live="polite">
+      <div class="install-preparation-message">
+        <p>正在保存，准备更新</p>
+        <span>保存完成后将关闭 BetterKuGou，请稍候。</span>
+      </div>
+    </div>
+  </Teleport>
   <div class="app-container" :class="{ 'has-player': hasPlayer, 'has-floating-player': hasPlayer && settings.custom?.playerStyle === 'netease' }">
     <TitleBar
       @show-login="handleShowLogin"
@@ -1179,8 +1265,10 @@ function performMemoryCleanup() {
                 @back="handleBackToMain" @loginSuccess="handleLoginSuccess"
               />
               <SettingsView
+                ref="settingsViewRef"
                 v-else-if="currentView === 'settings'" key="settings" class="page-view view-settings"
                 @close="handleCloseSettings" @settings-changed="handleSettingsChanged"
+                @open-theme-studio="themeStudioOpen = true"
               />
               <HomeView
                 v-else-if="currentView === 'home'" key="home" class="page-view view-home"
@@ -1257,9 +1345,11 @@ function performMemoryCleanup() {
         ref="musicPlayerRef"
         :song="currentSong"
         :playlist="playlist"
+        :initial-playback-state="restoredPlaybackState"
         @previous="handlePrevious"
         @next="handleNext"
         @song-changed="handleSongChanged"
+        @playback-state-changed="queueSessionPersist({ immediate: true })"
         @toggle-playlist="handleTogglePlaylist"
         @toggle-favorite="handleToggleFavorite"
         @clear-playlist="handleClearPlaylist"
@@ -1268,6 +1358,8 @@ function performMemoryCleanup() {
       />
     </Transition>
   </div>
+  <ThemeStudio v-if="themeStudioOpen" @close="themeStudioOpen = false" />
+  <ThemeRecovery :prepare-restore="prepareThemeRecovery" @open-editor="openThemeStudio" />
 </template>
 
 <style src="./App.css" scoped></style>

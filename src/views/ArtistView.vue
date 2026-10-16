@@ -38,10 +38,13 @@
             <div class="col-title">
               <ArtworkCover :src="song.cover || ''" class="song-cover" />
               <div class="song-info">
-                <button type="button" class="song-name" @click.stop="play(song)" @dblclick.stop :title="getSongName(song.name)">
-                  {{ getSongName(song.name) }}
-                  <span v-if="song.relate_goods && song.relate_goods.some(g => g.level >= 5)" class="quality-badge">SQ</span>
-                </button>
+                <div class="song-title-line">
+                  <button type="button" class="song-name" @click.stop="play(song)" @dblclick.stop :title="getSongName(song.name)">
+                    {{ getSongName(song.name) }}
+                    <span v-if="song.relate_goods && song.relate_goods.some(g => g.level >= 5)" class="quality-badge">SQ</span>
+                  </button>
+                  <SongBadges :song="song" />
+                </div>
                 <button type="button" class="artist-link mobile-artist" @click.stop="goArtist(song)" @dblclick.stop>{{ getSingerNames(song.singerinfo, song) || artist.author_name || '未知歌手' }}</button>
               </div>
             </div>
@@ -83,10 +86,13 @@
             <div class="col-title">
               <ArtworkCover :src="song.cover || ''" class="song-cover" />
               <div class="song-info">
-                <button type="button" class="song-name" @click.stop="play(song)" @dblclick.stop :title="getSongName(song.name)">
-                  {{ getSongName(song.name) }}
-                  <span v-if="song.relate_goods && song.relate_goods.some(g => g.level >= 5)" class="quality-badge">SQ</span>
-                </button>
+                <div class="song-title-line">
+                  <button type="button" class="song-name" @click.stop="play(song)" @dblclick.stop :title="getSongName(song.name)">
+                    {{ getSongName(song.name) }}
+                    <span v-if="song.relate_goods && song.relate_goods.some(g => g.level >= 5)" class="quality-badge">SQ</span>
+                  </button>
+                  <SongBadges :song="song" />
+                </div>
                 <button type="button" class="artist-link mobile-artist" @click.stop="goArtist(song)" @dblclick.stop>{{ getSingerNames(song.singerinfo, song) || artist.author_name || '未知歌手' }}</button>
               </div>
             </div>

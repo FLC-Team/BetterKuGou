@@ -16,7 +16,7 @@
 - `auth.js` 请求超时为 10 秒，认证信息从 LocalStorage 读取。
 - `music.js` 为需要登录的请求附加已保存的酷狗认证信息。
 - `getLyric()` 先搜索候选歌词，再按 ID 与 accesskey 请求内容。
-- `getSongUrl()` 提供播放器使用的旧版播放地址封装。
+- `getSongUrl(hash, album_id, album_audio_id, quality)` 提供播放器使用的旧版播放地址封装，普通音质限于字符串 128/320/flac/high，缺省或非法值回退 128；不请求试听，不将魔法音乐或蝰蛇音效作为普通音质。
 
 ## 关键保障
 

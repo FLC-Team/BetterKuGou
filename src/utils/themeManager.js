@@ -1,4 +1,4 @@
-import { BUILTIN_THEMES, getThemePackage, normalizeThemePackage } from '../themes/themePackages.js'
+import { BUILTIN_THEMES, getThemePackage, normalizeThemePackage, compileThemeCss } from '../themes/themePackages.js'
 
 const DARK_THEME = BUILTIN_THEMES[0].tokens
 const LIGHT_THEME = BUILTIN_THEMES[1].tokens
@@ -11,6 +11,7 @@ const SUPPORTED_THEMES = {
 let latestSettings = null
 let systemMediaQuery = null
 let systemListener = null
+let previewTheme = null
 
 function clamp(number, min, max) {
   return Math.min(Math.max(number, min), max)
@@ -154,9 +155,20 @@ function applyPalette(theme) {
   root.style.colorScheme = theme.base
   root.dataset.theme = theme.id
   root.dataset.themeBase = theme.base
+  if (document.body) document.body.dataset.bkThemeRoot = 'main'
+  // One replaceable sheet ensures switching/removing a package also removes every previous CSS rule.
+  if (document.getElementById && document.createElement) {
+    let sheet = document.getElementById('bk-theme-custom-css')
+    const css = theme.css ? compileThemeCss(theme.css) : ''
+    if (css) {
+      if (!sheet) { sheet = document.createElement('style'); sheet.id = 'bk-theme-custom-css'; document.head.appendChild(sheet) }
+      sheet.textContent = css
+    } else sheet?.remove()
+  }
 }
 
 function handleSystemChange(event) {
+  if (previewTheme) return
   if (!latestSettings || !['system', 'auto'].includes(latestSettings.custom?.theme)) return
   applyPalette(BUILTIN_THEMES[event.matches ? 0 : 1])
 }
@@ -203,7 +215,18 @@ function applyTheme(settings) {
   const choice = latestSettings.custom?.theme
   if (['system', 'auto'].includes(choice)) ensureSystemListener()
   else removeSystemListener()
-  applyPalette(resolveTheme(latestSettings))
+  applyPalette(previewTheme || resolveTheme(latestSettings))
+}
+
+/** A draft preview never writes settings and survives unrelated session broadcasts until cancelled. */
+function previewThemePackage(theme) {
+  previewTheme = normalizeThemePackage(theme)
+  applyPalette(previewTheme)
+}
+
+function cancelThemePreview() {
+  previewTheme = null
+  applyPalette(resolveTheme(latestSettings || {}))
 }
 
 function getThemeSnapshot(theme = 'dark') {
@@ -220,7 +243,9 @@ function createThemePackage(settings, metadata = {}) {
     format: 'betterkugou-theme', schemaVersion: 1, id: metadata.id || shareId,
     name: metadata.name || resolved.name, version: metadata.version || installed?.version || '1.0.0',
     author: metadata.author ?? installed?.author ?? '', description: metadata.description ?? installed?.description ?? '',
-    base: resolved.base, tokens: { ...resolved.tokens }
+    base: resolved.base, tokens: { ...resolved.tokens },
+    ...(resolved.css ? { css: resolved.css } : {}),
+    ...(resolved.desktopCss ? { desktopCss: resolved.desktopCss } : {})
   })
 }
 
@@ -229,5 +254,7 @@ export {
   getThemeSnapshot,
   resolveTheme,
   createThemePackage,
+  previewThemePackage,
+  cancelThemePreview,
   SUPPORTED_THEMES
 }

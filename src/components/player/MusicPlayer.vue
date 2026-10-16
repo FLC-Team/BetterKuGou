@@ -69,7 +69,7 @@
             </svg>
           </button>
           
-          <button class="control-btn" @click="playPrevious" :disabled="isSwitchingSong" title="上一曲">
+          <button class="control-btn" @click="playPrevious" title="上一曲">
             <svg viewBox="0 0 1024 1024" width="20" height="20" fill="currentColor">
               <path d="M793.6 150.4c-12.8 0-25.6 4.8-35.2 14.4L416 480v-288c0-19.2-16-35.2-35.2-35.2s-35.2 16-35.2 35.2v646.4c0 19.2 16 35.2 35.2 35.2s35.2-16 35.2-35.2V544l342.4 315.2c9.6 9.6 22.4 14.4 35.2 14.4 19.2 0 35.2-16 35.2-35.2V185.6c0-19.2-16-35.2-35.2-35.2z"/>
             </svg>
@@ -84,7 +84,7 @@
             </svg>
           </button>
           
-          <button class="control-btn" @click="playNext" :disabled="isSwitchingSong" title="下一曲">
+          <button class="control-btn" @click="playNext" title="下一曲">
             <svg viewBox="0 0 1024 1024" width="20" height="20" fill="currentColor">
               <path d="M230.4 150.4c12.8 0 25.6 4.8 35.2 14.4L608 480v-288c0-19.2 16-35.2 35.2-35.2s35.2 16 35.2 35.2v646.4c0 19.2-16 35.2-35.2 35.2s-35.2-16-35.2-35.2V544L265.6 859.2c-9.6 9.6-22.4 14.4-35.2 14.4-19.2 0-35.2-16-35.2-35.2V185.6c0-19.2 16-35.2 35.2-35.2z"/>
             </svg>
@@ -104,7 +104,7 @@
         
         <!-- 默认样式：只有播放控制按钮 -->
         <div v-else class="control-buttons">
-          <button class="control-btn" @click="playPrevious" :disabled="isSwitchingSong" title="上一曲">
+          <button class="control-btn" @click="playPrevious" title="上一曲">
             <svg viewBox="0 0 1024 1024" width="20" height="20" fill="currentColor">
               <path d="M793.6 150.4c-12.8 0-25.6 4.8-35.2 14.4L416 480v-288c0-19.2-16-35.2-35.2-35.2s-35.2 16-35.2 35.2v646.4c0 19.2 16 35.2 35.2 35.2s35.2-16 35.2-35.2V544l342.4 315.2c9.6 9.6 22.4 14.4 35.2 14.4 19.2 0 35.2-16 35.2-35.2V185.6c0-19.2-16-35.2-35.2-35.2z"/>
             </svg>
@@ -119,7 +119,7 @@
             </svg>
           </button>
           
-          <button class="control-btn" @click="playNext" :disabled="isSwitchingSong" title="下一曲">
+          <button class="control-btn" @click="playNext" title="下一曲">
             <svg viewBox="0 0 1024 1024" width="20" height="20" fill="currentColor">
               <path d="M230.4 150.4c12.8 0 25.6 4.8 35.2 14.4L608 480v-288c0-19.2 16-35.2 35.2-35.2s35.2 16 35.2 35.2v646.4c0 19.2-16 35.2-35.2 35.2s-35.2-16-35.2-35.2V544L265.6 859.2c-9.6 9.6-22.4 14.4-35.2 14.4-19.2 0-35.2-16-35.2-35.2V185.6c0-19.2 16-35.2 35.2-35.2z"/>
             </svg>
@@ -150,6 +150,12 @@
 
       <!-- 右侧:音量和其他控制 -->
       <div class="player-extras-section">
+        <div class="quality-control" :title="`音质偏好，${qualityStatus}；可用音质取决于歌曲与账号权限`">
+          <select aria-label="音质偏好" :value="qualityPreference" @change="changeQuality($event.target.value)" @keydown.stop>
+            <option v-for="option in qualityOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+          </select>
+          <span class="quality-current" role="status">{{ qualityStatus }}</span>
+        </div>
         <!-- 默认样式：显示播放模式按钮 -->
         <button 
           v-if="playerStyle !== 'netease'"
@@ -186,6 +192,12 @@
       </div>
     </div>
 
+    <div v-if="qualityFeedback" class="quality-feedback" role="status">
+      <span>{{ qualityFeedback }}</span>
+      <button type="button" @click="retryQualityChange">重试</button>
+      <button type="button" aria-label="关闭音质提示" @click="qualityMessage = ''; qualitySaveMessage = ''">×</button>
+    </div>
+
     <!-- 音频元素 -->
     <audio 
       ref="audioPlayer" 
@@ -194,6 +206,7 @@
       @play="handlePlay"
       @pause="handlePause"
       @timeupdate="handleTimeUpdate"
+      @seeked="handleSeeked"
     ></audio>
     
     <!-- 播放列表抽屉 -->
@@ -234,6 +247,10 @@
           :play-mode="playMode"
           :is-favorite="isFavorite"
           :pause-updates="isLoadingSong || isSwitchingSong"
+          :quality-options="qualityOptions"
+          :quality-preference="qualityPreference"
+          :quality-status="qualityStatus"
+          :quality-message="qualityFeedback"
           @close="closeLyrics"
           @toggle-play="togglePlay"
           @previous="playPrevious"
@@ -241,6 +258,8 @@
           @toggle-play-mode="cyclePlayMode"
           @toggle-favorite="toggleFavorite"
           @seek="handleSeek"
+          @change-quality="changeQuality"
+          @retry-quality="retryQualityChange"
         />
       </Transition>
     </Teleport>

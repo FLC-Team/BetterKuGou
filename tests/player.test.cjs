@@ -49,8 +49,9 @@ function loadComponent(filename, overrides = {}) {
     getSongDetail: async () => ({ status: 1, data: [] }),
     getSongUrl: async hash => ({ status: 1, url: `https://example.test/${hash}.mp3` }),
     getLyric: async hash => ({ status: 1, decodeContent: `[00:00.00]${hash}` }),
-    PlaylistDrawer: {}, ContextMenu: {}, LyricView: {}, ArtworkCover: {}, TransitionGroup: {},
-    contextMenuManager: menuManager, useSettingsStore: () => ({}),
+    PlaylistDrawer: {}, ContextMenu: {}, LyricView: {}, ArtworkCover: {}, TransitionGroup: {}, SongBadges: {},
+    contextMenuManager: menuManager,
+    useSettingsStore: () => ({ settings: { playback: { quality: '128' }, custom: {} }, async updateSettings() {} }),
     ...Object.fromEntries(['playlistIcon', 'repeatAllIcon', 'repeatOneIcon', 'shuffleIcon',
       'sound0Icon', 'sound1Icon', 'sound2Icon', 'sound3Icon'].map(name => [name, ''])),
     ...overrides
@@ -59,6 +60,9 @@ function loadComponent(filename, overrides = {}) {
   if (filename.endsWith('.vue')) source = source.split('<script>')[1].split('</script>')[0]
   source = source.replace(/^import[^\n]*\n/gm, '').replace('export default {', 'globalThis.component = {')
   vm.createContext(sandbox)
+  const qualitySource = fs.readFileSync(path.join(playerDirectory, '..', '..', 'utils', 'playbackQuality.js'), 'utf8')
+    .replace(/\bexport (?=(?:function|const))/g, '')
+  vm.runInContext(qualitySource, sandbox)
   vm.runInContext(source, sandbox, { filename })
   return { component: sandbox.component, sandbox, actions, listeners, menuManager }
 }
@@ -77,7 +81,7 @@ function createPlayer(t, overrides = {}) {
     async play() { this.playCount++; this.paused = false; this.ended = false; player.handlePlay() }
   }
   const player = {
-    ...component.data(), playlist: [], isComponentReady: true,
+    ...component.data(), playlist: [], isComponentReady: true, settingsStore: loaded.sandbox.useSettingsStore(),
     $refs: { audioPlayer: audio },
     $nextTick: callback => Promise.resolve().then(() => callback?.()),
     $emit(name, value) {
@@ -95,6 +99,33 @@ function createPlayer(t, overrides = {}) {
   return { ...loaded, player, audio, emitted }
 }
 
+function qualityStore() {
+  return {
+    settings: { playback: { quality: '128' }, custom: {} },
+    async updateSettings(patch) { Object.assign(this.settings.playback, patch.playback) }
+  }
+}
+
+/** Model the media load reset and readiness events used when replacing a paused source. */
+function qualityAudio(audio, player, { manualReady = false } = {}) {
+  const listeners = new Map()
+  let source = audio.src
+  Object.defineProperty(audio, 'src', {
+    get: () => source,
+    set(value) { source = value; audio.currentTime = 0; audio.readyState = 0; audio.paused = true; player.handlePause() }
+  })
+  audio.addEventListener = (event, callback) => {
+    if (!listeners.has(event)) listeners.set(event, new Set())
+    listeners.get(event).add(callback)
+  }
+  audio.removeEventListener = (event, callback) => listeners.get(event)?.delete(callback)
+  audio.emit = event => [...(listeners.get(event) || [])].forEach(callback => callback())
+  audio.load = () => {
+    if (!manualReady) queueMicrotask(() => { audio.readyState = 4; audio.emit('canplay') })
+  }
+  return listeners
+}
+
 function createFrameClock() {
   let nextId = 0
   const callbacks = new Map()
@@ -109,6 +140,117 @@ function createFrameClock() {
     }
   }
 }
+
+test('startup restores a paused track only after readiness without briefly playing or publishing zero', async t => {
+  const { component, player, audio, emitted } = createPlayer(t)
+  const listeners = qualityAudio(audio, player, { manualReady: true })
+  player.playlist = [song('A'), song('B')]
+  player.initialPlaybackState = { songHash: 'B', currentTime: 42, volume: 35, playMode: 'shuffle', isPlaying: false }
+  component.watch.song.handler.call(player, player.playlist[1])
+  await flush()
+  assert.equal(player.getPlaybackSnapshot(), null)
+  assert.equal(audio.playCount, 0)
+  assert.equal(emitted.filter(event => event.name === 'song-changed').length, 0)
+  audio.readyState = 4
+  audio.emit('canplay')
+  await flush()
+  assert.equal(player.currentSong.hash, 'B')
+  assert.equal(player.loadedSongHash, 'B')
+  assert.equal(player.currentIndex, 1)
+  assert.equal(audio.currentTime, 42)
+  assert.equal(audio.paused, true)
+  assert.equal(audio.playCount, 0)
+  assert.equal(audio.volume, .35)
+  assert.equal(player.getPlaybackSnapshot().playbackState.currentTime, 42)
+  assert.equal(player.getPlaybackSnapshot().playbackState.isPlaying, false)
+  assert.equal(player.playMode, 'shuffle')
+  assert.equal(listeners.get('canplay').size, 0)
+})
+
+test('startup seeks before the first play and consumes its state only for the initial matching song', async t => {
+  const { component, player, audio } = createPlayer(t)
+  qualityAudio(audio, player)
+  const playedAt = []
+  const play = audio.play.bind(audio)
+  audio.play = async () => { playedAt.push(audio.currentTime); await play() }
+  player.playlist = [song('A'), song('B')]
+  player.initialPlaybackState = { songHash: 'A', currentTime: 27, isPlaying: true }
+  component.watch.song.handler.call(player, player.playlist[0])
+  await flush()
+  assert.deepEqual(playedAt, [27])
+  assert.equal(player.getPlaybackSnapshot().playbackState.isPlaying, true)
+  component.watch.song.handler.call(player, player.playlist[1])
+  await flush()
+  component.watch.song.handler.call(player, player.playlist[0])
+  await flush()
+  assert.deepEqual(playedAt, [27, 0, 0])
+})
+
+test('a new selection, stop or unmount cancels startup readiness without leaking the old resume position', async t => {
+  for (const action of ['selection', 'stop', 'unmount']) {
+    const { component, player, audio, emitted } = createPlayer(t)
+    const listeners = qualityAudio(audio, player, { manualReady: true })
+    player.playlist = [song('A'), song('B')]
+    player.initialPlaybackState = { songHash: 'A', currentTime: 72, isPlaying: true }
+    component.watch.song.handler.call(player, player.playlist[0])
+    await flush()
+    if (action === 'selection') component.watch.song.handler.call(player, player.playlist[1])
+    else if (action === 'stop') player.stopPlayback()
+    else component.beforeUnmount.call(player)
+    await flush()
+    audio.readyState = 4
+    audio.emit('canplay')
+    await flush()
+    assert.equal(listeners.get('canplay').size, 0, action)
+    assert.equal(player.pendingTimers.size, 0, action)
+    assert.equal(emitted.some(event => event.name === 'song-changed' && event.value.hash === 'A'), false, action)
+    if (action === 'selection') {
+      assert.equal(player.currentSong.hash, 'B')
+      assert.equal(audio.currentTime, 0)
+    } else assert.equal(audio.src, '')
+  }
+})
+
+test('checkpoints retain the confirmed song and position through pending selection and temporary sources', async t => {
+  const nextUrl = deferred()
+  const nextPlay = deferred()
+  const { player, audio } = createPlayer(t, {
+    getSongUrl: hash => hash === 'B' ? nextUrl.promise : Promise.resolve({ status: 1, url: 'https://example.test/A.wav' })
+  })
+  qualityAudio(audio, player)
+  player.playlist = [song('A'), song('B')]
+  await player.requestSong(player.playlist[0])
+  audio.currentTime = 31
+  const pending = player.requestSong(player.playlist[1])
+  audio.currentTime = 34
+  assert.equal(player.getPlaybackSnapshot().currentSong.hash, 'A')
+  assert.equal(player.getPlaybackSnapshot().playbackState.currentTime, 34)
+  const play = audio.play.bind(audio)
+  audio.play = () => nextPlay.promise.then(play)
+  nextUrl.resolve({ status: 1, url: 'https://example.test/B.wav' })
+  await flush()
+  assert.equal(audio.currentTime, 0)
+  assert.equal(player.getPlaybackSnapshot().currentSong.hash, 'A')
+  assert.equal(player.getPlaybackSnapshot().playbackState.currentTime, 34)
+  assert.equal(player.getPlaybackSnapshot().playbackState.isPlaying, true)
+  nextPlay.resolve()
+  await pending
+  assert.equal(player.getPlaybackSnapshot().currentSong.hash, 'B')
+  assert.equal(player.getPlaybackSnapshot().playbackState.currentTime, 0)
+})
+
+test('native seek completion publishes a checkpoint for media controls and ignores source replacement', async t => {
+  const { player, audio, emitted } = createPlayer(t)
+  await player.requestSong(song('A'))
+  audio.currentTime = 57
+  player.handleSeeked()
+  assert.equal(player.currentTime, 57)
+  assert.equal(emitted.filter(event => event.name === 'playback-state-changed').length, 1)
+  player.isLoadingSong = true
+  audio.currentTime = 0
+  player.handleSeeked()
+  assert.equal(emitted.filter(event => event.name === 'playback-state-changed').length, 1)
+})
 
 /** Exercise lyric state against controllable animation frames and measurable text nodes. */
 function createLyric(t) {
@@ -320,6 +462,271 @@ test('external selection aligns queue index before next-track navigation', async
   await player.playNext()
   assert.equal(player.currentSong.hash, 'D')
   assert.equal(player.currentIndex, 3)
+})
+
+test('shuffle skips a failed candidate instead of retrying it on next, previous and natural end', async t => {
+  for (const direction of ['next', 'previous', 'ended']) {
+    for (const failure of ['url', 'play']) {
+      const urls = []
+      const failedHash = direction === 'previous' ? 'D' : 'B'
+      const { player, audio } = createPlayer(t, {
+        getSongUrl: async hash => {
+          urls.push(hash)
+          return failure === 'url' && hash === failedHash ? { status: 0 }
+            : { status: 1, url: `https://example.test/${hash}.mp3` }
+        }
+      })
+      player.playlist = ['A', 'B', 'C', 'D'].map(song)
+      await player.requestSong(player.playlist[0])
+      player.playMode = 'shuffle'
+      player.shuffledPlaylist = [...player.playlist]
+      player.waitForDelay = async () => true
+      const play = audio.play.bind(audio)
+      audio.play = () => failure === 'play' && audio.src.endsWith(`/${failedHash}.mp3`)
+        ? Promise.reject(new Error('Unavailable audio')) : play()
+      if (direction === 'ended') {
+        audio.ended = true
+        audio.paused = true
+        player.handleEnded()
+        await flush()
+      } else if (direction === 'previous') await player.playPrevious()
+      else await player.playNext()
+      assert.equal(player.currentSong.hash, 'C', `${direction}/${failure}`)
+      assert.deepEqual(urls, ['A', failedHash, 'C'])
+      assert.equal(player.isSwitchingSong, false)
+    }
+  }
+})
+
+test('a new selection cancels outstanding detail and URL waits without waiting for their response', async t => {
+  for (const stage of ['detail', 'url']) {
+    const stale = deferred()
+    const { player, audio } = createPlayer(t, {
+      getSongDetail: () => stale.promise,
+      getSongUrl: hash => stage === 'url' && hash === 'A' ? stale.promise
+        : Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` })
+    })
+    player.playlist = [stage === 'detail' ? { hash: 'A', name: 'A' } : song('A'), song('B')]
+    const loading = player.requestSong(player.playlist[0])
+    player.requestSong(player.playlist[1])
+    await loading
+    await flush()
+    assert.equal(player.currentSong.hash, 'B', stage)
+    assert.equal(audio.src, 'https://example.test/B.mp3', stage)
+    assert.equal(player.isLoadingSong, false)
+    assert.equal(player.pendingTimers.size, 0)
+    stale.reject(new Error('Late failed response'))
+    await flush()
+    assert.equal(player.currentSong.hash, 'B')
+  }
+})
+
+test('navigation during a stalled load follows the latest target and releases the old lock', async t => {
+  for (const stage of ['url', 'play']) {
+    for (const direction of ['next', 'previous']) {
+      const stale = deferred()
+      const { player, audio } = createPlayer(t, {
+        getSongUrl: hash => stage === 'url' && hash === 'B' ? stale.promise
+          : Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` })
+      })
+      player.playlist = ['A', 'B', 'C'].map(song)
+      await player.requestSong(player.playlist[0])
+      const play = audio.play.bind(audio)
+      audio.play = () => stage === 'play' && audio.src.endsWith('/B.mp3') ? stale.promise.then(play) : play()
+      const loading = player.requestSong(player.playlist[1])
+      await flush()
+      if (direction === 'next') await player.playNext()
+      else await player.playPrevious()
+      await loading
+      await flush()
+      const expected = direction === 'next' ? 'C' : 'A'
+      assert.equal(player.currentSong.hash, expected, `${stage}/${direction}`)
+      assert.equal(player.trackTransition, direction === 'next' ? 'next' : 'select', 'returning to the committed song keeps its transition')
+      assert.equal(player.isLoadingSong, false)
+      assert.equal(player.isSwitchingSong, false)
+      assert.equal(player.pendingTimers.size, 0)
+      stale.resolve({ status: 1, url: 'https://example.test/B.mp3' })
+      await flush()
+      assert.equal(audio.src, `https://example.test/${expected}.mp3`)
+    }
+  }
+})
+
+test('rapid navigation supersedes an unfinished next-track play and preserves priority queue intent', async t => {
+  const stale = deferred()
+  const { state, getPlayer, audioElements } = mountPlayer(t, ['A', 'B', 'C', 'D'].map(song))
+  await flush()
+  const player = getPlayer()
+  const audio = audioElements[0]
+  const play = audio.play.bind(audio)
+  audio.play = () => audio.src.endsWith('/B.mp3') ? stale.promise.then(play) : play()
+  const loading = player.playNext()
+  await flush()
+  player.playNextQueue = [state.playlist[3]]
+  await player.playNext()
+  await loading
+  await flush()
+  assert.equal(state.song.hash, 'D')
+  assert.equal(player.currentIndex, 3)
+  assert.equal(player.trackTransition, 'next')
+  assert.equal(player.isSwitchingSong, false)
+  assert.equal(player.isLoadingSong, false)
+  stale.resolve()
+  await flush()
+  assert.equal(audio.src, 'https://example.test/D.mp3')
+})
+
+test('busy external priority navigation cannot override a later stop, selection or priority request', async t => {
+  for (const action of ['stop', 'select', 'next']) {
+    const stale = deferred()
+    const { state, getPlayer, audioElements } = mountPlayer(t, ['A', 'B', 'C'].map(song), {
+      getSongUrl: hash => hash === 'B' ? stale.promise
+        : Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` })
+    })
+    await flush()
+    const player = getPlayer()
+    const loading = player.requestSong(state.playlist[1])
+    await flush()
+    player.playNextQueue = [song('D'), song('E')]
+    const next = player.playNext()
+    if (action === 'stop') player.stopPlayback()
+    else if (action === 'select') state.song = state.playlist[2]
+    else player.playNext()
+    await next
+    await loading
+    await flush()
+    const expected = action === 'stop' ? null : action === 'select' ? 'C' : 'E'
+    assert.equal(player.currentSong?.hash ?? null, expected, action)
+    assert.equal(audioElements[0].src, expected ? `https://example.test/${expected}.mp3` : '')
+    assert.equal(player.isLoadingSong, false)
+    assert.equal(player.isSwitchingSong, false)
+    stale.resolve({ status: 1, url: 'https://example.test/B.mp3' })
+    await flush()
+    assert.equal(player.currentSong?.hash ?? null, expected)
+  }
+})
+
+test('queued navigation skips unavailable successors and keeps the index aligned with the retained song', async t => {
+  for (const mode of ['loop', 'shuffle']) {
+    for (const direction of ['next', 'previous']) {
+      for (const playable of [true, false]) {
+        const stale = deferred()
+        const requests = []
+        const songs = (direction === 'next' ? ['A', 'B', 'C', 'D', 'E'] : ['A', 'E', 'C', 'B', 'D']).map(song)
+        const { state, getPlayer } = mountPlayer(t, songs, {
+          getSongUrl: hash => {
+            requests.push(hash)
+            if (hash === 'B') return stale.promise
+            return Promise.resolve(hash === 'A' || (playable && hash === 'E')
+              ? { status: 1, url: `https://example.test/${hash}.mp3` } : { status: 0 })
+          }
+        })
+        await flush()
+        const player = getPlayer()
+        player.playMode = mode
+        player.shuffledPlaylist = [...songs]
+        state.song = songs.find(item => item.hash === 'B')
+        await flush()
+        if (direction === 'next') await player.playNext()
+        else await player.playPrevious()
+        await flush()
+        assert.equal(player.currentSong.hash, playable ? 'E' : 'A', `${mode}/${direction}/${playable}`)
+        assert.equal(state.song.hash, player.currentSong.hash, 'the parent session follows the song that actually survived')
+        assert.equal(player.currentIndex, player.playlist.findIndex(item => item.hash === player.currentSong.hash))
+        assert.equal(requests.filter(hash => hash === 'C').length, 1)
+        assert.equal(requests.filter(hash => hash === 'D').length <= 1, true)
+        stale.resolve({ status: 1, url: 'https://example.test/B.mp3' })
+      }
+    }
+  }
+})
+
+test('the old source ending cannot skip a different song already selected or loading next', async t => {
+  for (const source of ['selection', 'next']) {
+    const stale = deferred()
+    const requests = []
+    const { state, getPlayer, audioElements } = mountPlayer(t, ['A', 'B', 'C'].map(song), {
+      getSongUrl: hash => {
+        requests.push(hash)
+        return hash === 'B' ? stale.promise : Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` })
+      }
+    })
+    await flush()
+    const player = getPlayer()
+    if (source === 'selection') state.song = state.playlist[1]
+    else player.playNext()
+    await flush()
+    audioElements[0].ended = true
+    player.handleEnded()
+    await flush()
+    assert.deepEqual(requests, ['A', 'B'], source)
+    stale.resolve({ status: 1, url: 'https://example.test/B.mp3' })
+    await flush()
+    assert.equal(player.currentSong.hash, 'B')
+    assert.equal(state.song.hash, 'B')
+  }
+})
+
+test('playback timeout restores the committed source and releases pending operations', async t => {
+  const timers = new Map()
+  let nextTimer = 0
+  const stale = deferred()
+  const { player, audio } = createPlayer(t, {
+    setTimeout: (callback, milliseconds) => {
+      const id = ++nextTimer
+      timers.set(id, { callback, milliseconds })
+      return id
+    },
+    clearTimeout: id => timers.delete(id)
+  })
+  player.playlist = ['A', 'B', 'C'].map(song)
+  await player.requestSong(player.playlist[0])
+  await flush()
+  audio.currentTime = player.currentTime = 42
+  const play = audio.play.bind(audio)
+  audio.play = () => audio.src.endsWith('/B.mp3') ? stale.promise.then(play) : play()
+  const loading = player.requestSong(player.playlist[1])
+  await flush()
+  const timeout = [...timers.values()].find(timer => timer.milliseconds === 15000)
+  assert.ok(timeout, 'playback has a bounded wait')
+  timeout.callback()
+  assert.equal(await loading, false)
+  assert.equal(player.currentSong.hash, 'A')
+  assert.equal(audio.currentTime, 42)
+  assert.equal(player.isLoadingSong, false)
+  assert.equal(player.pendingTimers.size, 0)
+  await player.requestSong(player.playlist[2])
+  stale.resolve()
+  await flush()
+  assert.equal(player.currentSong.hash, 'C')
+  assert.equal(audio.src, 'https://example.test/C.mp3')
+})
+
+test('stop and unmount release a stalled play immediately and ignore its late completion', async t => {
+  for (const action of ['stop', 'unmount']) {
+    const stale = deferred()
+    const { player, audio, component } = createPlayer(t)
+    player.playlist = ['A', 'B', 'C'].map(song)
+    await player.requestSong(player.playlist[0])
+    const play = audio.play.bind(audio)
+    audio.play = () => audio.src.endsWith('/B.mp3') ? stale.promise.then(play) : play()
+    const loading = player.playNext()
+    await flush()
+    if (action === 'stop') player.stopPlayback()
+    else component.beforeUnmount.call(player)
+    await loading
+    assert.equal(player.isLoadingSong, false, action)
+    assert.equal(player.isSwitchingSong, false, action)
+    assert.equal(player.pendingTimers.size, 0)
+    stale.resolve()
+    await flush()
+    assert.equal(audio.paused, true)
+    assert.equal(audio.src, '')
+    if (action === 'stop') {
+      await player.requestSong(player.playlist[2])
+      assert.equal(player.currentSong.hash, 'C')
+    }
+  }
 })
 
 test('direct selection and navigation commit the transition belonging to the successful operation', async t => {
@@ -1673,4 +2080,269 @@ test('player seeks immediately synchronize the displayed position and clamp fini
   player.handleSeek(999)
   assert.equal(player.currentTime, 180)
   assert.equal(audio.currentTime, 180)
+})
+
+test('quality switching retains the latest time and pause intent without changing lyrics or track motion', async t => {
+  for (const paused of [false, true]) {
+    const url = deferred()
+    const store = qualityStore()
+    const requests = []
+    const { player, audio, emitted } = createPlayer(t, {
+      useSettingsStore: () => store,
+      getSongUrl: async (hash, album, id, quality) => {
+        requests.push({ hash, quality })
+        return quality === '320' ? url.promise : { status: 1, url: `https://example.test/${hash}.mp3`, extname: 'mp3', bitrate: 128000 }
+      }
+    })
+    qualityAudio(audio, player)
+    player.playlist = [song('A')]
+    await player.requestSong(player.playlist[0], 'previous')
+    await flush()
+    audio.currentTime = 34
+    player.duration = 180
+    player.currentLyrics = 'keep lyrics'
+    player.seekPreviewTime = 95
+    player.isDragging = true
+    const lyricRequestId = player.lyricRequestId
+    const emittedBefore = emitted.length
+    const changing = player.changeQuality('320')
+    assert.equal(player.seekPreviewTime, null)
+    audio.currentTime = 47
+    if (paused) audio.pause()
+    const playsBefore = audio.playCount
+    url.resolve({ status: 1, url: 'https://example.test/A-320.mp3', extname: 'mp3', bitrate: 320000 })
+    assert.equal(await changing, true)
+    assert.equal(audio.currentTime, 47)
+    assert.equal(player.currentTime, 47)
+    assert.equal(audio.paused, paused)
+    assert.equal(audio.playCount, playsBefore + (paused ? 0 : 1))
+    assert.equal(player.currentQuality.label, '320 kbps')
+    assert.equal(store.settings.playback.quality, '320')
+    assert.equal(player.currentLyrics, 'keep lyrics')
+    assert.equal(player.lyricRequestId, lyricRequestId)
+    assert.equal(player.trackTransition, 'previous')
+    assert.equal(emitted.length, emittedBefore)
+    assert.equal(requests.at(-1).quality, '320')
+  }
+})
+
+test('a selected lossless preference reports the actual downgraded response rather than claiming lossless', async t => {
+  const store = qualityStore()
+  const { player, audio } = createPlayer(t, {
+    useSettingsStore: () => store,
+    getSongUrl: async () => ({ status: 1, url: 'https://example.test/A.mp3', extname: 'mp3', bitrate: 128000 })
+  })
+  qualityAudio(audio, player)
+  await player.requestSong(song('A'))
+  await player.changeQuality('flac')
+  assert.equal(player.qualityPreference, 'flac')
+  assert.equal(player.currentQuality.label, '128 kbps')
+  assert.equal(player.loadedQualityPreference, 'flac')
+})
+
+test('VIP URL rejection and media failure retain the committed quality, source and position with readable feedback', async t => {
+  for (const failure of ['permission', 'play', 'decode']) {
+    const store = qualityStore()
+    const { player, audio } = createPlayer(t, {
+      useSettingsStore: () => store,
+      getSongUrl: async (hash, album, id, quality) => quality === 'flac' && failure === 'permission'
+        ? { status: 0, error_code: 30020, error_msg: '当前账号无该音质播放权限' }
+        : { status: 1, url: `https://example.test/A-${quality}.mp3`, extname: 'mp3', bitrate: 128000 }
+    })
+    qualityAudio(audio, player, { manualReady: failure === 'decode' })
+    await player.requestSong(song('A'))
+    audio.currentTime = 62
+    const previousSource = audio.src
+    const previousQuality = player.currentQuality
+    const basePlay = audio.play.bind(audio)
+    audio.play = async () => {
+      if (failure === 'play' && audio.src.includes('flac')) throw new Error('Unsupported audio format')
+      return basePlay()
+    }
+    const changing = player.changeQuality('flac')
+    if (failure === 'decode') { await flush(); audio.emit('error') }
+    assert.equal(await changing, false)
+    assert.equal(audio.src, previousSource)
+    assert.equal(audio.currentTime, 62)
+    assert.equal(audio.paused, false)
+    assert.equal(player.currentQuality, previousQuality)
+    assert.equal(player.loadedQualityPreference, '128')
+    assert.match(player.qualityMessage, /音质切换失败/)
+    if (failure === 'permission') assert.match(player.qualityMessage, /当前账号无该音质播放权限/)
+  }
+})
+
+test('rapid quality selections roll back an uncommitted source before loading only the latest preference', async t => {
+  const store = qualityStore()
+  const playing320 = deferred()
+  const requests = []
+  const { player, audio } = createPlayer(t, {
+    useSettingsStore: () => store,
+    getSongUrl: async (hash, album, id, quality) => {
+      requests.push(quality)
+      return { status: 1, url: `https://example.test/A-${quality}`, extname: quality === 'high' ? 'flac' : 'mp3', bitrate: 128000 }
+    }
+  })
+  qualityAudio(audio, player)
+  await player.requestSong(song('A'))
+  audio.currentTime = 73
+  const basePlay = audio.play.bind(audio)
+  audio.play = () => audio.src.endsWith('-320') ? playing320.promise.then(() => basePlay()) : basePlay()
+  const changing = player.changeQuality('320')
+  await flush()
+  player.changeQuality('flac')
+  player.changeQuality('high')
+  playing320.resolve()
+  await changing
+  await flush()
+  assert.deepEqual(requests, ['128', '320', 'high'])
+  assert.equal(audio.src, 'https://example.test/A-high')
+  assert.equal(audio.currentTime, 73)
+  assert.equal(player.loadedQualityPreference, 'high')
+  assert.equal(player.currentQuality.label, '无损 FLAC')
+  assert.equal(player.currentSong.hash, 'A')
+})
+
+test('quality changes while the next song loads preserve that target and its transition', async t => {
+  const firstB = deferred()
+  const store = qualityStore()
+  const requests = []
+  const { player, audio } = createPlayer(t, {
+    useSettingsStore: () => store,
+    getSongUrl: async (hash, album, id, quality) => {
+      requests.push(`${hash}:${quality}`)
+      return hash === 'B' && quality === '128' ? firstB.promise
+        : { status: 1, url: `https://example.test/${hash}-${quality}`, extname: 'mp3', bitrate: 320000 }
+    }
+  })
+  qualityAudio(audio, player)
+  await player.requestSong(song('A'))
+  const next = player.requestSong(song('B'), 'next')
+  player.changeQuality('320')
+  firstB.resolve({ status: 1, url: 'https://example.test/stale-B' })
+  await next
+  await flush()
+  assert.equal(player.currentSong.hash, 'B')
+  assert.equal(player.trackTransition, 'next')
+  assert.equal(player.loadedQualityPreference, '320')
+  assert.deepEqual(requests, ['A:128', 'B:128', 'B:320'])
+  await player.requestSong(song('C'))
+  assert.equal(requests.at(-1), 'C:320')
+})
+
+test('a newer song supersedes a waiting quality source and keeps the old committed source when it fails', async t => {
+  const store = qualityStore()
+  const { player, audio } = createPlayer(t, {
+    useSettingsStore: () => store,
+    getSongUrl: async (hash, album, id, quality) => hash === 'B' ? { status: 0 }
+      : { status: 1, url: `https://example.test/${hash}-${quality}`, extname: 'mp3', bitrate: 128000 }
+  })
+  const listeners = qualityAudio(audio, player, { manualReady: true })
+  await player.requestSong(song('A'))
+  audio.currentTime = 29
+  const changing = player.changeQuality('flac')
+  await flush()
+  player.requestSong(song('B'))
+  await changing
+  await flush()
+  assert.equal(player.currentSong.hash, 'A')
+  assert.equal(audio.src, 'https://example.test/A-128')
+  assert.equal(audio.currentTime, 29)
+  assert.equal(player.loadedQualityPreference, '128')
+  assert.equal(listeners.get('canplay').size, 0)
+  assert.equal(listeners.get('error').size, 0)
+})
+
+test('stop and unmount cancel quality readiness and cannot resurrect the previous source', async t => {
+  for (const action of ['stop', 'unmount']) {
+    const store = qualityStore()
+    const { player, audio, component } = createPlayer(t, { useSettingsStore: () => store })
+    const listeners = qualityAudio(audio, player, { manualReady: true })
+    await player.requestSong(song('A'))
+    const changing = player.changeQuality('320')
+    await flush()
+    if (action === 'stop') player.stopPlayback()
+    else component.beforeUnmount.call(player)
+    audio.emit('canplay')
+    await changing
+    assert.equal(audio.src, '')
+    assert.equal(audio.paused, true)
+    assert.equal(player.loadedSongHash, null)
+    assert.equal(player.pendingTimers.size, 0)
+    assert.equal(listeners.get('canplay').size, 0)
+    assert.equal(listeners.get('error').size, 0)
+  }
+})
+
+test('quality replacement ignores seeks until ready and save-failure retry remembers the attempted quality', async t => {
+  const store = qualityStore()
+  let saves = 0
+  const saved = store.updateSettings.bind(store)
+  store.updateSettings = async patch => {
+    if (++saves === 1) throw new Error('disk full')
+    return saved(patch)
+  }
+  const { player, audio } = createPlayer(t, { useSettingsStore: () => store })
+  qualityAudio(audio, player, { manualReady: true })
+  await player.requestSong(song('A'))
+  player.duration = 180
+  audio.currentTime = 38
+  const changing = player.changeQuality('320')
+  await flush()
+  player.handleSeek(90)
+  player.handleProgressDrag({ target: { value: '92' } })
+  player.togglePlay()
+  audio.emit('canplay')
+  await changing
+  assert.equal(audio.currentTime, 38)
+  assert.equal(player.seekPreviewTime, null)
+  assert.match(player.qualitySaveMessage, /保存失败/)
+  assert.equal(player.qualityPreference, '128')
+  const retry = player.retryQualityChange()
+  await flush()
+  audio.emit('canplay')
+  await retry
+  assert.equal(player.qualityPreference, '320')
+  assert.equal(player.qualitySaveMessage, '')
+})
+
+test('temporary quality sources cannot reset displayed, desktop lyric or system media time before readiness', async t => {
+  const store = qualityStore()
+  const url = deferred()
+  const { player, audio, sandbox } = createPlayer(t, {
+    useSettingsStore: () => store,
+    getSongUrl: async (hash, album, id, quality) => quality === '320' ? url.promise
+      : { status: 1, url: 'https://example.test/A-128', extname: 'mp3', bitrate: 128000 }
+  })
+  qualityAudio(audio, player, { manualReady: true })
+  const desktopTimes = []
+  const mediaTimes = []
+  sandbox.window.electronAPI = { updatePlaybackTime: time => desktopTimes.push(time) }
+  sandbox.navigator.mediaSession.setPositionState = state => mediaTimes.push(state.position)
+  player.$el = {}
+  await player.requestSong(song('A'))
+  audio.currentTime = 62
+  player.handleTimeUpdate()
+  const changing = player.changeQuality('320')
+  audio.currentTime = 64
+  player.handleTimeUpdate()
+  player.updateTimeLoop()
+  assert.equal(player.currentTime, 64)
+  url.resolve({ status: 1, url: 'https://example.test/A-320', extname: 'mp3', bitrate: 320000 })
+  await flush()
+  const desktopBefore = desktopTimes.length
+  const mediaBefore = mediaTimes.length
+  assert.equal(audio.currentTime, 0)
+  player.handleTimeUpdate()
+  player.updateTimeLoop()
+  player.handleLoadedMetadata()
+  player.updatePositionState()
+  assert.equal(player.currentTime, 64)
+  assert.equal(desktopTimes.length, desktopBefore)
+  assert.equal(mediaTimes.length, mediaBefore)
+  audio.emit('canplay')
+  await changing
+  assert.equal(player.currentTime, 64)
+  assert.equal(desktopTimes.at(-1), 64000)
+  assert.equal(mediaTimes.at(-1), 64)
 })

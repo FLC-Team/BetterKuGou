@@ -9,3 +9,7 @@ trim_trailing_whitespace = true
 
 [*.md]
 trim_trailing_whitespace = false
+
+[LICENSE]
+charset = utf-8-bom
+end_of_line = crlf

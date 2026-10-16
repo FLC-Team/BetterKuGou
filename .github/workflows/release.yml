@@ -42,6 +42,11 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify native installer protocol and versions
+        if: runner.os == 'Windows'
+        run: node --test tests/installer-nsis.test.cjs
+        env:
+          BK_REQUIRE_NSIS_TESTS: '1'
       - name: Upload Release Assets
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -49,8 +54,8 @@ jobs:
           files: |
             release/BetterKuGou-*-setup.exe
             release/BetterKuGou-*.AppImage
-            release/BetterKuGou-*.deb
-            release/BetterKuGou-*.rpm
+            release/betterkugou_*.deb
+            release/betterkugou-*.rpm
             release/BetterKuGou-*.dmg
           body_path: updata_log.md
         env:
@@ -63,7 +68,7 @@ jobs:
           path: |
             release/BetterKuGou-*-setup.exe
             release/BetterKuGou-*.AppImage
-            release/BetterKuGou-*.deb
-            release/BetterKuGou-*.rpm
+            release/betterkugou_*.deb
+            release/betterkugou-*.rpm
             release/BetterKuGou-*.dmg
           if-no-files-found: warn

@@ -20,6 +20,7 @@
 
         <section class="settings-section" id="playback-section" :ref="sectionRefs.playback" data-section="playback" aria-labelledby="playback-heading">
           <header class="section-header"><span class="section-number">01</span><div><h2 id="playback-heading">播放与歌词</h2><p>留住每次聆听时，你熟悉的习惯。</p></div></header>
+          <div class="setting-item"><div class="setting-info"><label class="setting-label" for="preferred-quality">优先音质</label><p class="setting-desc">后续歌曲优先使用所选音质；当前歌曲可在播放栏快速切换。可用音质取决于歌曲与账号权限。</p></div><select id="preferred-quality" class="setting-select" v-model="localSettings.playback.quality"><option value="128">标准 128 kbps</option><option value="320">高品 320 kbps</option><option value="flac">无损 FLAC</option><option value="high">无损 HIGH</option></select></div>
           <div v-for="option in playbackOptions" :key="option.id" class="setting-item">
             <div class="setting-info"><label class="setting-label" :for="'playback-' + option.id">{{ option.label }}</label><p class="setting-desc" :id="'playback-' + option.id + '-desc'">{{ option.description }}</p></div>
             <label class="setting-switch"><input :id="'playback-' + option.id" type="checkbox" v-model="localSettings.playback[option.id]" :aria-describedby="'playback-' + option.id + '-desc'"><span class="slider"></span></label>
@@ -38,7 +39,7 @@
           <fieldset class="setting-item setting-item--column"><legend class="setting-label">播放器样式</legend><p class="setting-desc">在底部显示经典播放栏，或轻盈的悬浮胶囊。</p><div class="radio-group"><label class="radio-option"><input type="radio" value="default" v-model="localSettings.custom.playerStyle"><span class="radio-option__display">经典播放栏<span>BetterKuGou 默认</span></span></label><label class="radio-option"><input type="radio" value="netease" v-model="localSettings.custom.playerStyle"><span class="radio-option__display">悬浮胶囊<span>网易云样式</span></span></label></div></fieldset>
           <div class="setting-group"><h3>主题与配色</h3><ThemePackages v-model="localSettings.custom" /></div>
           <div v-if="localSettings.custom.theme === 'custom'" class="custom-color-panel"><label v-for="color in customColors" :key="color.id" class="color-setting"><span>{{ color.label }}</span><input type="color" v-model="localSettings.custom.customTheme[color.id]"></label></div>
-          <ThemeAdjustments v-model="localSettings.custom" />
+          <ThemeAdjustments v-model="localSettings.custom" @open-studio="openThemeStudio" />
         </section>
 
         <section class="settings-section" id="shortcuts-section" :ref="sectionRefs.shortcuts" data-section="shortcuts" aria-labelledby="shortcuts-heading">
@@ -52,6 +53,7 @@
           <header class="section-header"><span class="section-number">04</span><div><h2 id="software-heading">启动与应用</h2><p>下一次打开，接着上一次的心情。</p></div></header>
           <div v-for="option in softwareOptions" :key="option.id" class="setting-item"><div class="setting-info"><label class="setting-label" :for="'software-' + option.id">{{ option.label }}</label><p class="setting-desc" :id="'software-' + option.id + '-desc'">{{ option.description }}</p></div><label class="setting-switch"><input :id="'software-' + option.id" type="checkbox" v-model="localSettings.software[option.id]" :aria-describedby="'software-' + option.id + '-desc'"><span class="slider"></span></label></div>
           <div class="setting-item"><div class="setting-info"><label class="setting-label" for="default-page">启动页面</label><p class="setting-desc">默认打开推荐；收藏页需要登录账号。</p></div><select id="default-page" class="setting-select" v-model="localSettings.software.defaultPage"><option value="home">推荐首页</option><option value="favorites">我的收藏</option></select></div>
+          <AppUpdates v-model="localSettings.software.updates" :before-action="flushEditableSettings" @current-version="appVersion = $event" />
           <div class="setting-group"><div class="group-heading"><div><h3>备份与迁移</h3><p class="setting-desc">导入或导出完整设置。分享配色请使用上方的主题包。</p></div></div><div class="setting-actions"><button class="outline-btn" type="button" @click="handleExportSettings" :disabled="isExporting || isImporting">{{ isExporting ? '导出中…' : '导出设置' }}</button><button class="outline-btn" type="button" @click="handleImportSettings" :disabled="isImporting || isExporting">{{ isImporting ? '导入中…' : '导入设置' }}</button></div></div>
           <div class="about-links"><button type="button" @click="openFeedbackUrl">反馈与建议 ↗</button><button type="button" @click="openLicenseUrl">使用协议 ↗</button><button type="button" @click="openProjectUrl">项目主页 ↗</button></div>
         </section>
@@ -75,12 +77,18 @@ import { useSettingsStore } from '../stores/settingsStore.js'
 import { cloneDeep, mergeDeep, replaceReactive } from '../utils/objectUtils.js'
 import ThemePackages from '../components/common/ThemePackages.vue'
 import ThemeAdjustments from '../components/common/ThemeAdjustments.vue'
+import AppUpdates from '../components/common/AppUpdates.vue'
+import packageInfo from '../../package.json'
 import { applyTheme } from '../utils/themeManager.js'
 
-const emit = defineEmits(['close', 'settings-changed'])
+const emit = defineEmits(['close', 'settings-changed', 'open-theme-studio'])
 
-// 从 package.json 获取版本信息
-const appVersion = ref('0.1.6-alpha-pre1')
+async function openThemeStudio() {
+  if (await flushEditableSettings()) emit('open-theme-studio')
+}
+
+// 桌面端由更新服务提供实际安装版本；浏览器预览使用构建版本。
+const appVersion = ref(typeof packageInfo === 'object' ? packageInfo.version : '')
 
 const sections = [
   { id: 'playback', label: '播放与歌词' },
@@ -177,6 +185,7 @@ const settingsSaveError = ref('')
 const actionMessage = ref('')
 const saveState = ref('saved')
 let saveTask = null
+let recoveringAppearance = false
 const saveStatusText = computed(() => ({ saved: '所有更改已保存', pending: '等待保存…', saving: '正在保存…', error: '更改尚未保存' })[saveState.value])
 
 const currentCacheSizeLabel = computed(() => {
@@ -201,7 +210,7 @@ function collectSettingsPatch(current, baseline) {
 }
 
 function syncFromStore() {
-  if (!ready.value || saveTask) return
+  if (!ready.value || saveTask || recoveringAppearance) return
   const incoming = ensureDefaults(settings)
   if (JSON.stringify(incoming) === JSON.stringify(syncedSettings)) return
   const pending = collectSettingsPatch(localSettings, syncedSettings)
@@ -235,7 +244,7 @@ watch(() => localSettings.custom, (custom) => {
 
 async function persistEditableSettings() {
   if (saveTask) return saveTask
-  if (!ready.value) return false
+  if (!ready.value || recoveringAppearance) return false
   const patch = collectSettingsPatch(localSettings, syncedSettings)
   if (!Object.keys(patch).length) {
     saveState.value = 'saved'
@@ -281,6 +290,46 @@ async function flushEditableSettings() {
   return true
 }
 
+/** Recovery supersedes unsaved appearance edits, including edits made during an earlier in-flight save. */
+async function prepareThemeRecovery(base) {
+  recoveringAppearance = true
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = null
+  // An existing transaction may still commit its captured theme; recovery is queued after it.
+  if (saveTask) await saveTask
+  const committed = ensureDefaults(settings).custom
+  const themeFields = ['theme', 'themePackages', 'themeAdjustmentId', 'customTheme']
+  isSyncingFromStore.value = true
+  for (const field of themeFields) {
+    localSettings.custom[field] = cloneDeep(committed[field])
+    syncedSettings.custom[field] = cloneDeep(committed[field])
+  }
+  localSettings.custom.theme = base
+  syncedSettings.custom.theme = base
+  await nextTick()
+  isSyncingFromStore.value = false
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = null
+  return async () => {
+    // Read the actual committed result on success or rollback; no old theme draft remains to replay.
+    const current = ensureDefaults(settings).custom
+    isSyncingFromStore.value = true
+    for (const field of themeFields) {
+      localSettings.custom[field] = cloneDeep(current[field])
+      syncedSettings.custom[field] = cloneDeep(current[field])
+    }
+    await nextTick()
+    isSyncingFromStore.value = false
+    recoveringAppearance = false
+    syncFromStore()
+    await nextTick()
+    if (Object.keys(collectSettingsPatch(localSettings, syncedSettings)).length) {
+      saveState.value = 'pending'
+      saveTimer = setTimeout(() => { saveTimer = null; void flushEditableSettings() }, 500)
+    }
+  }
+}
+
 function flushPendingOnBlur(event) {
   if (event.target?.matches('input, select')) void flushEditableSettings()
 }
@@ -297,7 +346,7 @@ async function showDesktopLyrics() {
 }
 
 watch(localSettings, () => {
-  if (isSyncingFromStore.value || !ready.value) return
+  if (isSyncingFromStore.value || !ready.value || recoveringAppearance) return
   saveState.value = 'pending'
   if (saveTimer) {
     clearTimeout(saveTimer)
@@ -658,7 +707,9 @@ onBeforeUnmount(() => {
 })
 
 defineExpose({
-  scrollToSection
+  scrollToSection,
+  flushEditableSettings,
+  prepareThemeRecovery
 })
 </script>
 

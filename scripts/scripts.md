@@ -5,6 +5,7 @@
 当前目录没有子目录，保存需要长期维护的项目检查工具。一次性探针和调试脚本放 `.agent/tools/`。
 
 - `check.cjs`：从项目根目录扫描 `src/`、`electron/`、`scripts/`、`tests/`，并检查 Vite 配置和本地 API 的应用/服务入口。
+- `generate-installer-assets.ps1`：在 Windows PowerShell 7 使用现有公共 Logo 生成两份 NSIS BMP 和 DMG 1×/2× PNG；打包直接读取已提交资源，其他平台无需执行此工具。
 
 ## 检查流程与保障
 

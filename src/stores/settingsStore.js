@@ -11,7 +11,8 @@ const baseDefaultSettings = Object.freeze({
   playback: {
     fullscreenLyrics: true,
     enqueueFullPlaylist: true,
-    showTranslation: true // 默认显示翻译
+    showTranslation: true, // 默认显示翻译
+    quality: '128'
   },
   desktopLyrics: {
     fontSize: 'medium',
@@ -49,6 +50,7 @@ const baseDefaultSettings = Object.freeze({
   },
   software: {
     autoLaunch: false,
+    updates: { autoCheck: true, autoDownload: false, channel: 'stable' },
     minimizeToTray: false,
     restorePlaylist: true,
     restorePlaybackState: true,
@@ -89,23 +91,27 @@ let pendingMutations = []
 let writeInFlight = false
 let bufferedExternalSettings = null
 
-async function resolvePathDefaults(settings) {
-  const resolved = cloneDeep(settings)
+async function fetchDefaultPaths() {
   if (bridge?.getDefaultPaths) {
     try {
-      const paths = await bridge.getDefaultPaths()
-      if (paths?.downloadPath) {
-        resolved.download.downloadPath = paths.downloadPath
-      }
-      if (paths?.cachePath) {
-        resolved.download.cachePath = paths.cachePath
-      }
-      return resolved
+      return (await bridge.getDefaultPaths()) ?? null
     } catch (err) {
       logger.warn('settingsStore', '获取默认路径失败', err)
     }
   }
   // 浏览器预览无法确定本机目录，保留空值；桌面端由主进程提供路径。
+  return null
+}
+
+async function resolvePathDefaults(settings, paths) {
+  const resolved = cloneDeep(settings)
+  const defaults = paths === undefined ? await fetchDefaultPaths() : paths
+  if (defaults?.downloadPath) {
+    resolved.download.downloadPath = defaults.downloadPath
+  }
+  if (defaults?.cachePath) {
+    resolved.download.cachePath = defaults.cachePath
+  }
   return resolved
 }
 
@@ -235,10 +241,18 @@ function migrateSettings(rawSettings, defaults) {
   const desktop = normalized.desktopLyrics || {}
   if (!normalized.playback || typeof normalized.playback !== 'object' || Array.isArray(normalized.playback)) normalized.playback = cloneDeep(defaults.playback)
   normalized.playback.showTranslation = typeof normalized.playback.showTranslation === 'boolean' ? normalized.playback.showTranslation : true
+  normalized.playback.quality = ['128', '320', 'flac', 'high'].includes(normalized.playback.quality) ? normalized.playback.quality : '128'
   normalized.desktopLyrics = {
     fontSize: ['small', 'medium', 'large'].includes(desktop.fontSize) ? desktop.fontSize : 'medium',
     theme: ['classic', 'gradient', 'minimal'].includes(desktop.theme) ? desktop.theme : 'classic',
     locked: typeof desktop.locked === 'boolean' ? desktop.locked : false
+  }
+  if (!normalized.software || typeof normalized.software !== 'object' || Array.isArray(normalized.software)) normalized.software = cloneDeep(defaults.software)
+  const updates = normalized.software.updates && typeof normalized.software.updates === 'object' && !Array.isArray(normalized.software.updates) ? normalized.software.updates : {}
+  normalized.software.updates = {
+    autoCheck: typeof updates.autoCheck === 'boolean' ? updates.autoCheck : true,
+    autoDownload: typeof updates.autoDownload === 'boolean' ? updates.autoDownload : false,
+    channel: ['stable', 'beta'].includes(updates.channel) ? updates.channel : 'stable'
   }
   return normalized
 }
@@ -248,11 +262,15 @@ async function initSettings() {
   initPromise = (async () => {
     state.loading = true
     try {
-      const defaults = await fetchDefaultSettings()
-      const defaultResolved = await resolvePathDefaults(defaults)
+      // 三个只读 IPC 互不依赖，避免首屏挂载前串行等待主进程往返。
+      const [defaults, paths, remote] = await Promise.all([
+        fetchDefaultSettings(),
+        fetchDefaultPaths(),
+        loadFromBridge()
+      ])
+      const defaultResolved = await resolvePathDefaults(defaults, paths)
       defaultSnapshot = cloneDeep(defaultResolved)
 
-      const remote = await loadFromBridge()
       const local = !remote ? loadFromLocalStorage() : null
       const base = remote ?? local ?? defaultResolved
 
@@ -378,6 +396,21 @@ async function resetSessionSnapshot() {
   await updateSettings({ session: cloneDeep(baseDefaultSettings.session) })
 }
 
+/** 等待所有已排队的设置写入；保存失败不能被队列的恢复分支隐藏。 */
+async function flushPendingSettings() {
+  let pending
+  do {
+    pending = persistQueue
+    await pending
+  } while (pending !== persistQueue)
+  if (state.error?.source === 'persist') {
+    const error = new Error(state.error.message)
+    error.code = state.error.code
+    throw error
+  }
+  if (pendingMutations.length) await persistSettings()
+}
+
 export function useSettingsStore() {
   return {
     settings: state.settings,
@@ -395,7 +428,8 @@ export function useSettingsStore() {
     chooseDirectory,
     getSessionSnapshot,
     saveSessionSnapshot,
-    resetSessionSnapshot
+    resetSessionSnapshot,
+    flushPendingSettings
   }
 }
 

@@ -103,7 +103,7 @@ function loadSettingsView(store, applyTheme = () => {}) {
     onBeforeUnmount: callback => unmountCallbacks.push(callback)
   })
   const scope = vue.effectScope()
-  const view = scope.run(() => vm.runInContext(`${script}\n;({ localSettings, syncFromStore, persistEditableSettings, flushEditableSettings, handleExportSettings, handleImportSettings, settingsSaveError, actionMessage, saveState })`, sandbox))
+  const view = scope.run(() => vm.runInContext(`${script}\n;({ localSettings, syncFromStore, persistEditableSettings, flushEditableSettings, prepareThemeRecovery, handleExportSettings, handleImportSettings, settingsSaveError, actionMessage, saveState })`, sandbox))
   return {
     ...view,
     dispose() {
@@ -120,8 +120,60 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+function sessionClock() {
+  let now = 0
+  let nextId = 0
+  const timers = new Map()
+  return {
+    setTimeout(callback, delay) {
+      const id = ++nextId
+      timers.set(id, { callback, due: now + delay })
+      return id
+    },
+    clearTimeout: id => timers.delete(id),
+    pending: () => timers.size,
+    async advance(milliseconds) {
+      const target = now + milliseconds
+      while (true) {
+        const next = [...timers].filter(([, timer]) => timer.due <= target).sort((a, b) => a[1].due - b[1].due)[0]
+        if (!next) break
+        const [id, timer] = next
+        now = timer.due
+        timers.delete(id)
+        await timer.callback()
+        await vue.nextTick()
+      }
+      now = target
+    }
+  }
+}
+
+function sessionPlayer(song, state = {}) {
+  let confirmedSong = song
+  let snapshotAvailable = true
+  const audio = { currentTime: state.currentTime ?? 42, duration: state.duration ?? 180 }
+  const player = vue.reactive({
+    isPlaying: state.isPlaying ?? true,
+    volume: state.volume ?? 65,
+    playMode: state.playMode ?? 'loop',
+    getPlaybackSnapshot() {
+      if (!snapshotAvailable) return null
+      return {
+        currentSong: confirmedSong,
+        playbackState: { ...audio, isPlaying: this.isPlaying, volume: this.volume, playMode: this.playMode }
+      }
+    }
+  })
+  return {
+    player,
+    audio,
+    confirm: song => { confirmedSong = song },
+    setSnapshotAvailable: value => { snapshotAvailable = value }
+  }
+}
+
 function loadApp(electronAPI = {}, overrides = {}) {
-  const settings = vue.reactive({ shortcuts: { enableGlobal: true, keys: {} }, software: {}, playback: {} })
+  const settings = vue.reactive({ shortcuts: { enableGlobal: true, keys: {} }, software: {}, playback: {}, ...overrides.settings })
   const mounted = []
   const unmounted = []
   const sandbox = vm.createContext({
@@ -134,8 +186,8 @@ function loadApp(electronAPI = {}, overrides = {}) {
     document: { addEventListener() {}, removeEventListener() {}, querySelectorAll: () => [] },
     localStorage: overrides.localStorage || { getItem: () => null },
     getUserPlaylists: overrides.getUserPlaylists || (async () => ({ status: 1, data: { info: [] } })),
-    setTimeout,
-    clearTimeout,
+    setTimeout: overrides.setTimeout || setTimeout,
+    clearTimeout: overrides.clearTimeout || clearTimeout,
     onMounted: callback => mounted.push(callback),
     onBeforeUnmount: callback => unmounted.push(callback),
     isLoggedIn: () => false,
@@ -144,22 +196,25 @@ function loadApp(electronAPI = {}, overrides = {}) {
     KUGOU_AUTH_EXPIRED_EVENT: 'expired',
     useSettingsStore: () => ({
       settings,
-      ready: vue.ref(false),
-      defaults: () => ({ session: { playbackState: {} } }),
-      getSessionSnapshot: () => ({}),
-      saveSessionSnapshot: async () => {}
+      ready: vue.ref(Boolean(overrides.settingsReady)),
+      defaults: () => ({ session: { playbackState: { isPlaying: false, currentTime: 0, duration: 0, volume: 80, playMode: 'loop' } } }),
+      getSessionSnapshot: overrides.getSessionSnapshot || (() => settings.session || {}),
+      saveSessionSnapshot: overrides.saveSessionSnapshot || (async () => {}),
+      flushPendingSettings: overrides.flushPendingSettings || (async () => {})
     })
   })
   const script = stripImports(fs.readFileSync(path.join(root, 'src/App.vue'), 'utf8')
     .match(/<script setup>([\s\S]*?)<\/script>/)[1])
   const scope = vue.effectScope()
   const app = scope.run(() => vm.runInContext(`${script}\n;({
-    settings, registeredGlobalShortcuts, registerGlobalShortcuts, handleClearPlaylist,
+    settings, registeredGlobalShortcuts, registerGlobalShortcuts, handleClearPlaylist, handlePlayAll,
     handlePlaylistUpdated, handleKeyDown, currentSong, playlist, playlistIndex, musicPlayerRef,
     fetchUserPlaylists, userPlaylists, userPlaylistsLoaded, userLoggedIn, userInfo,
     handleShowLogin, handleLoginSuccess, handleLogout, handleAuthExpired, handleNavigate,
     pageSessionKey, pageSessionVersion, selectedPlaylistId, showLogin, currentView,
-    performMemoryCleanup, drain: () => shortcutUpdateQueue
+    performMemoryCleanup, createLazyView, cachedPageNames, drain: () => shortcutUpdateQueue,
+    handleInstallPreparation, preparingInstall, settingsViewRef, sameInstallSession,
+    collectSessionSnapshot, queueSessionPersist, restoredPlaybackState, handleSongChanged
   })`, sandbox))
   return {
     ...app,
@@ -180,6 +235,123 @@ test('settings initialization writes once and leaves browser paths unset', async
   assert.equal(writes, 1)
   assert.equal(store.settings.download.downloadPath, '')
   assert.equal(store.settings.download.cachePath, '')
+})
+
+test('startup settings reads begin together and apply persisted choices before becoming ready', async () => {
+  const defaults = deferred()
+  const paths = deferred()
+  const saved = deferred()
+  const reads = []
+  let onUpdate
+  let writes = 0
+  const loaded = loadStore({
+    getDefaults() { reads.push('defaults'); return defaults.promise },
+    getDefaultPaths() { reads.push('paths'); return paths.promise },
+    get() { reads.push('settings'); return saved.promise },
+    set() { writes++; return Promise.resolve() },
+    onUpdate(callback) { onUpdate = callback; return () => {} }
+  })
+  const initialization = loaded.initSettings()
+  const store = loaded.useSettingsStore()
+  assert.deepEqual(reads, ['defaults', 'paths', 'settings'])
+  assert.equal(store.ready.value, false)
+  saved.resolve({ schemaVersion: 1, custom: { theme: 'light' }, download: { downloadPath: '/saved/music' } })
+  defaults.resolve({ software: { defaultPage: 'favorites' } })
+  await Promise.resolve()
+  assert.equal(store.ready.value, false, 'the initial snapshot waits for all required defaults')
+  paths.resolve({ downloadPath: '/default/music', cachePath: '/default/cache' })
+  await initialization
+  assert.equal(store.ready.value, true)
+  assert.equal(store.settings.custom.theme, 'light')
+  assert.equal(store.settings.software.defaultPage, 'favorites')
+  assert.equal(store.settings.download.downloadPath, '/saved/music')
+  assert.equal(store.settings.download.cachePath, '/default/cache')
+  assert.equal(writes, 0, 'an existing snapshot is not written back during initialization')
+  onUpdate({ schemaVersion: 1, custom: { theme: 'dark' } })
+  assert.equal(store.settings.custom.theme, 'dark')
+  assert.equal(store.settings.download.cachePath, '/default/cache', 'later broadcasts reuse resolved defaults')
+})
+
+test('startup settings keep the saved snapshot when parallel default reads fail', async () => {
+  const reads = []
+  let writes = 0
+  const loaded = loadStore({
+    getDefaults: async () => { reads.push('defaults'); throw new Error('defaults unavailable') },
+    getDefaultPaths: async () => { reads.push('paths'); throw new Error('paths unavailable') },
+    get: async () => { reads.push('settings'); return { schemaVersion: 1, custom: { theme: 'light' } } },
+    set: async () => { writes++ }
+  })
+  await loaded.initSettings()
+  const store = loaded.useSettingsStore()
+  assert.deepEqual(reads, ['defaults', 'paths', 'settings'])
+  assert.equal(store.settings.custom.theme, 'light')
+  assert.equal(store.settings.download.downloadPath, '')
+  assert.equal(store.ready.value, true)
+  assert.equal(writes, 0)
+})
+
+test('lazy pages load on first navigation and retain their KeepAlive state and component refs', async t => {
+  const sourceApp = loadApp()
+  t.after(() => sourceApp.dispose())
+  const gate = deferred()
+  let loads = 0
+  let mounts = 0
+  const FavoritePage = sourceApp.createLazyView('收藏', () => { loads++; return gate.promise })
+  const makeNode = (type, text = '') => ({ type, text, children: [], parent: null })
+  const renderer = vue.createRenderer({
+    createElement: makeNode,
+    createText: text => makeNode('text', text),
+    createComment: text => makeNode('comment', text),
+    setText: (node, text) => { node.text = text },
+    setElementText: (node, text) => { node.text = text; node.children = [] },
+    patchProp() {},
+    insert(node, parent, anchor) {
+      if (node.parent) node.parent.children.splice(node.parent.children.indexOf(node), 1)
+      node.parent = parent
+      const index = anchor ? parent.children.indexOf(anchor) : -1
+      parent.children.splice(index < 0 ? parent.children.length : index, 0, node)
+    },
+    remove(node) {
+      if (node.parent) node.parent.children.splice(node.parent.children.indexOf(node), 1)
+      node.parent = null
+    },
+    parentNode: node => node.parent,
+    nextSibling: node => node.parent?.children[node.parent.children.indexOf(node) + 1] || null
+  })
+  const page = vue.ref('home')
+  const activePage = vue.ref(null)
+  const HomePage = { name: 'HomeView', render: () => vue.h('div', 'home') }
+  const ui = renderer.createApp({
+    render: () => vue.h(vue.KeepAlive, { include: sourceApp.cachedPageNames, max: 12 }, {
+      default: () => [vue.h(page.value === 'home' ? HomePage : FavoritePage, { key: page.value, ref: activePage })]
+    })
+  })
+  ui.mount(makeNode('root'))
+  t.after(() => ui.unmount())
+  assert.equal(loads, 0, 'the initial home page must not load other views')
+  page.value = 'favorite'
+  await vue.nextTick()
+  assert.equal(loads, 1)
+  gate.resolve({
+    name: 'FavoriteView',
+    setup(_props, { expose }) {
+      const query = vue.ref('')
+      expose({ query })
+      vue.onMounted(() => { mounts++ })
+      return () => vue.h('div', query.value)
+    }
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  await vue.nextTick()
+  assert.ok(activePage.value, 'async components forward refs to the resolved view')
+  activePage.value.query = 'remembered search'
+  page.value = 'home'
+  await vue.nextTick()
+  page.value = 'favorite'
+  await vue.nextTick()
+  assert.equal(activePage.value.query, 'remembered search')
+  assert.equal(loads, 1)
+  assert.equal(mounts, 1, 'the cached resolved view is reactivated without remounting')
 })
 
 test('settings initialization handles a rejected persistence operation', async () => {
@@ -234,7 +406,7 @@ test('artist pagination failures are diagnosed and release the loading guard', a
     .replace('export default', 'module.exports =')
   const diagnostics = []
   const sandbox = vm.createContext({
-    module: { exports: {} }, ContextMenu: {}, ArtworkCover: {}, nextplayIcon: '',
+    module: { exports: {} }, ContextMenu: {}, ArtworkCover: {}, SongBadges: {}, nextplayIcon: '',
     logger: { error: (...args) => diagnostics.push(args) },
     getArtistAudios: async () => { throw new Error('Network unavailable') }
   })
@@ -447,6 +619,102 @@ test('unsaved theme preview survives playback session revisions without committi
   }
 })
 
+test('appearance recovery discards pending theme drafts while preserving unrelated settings edits', async () => {
+  const fixture = await queuedSettingsFixture()
+  const view = loadSettingsView(fixture.store)
+  try {
+    view.localSettings.custom.theme = 'light'
+    view.localSettings.custom.themePackages = [{ id: 'unsaved-appearance' }]
+    view.localSettings.custom.themeAdjustmentId = 'unsaved-appearance'
+    view.localSettings.custom.customTheme.primary = '#123abc'
+    view.localSettings.custom.playerStyle = 'netease'
+    view.localSettings.playback.showTranslation = false
+    await vue.nextTick()
+    const release = await view.prepareThemeRecovery('dark')
+    assert.equal(fixture.requests.length, 0, 'preparing recovery cancels the pending appearance debounce')
+    const restoring = fixture.store.updateSettings({ custom: { theme: 'dark' } })
+    await fixture.flush()
+    fixture.commit(0)
+    await restoring
+    await release()
+    assert.equal(view.localSettings.custom.theme, 'dark')
+    assert.equal(view.localSettings.custom.themePackages.length, 0)
+    assert.equal(view.localSettings.custom.themeAdjustmentId, fixture.store.settings.custom.themeAdjustmentId)
+    assert.equal(view.localSettings.custom.customTheme.primary, fixture.store.settings.custom.customTheme.primary)
+    assert.equal(view.localSettings.custom.playerStyle, 'netease')
+    assert.equal(view.localSettings.playback.showTranslation, false)
+    const savingOthers = view.flushEditableSettings()
+    await fixture.flush()
+    assert.equal(fixture.requests[1].payload.custom.theme, 'dark', 'the next autosave must not reselect the discarded appearance')
+    assert.equal(fixture.requests[1].payload.custom.themePackages.length, 0)
+    assert.equal(fixture.requests[1].payload.custom.playerStyle, 'netease')
+    assert.equal(fixture.requests[1].payload.playback.showTranslation, false)
+    fixture.commit(1)
+    assert.equal(await savingOthers, true)
+    assert.equal(fixture.store.settings.custom.theme, 'dark')
+  } finally { view.dispose() }
+})
+
+test('appearance recovery waits for an in-flight save and supersedes theme edits made while it drains', async () => {
+  const fixture = await queuedSettingsFixture()
+  const view = loadSettingsView(fixture.store)
+  try {
+    view.localSettings.custom.theme = 'light'
+    const earlierSave = view.flushEditableSettings()
+    await fixture.flush()
+    let prepared = false
+    const preparing = view.prepareThemeRecovery('dark').then(release => { prepared = true; return release })
+    view.localSettings.custom.theme = 'another-unsaved-appearance'
+    view.localSettings.custom.playerStyle = 'netease'
+    await fixture.flush()
+    assert.equal(prepared, false)
+    assert.equal(fixture.requests.length, 1, 'recovery must queue behind the captured settings transaction')
+    fixture.commit(0)
+    const release = await preparing
+    await earlierSave
+    assert.equal(view.localSettings.custom.theme, 'dark')
+    assert.equal(view.localSettings.custom.playerStyle, 'netease')
+    const restoring = fixture.store.updateSettings({ custom: { theme: 'dark' } })
+    await fixture.flush()
+    fixture.commit(1)
+    await restoring
+    await release()
+    const savingOthers = view.flushEditableSettings()
+    await fixture.flush()
+    assert.equal(fixture.requests[2].payload.custom.theme, 'dark')
+    assert.equal(fixture.requests[2].payload.custom.playerStyle, 'netease')
+    fixture.commit(2)
+    assert.equal(await savingOthers, true)
+    assert.equal(fixture.store.settings.custom.theme, 'dark')
+  } finally { view.dispose() }
+})
+
+test('failed appearance recovery releases the settings editor without replaying the discarded theme', async () => {
+  const fixture = await queuedSettingsFixture()
+  const view = loadSettingsView(fixture.store)
+  try {
+    view.localSettings.custom.theme = 'light'
+    view.localSettings.custom.playerStyle = 'netease'
+    await vue.nextTick()
+    const release = await view.prepareThemeRecovery('dark')
+    const restoring = fixture.store.updateSettings({ custom: { theme: 'dark' } })
+    const rejection = assert.rejects(restoring, /Disk full/)
+    await fixture.flush()
+    fixture.requests[0].reject(new Error('Disk full'))
+    await rejection
+    await release()
+    assert.equal(view.localSettings.custom.theme, 'dark')
+    assert.equal(view.localSettings.custom.playerStyle, 'netease')
+    const savingOthers = view.flushEditableSettings()
+    await fixture.flush()
+    assert.equal(fixture.requests[1].payload.custom.theme, 'dark', 'rollback cannot resurrect the old theme draft in a later save')
+    assert.equal(fixture.requests[1].payload.custom.playerStyle, 'netease')
+    fixture.commit(1)
+    assert.equal(await savingOthers, true)
+    assert.equal(fixture.store.settings.custom.theme, 'dark')
+  } finally { view.dispose() }
+})
+
 test('leaving settings flushes pending edits', async () => {
   const storeModule = loadStore()
   await storeModule.initSettings()
@@ -515,6 +783,7 @@ test('out-of-order search responses and errors cannot replace newer results', as
     logger: quietLogger,
     ContextMenu: {},
     ArtworkCover: {},
+    SongBadges: {},
     nextplayIcon: '',
     searchMusic: () => {
       const request = deferred()
@@ -603,6 +872,21 @@ test('root unmount releases IPC listeners and paused audio remains resumable', a
   assert.deepEqual(released, ['shortcut', 'memory'])
 })
 
+test('a large queue publishes completely and cannot append stale batches to a newer selection', async () => {
+  const app = loadApp()
+  const songs = Array.from({ length: 1000 }, (_, index) => ({ hash: `old-${index}` }))
+  const first = app.handlePlayAll(songs)
+  assert.equal(app.playlist.value.length, 1000)
+  const latest = [{ hash: 'latest-a' }, { hash: 'latest-b' }]
+  const second = app.handlePlayAll(latest)
+  await Promise.all([first, second])
+  assert.deepEqual(Array.from(app.playlist.value, song => song.hash), ['latest-a', 'latest-b'])
+  assert.equal(app.currentSong.value.hash, 'latest-a')
+  assert.equal(app.playlistIndex.value, 0)
+  assert.equal(songs.length, 1000)
+  await app.dispose()
+})
+
 test('queue updates align current index and clearing cannot erase a newly selected song', async () => {
   const app = loadApp()
   app.currentSong.value = { hash: 'current' }
@@ -687,4 +971,478 @@ test('an expired response from a previous account does not log out the current a
   const currentConfig = requestHandler({ params: {} })
   await assert.rejects(successHandler({ data: { error_code: 20017 }, config: currentConfig }), { code: 'KUGOU_AUTH_EXPIRED' })
   assert.equal(expirations, 1)
+})
+
+test('restoring a session keeps the saved song and position until the player confirms its source', async t => {
+  const clock = sessionClock()
+  const writes = []
+  let reads = 0
+  const saved = {
+    playlist: [{ hash: 'A' }, { hash: 'B' }],
+    playlistIndex: 0,
+    currentSong: { hash: 'B' },
+    playbackState: { isPlaying: false, currentTime: 99, duration: 240, volume: 35, playMode: 'shuffle' }
+  }
+  const app = loadApp({}, {
+    ...clock,
+    settingsReady: true,
+    settings: { software: { restorePlaylist: true, restorePlaybackState: true }, session: saved },
+    getSessionSnapshot: () => { reads++; return saved },
+    saveSessionSnapshot: async snapshot => { writes.push(snapshot) }
+  })
+  t.after(() => app.dispose())
+  app.mount()
+  await vue.nextTick()
+  assert.equal(app.currentSong.value.hash, 'B')
+  assert.equal(app.playlistIndex.value, 1, 'the saved song identity takes precedence over a stale index')
+  assert.equal(app.restoredPlaybackState.value.songHash, 'B')
+  assert.equal(app.restoredPlaybackState.value.currentTime, 99)
+  assert.equal(app.restoredPlaybackState.value.isPlaying, false)
+  assert.equal(app.restoredPlaybackState.value.volume, 35)
+  assert.equal(app.restoredPlaybackState.value.playMode, 'shuffle')
+  await clock.advance(10000)
+  assert.equal(writes.length, 0, 'initial watchers and checkpoints cannot replace the session with an unready player at zero')
+  app.settings.session = { ...saved, currentSong: { hash: 'A' } }
+  await vue.nextTick()
+  assert.equal(reads, 1, 'settings broadcasts cannot start a second restoration')
+  assert.equal(app.currentSong.value.hash, 'B')
+})
+
+test('a restored playback request is consumed on confirmation or discarded when its target changes', async t => {
+  for (const action of ['confirmed', 'changed', 'cleared']) {
+    const app = loadApp({}, {
+      settingsReady: true,
+      settings: {
+        software: { restorePlaylist: true, restorePlaybackState: true },
+        session: {
+          playlist: [{ hash: 'A' }, { hash: 'B' }],
+          currentSong: { hash: 'A' },
+          playbackState: { currentTime: 99, isPlaying: false }
+        }
+      }
+    })
+    t.after(() => app.dispose())
+    assert.equal(app.restoredPlaybackState.value.songHash, 'A')
+    if (action === 'confirmed') app.handleSongChanged({ hash: 'A' })
+    else if (action === 'changed') app.currentSong.value = { hash: 'B' }
+    else app.handleClearPlaylist()
+    await vue.nextTick()
+    assert.equal(app.restoredPlaybackState.value, null, `${action} must not leave a restore request for a later player mount`)
+  }
+})
+
+test('session persistence uses the confirmed audio song and skips an unconfirmed replacement queue', async t => {
+  const writes = []
+  const app = loadApp({}, {
+    settingsReady: true,
+    settings: { software: { restorePlaylist: true, restorePlaybackState: true } },
+    saveSessionSnapshot: async snapshot => { writes.push(snapshot) }
+  })
+  t.after(() => app.dispose())
+  writes.length = 0
+  const playing = sessionPlayer({ hash: 'A' })
+  app.playlist.value = [{ hash: 'A' }, { hash: 'B' }]
+  app.currentSong.value = { hash: 'B' }
+  app.playlistIndex.value = 1
+  app.musicPlayerRef.value = playing.player
+  await vue.nextTick()
+  assert.ok(writes.length > 0)
+  for (const snapshot of writes) {
+    assert.equal(snapshot.currentSong.hash, 'A', 'the pending parent target must not take the old audio progress')
+    assert.equal(snapshot.playlistIndex, 0)
+    assert.equal(snapshot.playbackState.currentTime, 42)
+  }
+
+  writes.length = 0
+  playing.setSnapshotAvailable(false)
+  await app.queueSessionPersist({ immediate: true })
+  assert.equal(writes.length, 0, 'a temporary audio source is not a persisted playback session')
+  playing.setSnapshotAvailable(true)
+  app.playlist.value = [{ hash: 'C' }]
+  app.currentSong.value = { hash: 'C' }
+  app.playlistIndex.value = 0
+  await vue.nextTick()
+  await app.queueSessionPersist({ immediate: true })
+  assert.equal(writes.length, 0, 'an old confirmed source outside the new queue preserves the last good session')
+
+  playing.confirm({ hash: 'C' })
+  playing.audio.currentTime = 0
+  app.handleSongChanged({ hash: 'C' })
+  await vue.nextTick()
+  assert.equal(writes.length, 1, 'confirmation of the same parent hash still saves the newly playable song')
+  assert.equal(writes[0].currentSong.hash, 'C')
+  assert.equal(writes[0].playlistIndex, 0)
+})
+
+test('continuous playback saves fresh positions at checkpoints without another user action', async t => {
+  const clock = sessionClock()
+  const writes = []
+  const app = loadApp({}, {
+    ...clock,
+    settingsReady: true,
+    settings: { software: { restorePlaylist: true, restorePlaybackState: true } },
+    saveSessionSnapshot: async snapshot => { writes.push(snapshot) }
+  })
+  t.after(() => app.dispose())
+  const playing = sessionPlayer({ hash: 'A' })
+  app.playlist.value = [{ hash: 'A' }]
+  app.currentSong.value = { hash: 'A' }
+  app.musicPlayerRef.value = playing.player
+  await vue.nextTick()
+  writes.length = 0
+  app.mount()
+  await clock.advance(4999)
+  assert.equal(writes.length, 0)
+  playing.audio.currentTime = 47
+  await clock.advance(1)
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].currentSong.hash, 'A')
+  assert.equal(writes[0].playbackState.currentTime, 47)
+  playing.audio.currentTime = 52
+  await clock.advance(5000)
+  assert.equal(writes.length, 2)
+  assert.equal(writes[1].playbackState.currentTime, 52)
+})
+
+test('pause, volume and play mode save immediately and clearing removes the old session', async t => {
+  const clock = sessionClock()
+  const writes = []
+  const app = loadApp({}, {
+    ...clock,
+    settingsReady: true,
+    settings: { software: { restorePlaylist: true, restorePlaybackState: true } },
+    saveSessionSnapshot: async snapshot => { writes.push(snapshot) }
+  })
+  t.after(() => app.dispose())
+  const playing = sessionPlayer({ hash: 'A' })
+  app.playlist.value = [{ hash: 'A' }]
+  app.currentSong.value = { hash: 'A' }
+  app.musicPlayerRef.value = playing.player
+  await vue.nextTick()
+  writes.length = 0
+  app.queueSessionPersist()
+  assert.equal(clock.pending(), 1)
+  playing.player.isPlaying = false
+  await vue.nextTick()
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].playbackState.isPlaying, false)
+  assert.equal(writes[0].playbackState.currentTime, 42)
+  assert.equal(clock.pending(), 0, 'the immediate pause save cancels an older debounced save')
+  playing.player.volume = 25
+  await vue.nextTick()
+  assert.equal(writes.length, 2)
+  assert.equal(writes[1].playbackState.volume, 25)
+  playing.player.playMode = 'single'
+  await vue.nextTick()
+  assert.equal(writes.length, 3)
+  assert.equal(writes[2].playbackState.playMode, 'single')
+
+  app.handleClearPlaylist()
+  await vue.nextTick()
+  const cleared = writes.at(-1)
+  assert.equal(cleared.playlist.length, 0)
+  assert.equal(cleared.currentSong, null, 'a stale player ref during unmount cannot resurrect the old song')
+  assert.equal(cleared.playlistIndex, 0)
+  assert.equal(cleared.playbackState.currentTime, 0)
+  assert.equal(cleared.playbackState.isPlaying, false)
+})
+
+test('failed checkpoint persistence is retried with the next actual playback position', async t => {
+  const clock = sessionClock()
+  const writes = []
+  let fail = false
+  const app = loadApp({}, {
+    ...clock,
+    settingsReady: true,
+    settings: { software: { restorePlaylist: true, restorePlaybackState: true } },
+    saveSessionSnapshot: async snapshot => {
+      writes.push(snapshot)
+      if (fail) throw new Error('disk temporarily unavailable')
+    }
+  })
+  t.after(() => app.dispose())
+  const playing = sessionPlayer({ hash: 'A' })
+  app.playlist.value = [{ hash: 'A' }]
+  app.currentSong.value = { hash: 'A' }
+  app.musicPlayerRef.value = playing.player
+  await vue.nextTick()
+  writes.length = 0
+  fail = true
+  app.mount()
+  await clock.advance(5000)
+  assert.equal(writes.length, 1)
+  assert.equal(clock.pending(), 1, 'a failed write must not stop future checkpoints')
+  fail = false
+  playing.audio.currentTime = 55
+  await clock.advance(5000)
+  assert.equal(writes.length, 2)
+  assert.equal(writes[1].playbackState.currentTime, 55)
+})
+
+test('an immediate session save can be awaited and cancels the older debounced write', async t => {
+  const clock = sessionClock()
+  const pendingWrite = deferred()
+  let held = false
+  let writes = 0
+  const app = loadApp({}, {
+    ...clock,
+    settingsReady: true,
+    settings: { software: { restorePlaylist: true, restorePlaybackState: true } },
+    saveSessionSnapshot: () => { writes++; return held ? pendingWrite.promise : Promise.resolve() }
+  })
+  t.after(() => app.dispose())
+  const playing = sessionPlayer({ hash: 'A' })
+  app.playlist.value = [{ hash: 'A' }]
+  app.currentSong.value = { hash: 'A' }
+  app.musicPlayerRef.value = playing.player
+  await vue.nextTick()
+  held = true
+  writes = 0
+  app.queueSessionPersist()
+  assert.equal(clock.pending(), 1)
+  const saving = app.queueSessionPersist({ immediate: true })
+  assert.equal(typeof saving?.then, 'function', 'the caller must be able to wait for persistence')
+  assert.equal(clock.pending(), 0)
+  let settled = false
+  saving.then(() => { settled = true })
+  await vue.nextTick()
+  assert.equal(settled, false, 'the returned promise waits for the actual disk write')
+  pendingWrite.resolve()
+  await saving
+  await clock.advance(300)
+  assert.equal(settled, true)
+  assert.equal(writes, 1, 'the canceled debounce cannot write a duplicate snapshot')
+})
+
+test('checkpoint persistence waits for slow disk and cannot restart after unmount', async () => {
+  const clock = sessionClock()
+  const pendingWrite = deferred()
+  let held = false
+  let writes = 0
+  const app = loadApp({}, {
+    ...clock,
+    settingsReady: true,
+    settings: { software: { restorePlaylist: true, restorePlaybackState: true } },
+    saveSessionSnapshot: () => { writes++; return held ? pendingWrite.promise : Promise.resolve() }
+  })
+  const playing = sessionPlayer({ hash: 'A' })
+  app.playlist.value = [{ hash: 'A' }]
+  app.currentSong.value = { hash: 'A' }
+  app.musicPlayerRef.value = playing.player
+  await vue.nextTick()
+  writes = 0
+  held = true
+  app.mount()
+  const checkpoint = clock.advance(5000)
+  await vue.nextTick()
+  assert.equal(writes, 1)
+  assert.equal(clock.pending(), 0, 'a second checkpoint waits until the current write settles')
+  await app.dispose()
+  pendingWrite.resolve()
+  await checkpoint
+  assert.equal(clock.pending(), 0, 'late disk completion cannot restart the checkpoint timer')
+  await app.queueSessionPersist({ immediate: true })
+  await clock.advance(15000)
+  assert.equal(writes, 1, 'an unmounted app must not start another session write')
+})
+
+test('unmount cancels both a pending checkpoint and a debounced session save', async () => {
+  const clock = sessionClock()
+  let writes = 0
+  const app = loadApp({}, {
+    ...clock,
+    settingsReady: true,
+    settings: { software: { restorePlaylist: true, restorePlaybackState: true } },
+    saveSessionSnapshot: async () => { writes++ }
+  })
+  const playing = sessionPlayer({ hash: 'A' })
+  app.playlist.value = [{ hash: 'A' }]
+  app.currentSong.value = { hash: 'A' }
+  app.musicPlayerRef.value = playing.player
+  await vue.nextTick()
+  app.mount()
+  app.queueSessionPersist()
+  writes = 0
+  assert.equal(clock.pending(), 2)
+  await app.dispose()
+  assert.equal(clock.pending(), 0)
+  await clock.advance(15000)
+  assert.equal(writes, 0)
+})
+
+test('installation preparation waits for draft, final session and persistence before acknowledging', async () => {
+  const draft = deferred()
+  const saved = deferred()
+  const drained = deferred()
+  const calls = []
+  const replies = []
+  const app = loadApp({ updates: { completePrepareForInstall: async (...args) => { replies.push(args); return { accepted: true } } } }, {
+    settingsReady: true,
+    saveSessionSnapshot: snapshot => { calls.push(['session', snapshot]); return saved.promise },
+    flushPendingSettings: () => { calls.push(['drain']); return drained.promise }
+  })
+  calls.length = 0 // Initial session migration is separate from the installation request.
+  app.settings.software.restorePlaylist = true
+  app.settings.software.restorePlaybackState = true
+  app.settingsViewRef.value = { flushEditableSettings: () => { calls.push(['draft']); return draft.promise } }
+  app.currentSong.value = { hash: 'current' }
+  app.playlist.value = [{ hash: 'current' }]
+  app.musicPlayerRef.value = sessionPlayer({ hash: 'current' }).player
+  const preparation = app.handleInstallPreparation({ requestId: 'install-1', phase: 'prepare' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(app.preparingInstall.value, true)
+  assert.equal(calls[0][0], 'draft')
+  assert.equal(replies.length, 0)
+  draft.resolve(true)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls[1][0], 'session')
+  assert.equal(calls[1][1].playbackState.currentTime, 42)
+  assert.equal(calls[1][1].playbackState.isPlaying, true)
+  assert.equal(calls[1][1].playlist[0].hash, 'current')
+  saved.resolve()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls[2][0], 'drain')
+  assert.equal(replies.length, 0)
+  drained.resolve()
+  await preparation
+  assert.equal(replies[0][0], 'install-1')
+  assert.equal(replies[0][1].success, true)
+  assert.equal(app.preparingInstall.value, true)
+  await app.dispose()
+})
+
+test('installation preparation refuses to acknowledge an unconfirmed playback session', async t => {
+  const replies = []
+  let writes = 0
+  let drains = 0
+  const app = loadApp({ updates: { completePrepareForInstall: async (...args) => { replies.push(args) } } }, {
+    settingsReady: true,
+    settings: { software: { restorePlaylist: true, restorePlaybackState: true } },
+    saveSessionSnapshot: async () => { writes++ },
+    flushPendingSettings: async () => { drains++ }
+  })
+  t.after(() => app.dispose())
+  writes = 0
+  const playing = sessionPlayer({ hash: 'old-source' })
+  playing.setSnapshotAvailable(false)
+  app.playlist.value = [{ hash: 'pending-song' }]
+  app.currentSong.value = { hash: 'pending-song' }
+  app.musicPlayerRef.value = playing.player
+  await app.handleInstallPreparation({ requestId: 'unconfirmed-playback', phase: 'prepare' })
+  assert.equal(writes, 0, 'an unready source must preserve the previous saved session')
+  assert.equal(drains, 0)
+  assert.equal(replies.length, 1)
+  assert.equal(replies[0][0], 'unconfirmed-playback')
+  assert.equal(replies[0][1].success, false, 'the installer must not proceed as if the current session was saved')
+  assert.equal(replies[0][1].errorCode, 'SAVE_FAILED')
+  assert.equal(app.preparingInstall.value, false)
+})
+
+test('failed drafts block installation and restore controls without saving a replacement session', async () => {
+  const replies = []
+  let sessionWrites = 0
+  const app = loadApp({ updates: { completePrepareForInstall: async (...args) => { replies.push(args) } } }, {
+    settingsReady: true,
+    saveSessionSnapshot: async () => { sessionWrites++ }
+  })
+  sessionWrites = 0
+  app.settingsViewRef.value = { flushEditableSettings: async () => false }
+  await app.handleInstallPreparation({ requestId: 'failed-draft', phase: 'prepare' })
+  assert.equal(sessionWrites, 0)
+  assert.equal(replies[0][1].success, false)
+  assert.equal(replies[0][1].errorCode, 'SAVE_FAILED')
+  assert.equal(app.preparingInstall.value, false)
+  await app.dispose()
+})
+
+test('canceled installation preparation ignores a late successful draft flush', async () => {
+  const draft = deferred()
+  const replies = []
+  let drained = 0
+  const app = loadApp({ updates: { completePrepareForInstall: async (...args) => { replies.push(args) } } }, {
+    settingsReady: true,
+    flushPendingSettings: async () => { drained++ }
+  })
+  app.settingsViewRef.value = { flushEditableSettings: () => draft.promise }
+  const preparation = app.handleInstallPreparation({ requestId: 'canceled-install', phase: 'prepare' })
+  await vue.nextTick()
+  await app.handleInstallPreparation({ requestId: 'unrelated-request', phase: 'canceled' })
+  assert.equal(app.preparingInstall.value, true)
+  await app.handleInstallPreparation({ requestId: 'canceled-install', phase: 'canceled' })
+  draft.resolve(true)
+  await preparation
+  assert.equal(replies.length, 0)
+  assert.equal(drained, 0)
+  assert.equal(app.preparingInstall.value, false)
+  await app.dispose()
+})
+
+test('a rejected preparation acknowledgement unblocks the application', async () => {
+  const app = loadApp({ updates: { completePrepareForInstall: async () => ({ accepted: false }) } }, { settingsReady: true })
+  await app.handleInstallPreparation({ requestId: 'stale-at-main', phase: 'prepare' })
+  assert.equal(app.preparingInstall.value, false)
+  await app.dispose()
+})
+
+test('a song change during installation saving is persisted again before acknowledging', async () => {
+  const firstSave = deferred()
+  const snapshots = []
+  const replies = []
+  let recording = false
+  const app = loadApp({ updates: { completePrepareForInstall: async (...args) => { replies.push(args); return { success: true } } } }, {
+    settingsReady: true,
+    saveSessionSnapshot: snapshot => {
+      if (!recording) return Promise.resolve()
+      snapshots.push(snapshot)
+      return snapshots.length === 1 ? firstSave.promise : Promise.resolve()
+    }
+  })
+  app.settings.software.restorePlaylist = true
+  app.currentSong.value = { hash: 'A' }
+  app.playlist.value = [{ hash: 'A' }, { hash: 'B' }]
+  const playing = sessionPlayer({ hash: 'A' })
+  app.musicPlayerRef.value = playing.player
+  recording = true
+  const preparation = app.handleInstallPreparation({ requestId: 'switch-during-save', phase: 'prepare' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(snapshots[0].currentSong.hash, 'A')
+  app.currentSong.value = { hash: 'B' }
+  app.playlistIndex.value = 1
+  playing.confirm({ hash: 'B' })
+  firstSave.resolve()
+  await preparation
+  assert.equal(snapshots.length, 2)
+  assert.equal(snapshots[1].currentSong.hash, 'B')
+  assert.equal(snapshots[1].playlistIndex, 1)
+  assert.equal(replies.length, 1)
+  assert.equal(replies[0][1].success, true)
+  await app.dispose()
+})
+
+test('buffering during a slow installation save is stable while a real seek requires another snapshot', async () => {
+  const app = loadApp()
+  const snapshot = { playbackState: { isPlaying: true, currentTime: 42, duration: 180 } }
+  assert.equal(app.sameInstallSession(snapshot, snapshot, Date.now() - 5000), true)
+  assert.equal(app.sameInstallSession(snapshot, { playbackState: { ...snapshot.playbackState, currentTime: 120 } }, Date.now()), false)
+  assert.equal(app.sameInstallSession(snapshot, { playbackState: { ...snapshot.playbackState, currentTime: 10 } }, Date.now()), false)
+  await app.dispose()
+})
+
+test('settings drain waits for queued commits and exposes a failed write until a successful retry', async () => {
+  const fixture = await queuedSettingsFixture()
+  const write = fixture.store.updateSettings({ custom: { theme: 'light' } })
+  const failedWrite = assert.rejects(write, /disk unavailable/)
+  let drained = false
+  const flush = fixture.store.flushPendingSettings().then(() => { drained = true })
+  const failedFlush = assert.rejects(flush, /disk unavailable/)
+  await fixture.flush()
+  assert.equal(drained, false)
+  fixture.requests[0].reject(new Error('disk unavailable'))
+  await Promise.all([failedWrite, failedFlush])
+  const retry = fixture.store.updateSettings({ custom: { theme: 'light' } })
+  await fixture.flush()
+  fixture.commit(1)
+  await retry
+  await fixture.store.flushPendingSettings()
+  assert.equal(fixture.store.error.value, null)
 })

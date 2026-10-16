@@ -63,7 +63,10 @@
           <div class="col-title">
             <ArtworkCover :src="song.imgurl || song.album_img || ''" class="song-cover" />
             <div class="song-info">
-              <button type="button" class="song-name" @click.stop="handlePlay(song)" @dblclick.stop :title="song.songname || song.filename || '未知歌曲'">{{ song.songname || song.filename }}</button>
+              <div class="song-title-line">
+                <button type="button" class="song-name" @click.stop="handlePlay(song)" @dblclick.stop :title="song.songname || song.filename || '未知歌曲'">{{ song.songname || song.filename }}</button>
+                <SongBadges :song="song" />
+              </div>
               <button type="button" class="artist-link mobile-artist" @click.stop="goArtist(song)" @dblclick.stop>{{ song.author_name || song.singername || '未知歌手' }}</button>
             </div>
           </div>
@@ -90,13 +93,14 @@
 
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
+import SongBadges from '../components/common/SongBadges.vue'
 import { logger } from '../utils/logger.js'
 
 import { getRankInfo } from '../api/music.js'
 import { useSettingsStore } from '../stores/settingsStore.js'
 
 export default {
-  components: { ArtworkCover },
+  components: { ArtworkCover, SongBadges },
   name: 'RankDetailView',
   props: {
     rankData: {

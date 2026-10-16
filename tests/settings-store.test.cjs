@@ -146,3 +146,34 @@ test('an unsupported auto-launch update commits the corrected state and does not
   await store.setSettings({ custom: { theme: 'light' } })
   assert.equal(store.getSettings().custom.theme, 'light')
 })
+
+test('update preferences fill old settings, preserve explicit choices and discard automatic-install fields', async () => {
+  const fixture = createStore()
+  const { store } = fixture
+  await store.initSettingsStore(fixture.app)
+  const read = () => JSON.parse(JSON.stringify(store.getSettings().software.updates))
+  const defaults = { autoCheck: true, autoDownload: false, channel: 'stable' }
+  assert.deepEqual(read(), defaults)
+  await store.setSettings({ software: { updates: { autoCheck: false, autoDownload: true, channel: 'beta', autoInstall: true } } })
+  assert.deepEqual(read(), { autoCheck: false, autoDownload: true, channel: 'beta' })
+  for (const updates of [null, false, 5, 'invalid', [], { autoCheck: 'false', autoDownload: 1, channel: 'nightly' }]) {
+    await store.overwriteSettings({ software: { updates } })
+    assert.deepEqual(read(), defaults)
+  }
+  for (const software of [null, false, [], 'invalid']) {
+    await store.overwriteSettings({ software })
+    assert.deepEqual(read(), defaults)
+  }
+})
+
+test('failed update preference saves do not publish a new automatic-download policy', async () => {
+  const fixture = createStore()
+  await fixture.store.initSettingsStore(fixture.app)
+  let broadcasts = 0
+  fixture.store.onSettingsChange(() => { broadcasts += 1 })
+  fixture.setWriteHook(async () => { throw new Error('Disk full') })
+  await assert.rejects(fixture.store.setSettings({ software: { updates: { autoDownload: true, channel: 'beta' } } }), /Disk full/)
+  assert.equal(fixture.store.getSettings().software.updates.autoDownload, false)
+  assert.equal(fixture.store.getSettings().software.updates.channel, 'stable')
+  assert.equal(broadcasts, 0)
+})

@@ -15,6 +15,7 @@ if (process.platform === 'win32' && !process.env.BK_SKIP_CHCP && !app.isPackaged
 const path = require('path')
 const { pathToFileURL } = require('url')
 const { createBackendService } = require('./services/backendService')
+const { createUpdateService } = require('./services/updateService')
 const {
   initSettingsStore,
   getSettings,
@@ -45,9 +46,12 @@ let tray = null
 let isQuitting = false
 let cleanupPromise = null
 let cleanupComplete = false
-let startupWindowTimer = null
-let showWindowTimer = null
+let mainWindowReady = false
 let unsubscribeSettings = null
+let updateService = null
+let installRequest = null
+let installQuitService = null
+let installPreparation = null
 // 用户主动退出标志，用于区分托盘驻留和真正退出
 let userRequestedQuit = false
 // 当前播放信息(由渲染进程通过 IPC 推送)
@@ -58,6 +62,7 @@ let currentTrack = {
 let isPlaying = false
 let currentDesktopLyrics = []
 let currentDesktopTime = 0
+let desktopAppearanceGeneration = 0
 // 桌面歌词与灵动岛歌词
 let desktopLyricEnabled = false
 let islandLyricEnabled = false
@@ -78,8 +83,9 @@ const backendService = createBackendService({
 })
 
 function broadcastPlayerControl(action) {
+  if (installPreparation) return
   const wins = BrowserWindow.getAllWindows().filter(w => !w.isDestroyed())
-  if (wins.length === 0) {
+  if (!mainWindowReady || wins.length === 0) {
     pendingPlayerControls.push(action)
     logger.trace('main', '🕒 窗口未就绪, 已缓存控制指令:', action)
     return
@@ -267,6 +273,7 @@ function createDesktopLyricWindow() {
 
 /** 桌面歌词只接收已提交的白名单显示偏好，创建和重新打开时应用同一快照。 */
 function syncDesktopLyricSettings(settings) {
+  const generation = ++desktopAppearanceGeneration
   if (!desktopLyricWindow || desktopLyricWindow.isDestroyed()) return
   if (!settings) {
     try { settings = getSettings() } catch (error) {
@@ -275,10 +282,27 @@ function syncDesktopLyricSettings(settings) {
     }
   }
   const value = settings?.desktopLyrics || {}
-  desktopLyricWindow.webContents.send('desktop-lyric:settings-update', {
+  const preferences = {
     fontSize: ['small', 'medium', 'large'].includes(value.fontSize) ? value.fontSize : 'medium',
     theme: ['classic', 'gradient', 'minimal'].includes(value.theme) ? value.theme : 'classic',
     locked: typeof value.locked === 'boolean' ? value.locked : false
+  }
+  const custom = settings?.custom
+  const hasDesktopStyles = Array.isArray(custom?.themePackages) && custom.themePackages.some(theme => theme?.id === custom.theme && theme.desktopCss)
+  // Ordinary preference/session broadcasts must not briefly remove an active appearance sheet.
+  if (custom && !hasDesktopStyles) preferences.appearance = null
+  desktopLyricWindow.webContents.send('desktop-lyric:settings-update', preferences)
+  // Builtins retain the independent classic/gradient/minimal appearance. A selected package may add desktop rules.
+  if (!hasDesktopStyles) return
+  const win = desktopLyricWindow
+  loadThemeCatalog().then(catalog => {
+    if (generation !== desktopAppearanceGeneration || win !== desktopLyricWindow || win.isDestroyed()) return
+    const theme = catalog.getThemePackage(custom.theme, custom)
+    const appearance = theme?.desktopCss ? { tokens: theme.tokens, css: catalog.compileThemeCss(theme.desktopCss, 'desktop') } : null
+    win.webContents.send('desktop-lyric:settings-update', { ...preferences, appearance })
+  }).catch(error => {
+    logger.warn('main', '桌面歌词主题应用失败，保留默认外观', error)
+    if (generation === desktopAppearanceGeneration && win === desktopLyricWindow && !win.isDestroyed()) win.webContents.send('desktop-lyric:settings-update', { ...preferences, appearance: null })
   })
 }
 
@@ -290,8 +314,98 @@ function subscribeToSettingsUpdates() {
       if (!win.isDestroyed()) win.webContents.send('settings:updated', nextSettings)
     })
     syncDesktopLyricSettings(nextSettings)
+    updateService?.configure(nextSettings.software.updates)
   })
 }
+
+/** 更新网络、文件和校验在 Worker 中执行，窗口启动无需等待。 */
+function initializeUpdateService() {
+  updateService = createUpdateService({
+    workerPath: app.isPackaged
+      ? path.join(process.resourcesPath, 'updater', 'updateWorker.cjs')
+      : path.join(app.getAppPath(), 'electron', 'services', 'updateWorker.cjs'),
+    downloadRoot: path.join(app.getPath('userData'), 'updates'),
+    currentVersion: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch,
+    logger,
+    onState: (state) => {
+      if (!isQuitting && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('updates:state', state)
+      }
+    }
+  })
+  updateService.configure(getSettings().software.updates)
+}
+
+/** 更新桥接仅允许主窗口的顶层页面，路径与下载地址不接收渲染输入。 */
+function getUpdatesForSender(event) {
+  if (isQuitting || !mainWindow || mainWindow.isDestroyed() ||
+      event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+    throw new Error('更新操作只能从应用主窗口发起。')
+  }
+  if (!updateService) throw new Error('更新服务尚未就绪，请稍后重试。')
+  return updateService
+}
+
+ipcMain.handle('updates:get-state', (event) => getUpdatesForSender(event).getState())
+ipcMain.handle('updates:check', (event) => getUpdatesForSender(event).check())
+ipcMain.handle('updates:download', (event, assetId) => getUpdatesForSender(event).download(assetId))
+ipcMain.handle('updates:cancel', (event) => getUpdatesForSender(event).cancel())
+ipcMain.handle('updates:reveal', async (event) => {
+  try {
+    const updates = getUpdatesForSender(event)
+    const file = await updates.getDownloadedFile()
+    getUpdatesForSender(event)
+    shell.showItemInFolder(file.path)
+    return { success: true }
+  } catch (error) {
+    logger.error('updates', '定位更新安装包失败', error)
+    return { success: false, error: error.message }
+  }
+})
+
+/** 只有用户主动点击并在原生对话框确认后才打开已校验的包，不退出或安排安装。 */
+ipcMain.handle('updates:install', async (event) => {
+  let updates
+  try {
+    updates = getUpdatesForSender(event)
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+  if (installRequest) return { canceled: true }
+  installRequest = Promise.resolve().then(async () => {
+    const file = await updates.getDownloadedFile()
+    if (!['exe', 'dmg', 'deb', 'rpm'].includes(file.format)) {
+      throw new Error('请打开所在文件夹，自行处理此更新包。')
+    }
+    getUpdatesForSender(event)
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: 'question',
+      title: '手动安装更新',
+      message: `打开 ${file.assetName}？`,
+      detail: '将打开已下载的安装包，后续安装由你确认。BetterKuGou 将保持运行。',
+      buttons: ['取消', '打开安装包'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    })
+    if (response !== 1) return { canceled: true }
+    getUpdatesForSender(event)
+    const confirmed = await updates.getDownloadedFile()
+    if (confirmed.path !== file.path || confirmed.assetId !== file.assetId || confirmed.version !== file.version) {
+      throw new Error('更新包已改变，请重新确认安装。')
+    }
+    getUpdatesForSender(event)
+    const errorMessage = await shell.openPath(confirmed.path)
+    if (errorMessage) throw new Error(errorMessage)
+    return { success: true }
+  }).catch(error => {
+    logger.error('updates', '用户手动打开更新包失败', error)
+    return { success: false, error: error.message }
+  }).finally(() => { installRequest = null })
+  return installRequest
+})
 // 存储已注册的全局快捷键映射: accelerator -> action
 const registeredShortcuts = new Map()
 // 内存清理定时器
@@ -319,7 +433,8 @@ function createLoadingWindow() {
   loadingWindow.loadFile(path.join(__dirname, 'loading.html'), {
     query: { logo: pathToFileURL(getAppTrayIcon()).href }
   }).catch(error => {
-    logger.error('main', '加载启动窗口失败', error)
+    // 启动中退出会主动中止导航，不将其记为启动失败。
+    if (!isQuitting) logger.error('main', '加载启动窗口失败', error)
   })
 
   loadingWindow.on('closed', () => {
@@ -452,10 +567,6 @@ function performApplicationCleanup() {
 }
 
 async function cleanupApplicationResources() {
-  if (startupWindowTimer) clearTimeout(startupWindowTimer)
-  if (showWindowTimer) clearTimeout(showWindowTimer)
-  startupWindowTimer = null
-  showWindowTimer = null
   unsubscribeSettings?.()
   unsubscribeSettings = null
   logger.trace('main', '🗑️ 开始应用退出清理流程...')
@@ -464,6 +575,19 @@ async function cleanupApplicationResources() {
     // 1. 停止所有定时器和后台任务
     logger.trace('main', '🛑 停止内存清理定时器...')
     stopMemoryCleanup()
+
+    try {
+      if (installQuitService) await installQuitService.stop()
+    } catch (error) {
+      logger.error('installer', '关闭安装退出协作管道失败', error)
+    }
+    releaseInstallPreparation()
+
+    try {
+      if (updateService) await updateService.stop()
+    } catch (error) {
+      logger.error('updates', '停止更新任务失败', error)
+    }
 
     // 2. 注销所有全局快捷键
     logger.trace('main', '⌨️ 注销全局快捷键...')
@@ -540,6 +664,8 @@ async function cleanupApplicationResources() {
 
 // 创建浏览器窗口
 function createWindow() {
+  if (isQuitting || (mainWindow && !mainWindow.isDestroyed())) return
+  mainWindowReady = false
   updateLoadingProgress(75, '正在加载前端界面...', 'frontend')
 
   mainWindow = new BrowserWindow({
@@ -572,37 +698,13 @@ function createWindow() {
     : pathToFileURL(path.join(__dirname, '../dist/index.html')).href
 
   mainWindow.loadURL(urlLocation).catch(error => {
-    logger.error('main', '加载主窗口失败', error)
+    if (!isQuitting) logger.error('main', '加载主窗口失败', error)
   })
 
   // 页面加载完成后的处理
   mainWindow.webContents.on('did-finish-load', () => {
     if (isQuitting) return
     updateLoadingProgress(90, '准备就绪', 'login')
-    // 冲刷之前缓存的播放器控制指令
-    if (pendingPlayerControls.length) {
-      logger.trace('main', '🚀 发送缓存的播放器控制指令: ', pendingPlayerControls)
-      pendingPlayerControls.splice(0).forEach(action => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('player:control', action)
-        }
-      })
-    }
-
-    // 立即显示主窗口并关闭加载窗口
-    if (showWindowTimer) clearTimeout(showWindowTimer)
-    showWindowTimer = setTimeout(() => {
-      showWindowTimer = null
-      if (isQuitting) return
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.show()
-        mainWindow.focus()
-      }
-      closeLoadingWindow()
-
-      // 启动内存自动清理
-      startMemoryCleanup()
-    }, 300)
   })
 
   // 在开发环境中打开开发者工具
@@ -652,16 +754,19 @@ app.whenReady().then(async () => {
 
   subscribeToSettingsUpdates()
   syncDesktopLyricSettings(getSettings())
+  try {
+    initializeUpdateService()
+  } catch (error) {
+    // 更新服务失败不能影响正常启动和播放。
+    logger.error('updates', '初始化更新服务失败', error)
+  }
 
   // 启动后端服务器
   backendService.start()
 
-  // 立即创建主窗口(不等待后端完全启动)
-  startupWindowTimer = setTimeout(() => {
-    startupWindowTimer = null
-    if (isQuitting) return
-    createWindow()
-  }, 1500)
+  // 与后端并行加载界面；渲染入口只在首批请求前等待实际服务就绪。
+  createWindow()
+  initializeInstallQuitService()
 
   // 在 macOS 上，当点击 dock 图标且没有其他窗口打开时，通常会重新创建一个窗口
   app.on('activate', () => {
@@ -674,6 +779,93 @@ app.whenReady().then(async () => {
   userRequestedQuit = true
   app.quit()
 })
+
+/** 首屏挂载后才显示窗口，避免依赖固定延时或文档 load 事件猜测 Vue 就绪。 */
+ipcMain.on('renderer:ready', (event) => {
+  if (isQuitting || mainWindowReady || !isMainWindowSender(event)) return
+  mainWindowReady = true
+  mainWindow.show()
+  mainWindow.focus()
+  closeLoadingWindow()
+  pendingPlayerControls.splice(0).forEach(action => mainWindow.webContents.send('player:control', action))
+  startMemoryCleanup()
+})
+
+function isMainWindowSender(event) {
+  return Boolean(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents &&
+    event.senderFrame === mainWindow.webContents.mainFrame)
+}
+
+/** 每次准备只绑定当时的主窗口和顶层 frame，导航与销毁立即失效旧保存请求。 */
+function releaseInstallPreparation() {
+  if (!installPreparation) return
+  for (const [emitter, name, listener] of installPreparation.listeners) {
+    emitter.removeListener(name, listener)
+  }
+  installPreparation = null
+}
+
+function notifyInstallPreparation(payload) {
+  if (payload.phase === 'canceled') {
+    const preparation = installPreparation
+    if (!preparation || preparation.requestId !== payload.requestId) return
+    releaseInstallPreparation()
+    if (!preparation.window.isDestroyed() && !preparation.contents.isDestroyed?.()) {
+      preparation.contents.send('updates:prepare-install', payload)
+    }
+    return
+  }
+  if (isQuitting || !mainWindowReady || !mainWindow || mainWindow.isDestroyed()) return false
+  releaseInstallPreparation()
+  const window = mainWindow
+  const contents = window.webContents
+  const requestId = payload.requestId
+  const cancel = () => installQuitService?.cancel('RENDERER_CHANGED', requestId)
+  const navigation = (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) cancel()
+  }
+  const listeners = [
+    [contents, 'did-start-navigation', navigation],
+    [contents, 'render-process-gone', cancel],
+    [contents, 'destroyed', cancel],
+    [window, 'closed', cancel]
+  ]
+  installPreparation = { requestId, window, contents, frame: contents.mainFrame, listeners }
+  listeners.forEach(([emitter, name, listener]) => emitter.on(name, listener))
+  contents.send('updates:prepare-install', payload)
+  return true
+}
+
+/** Windows 打包版才开放每 PID 管道；失败不得阻塞窗口、后端或播放器启动。 */
+function initializeInstallQuitService() {
+  if (process.platform !== 'win32' || !app.isPackaged || isQuitting || installQuitService) return
+  try {
+    const { createInstallQuitService } = require('./services/installQuitService')
+    installQuitService = createInstallQuitService({
+      logger,
+      onPrepare: notifyInstallPreparation,
+      onQuit() {
+        releaseInstallPreparation()
+        userRequestedQuit = true
+        app.quit()
+      }
+    })
+    void installQuitService.start().catch(error => {
+      logger.error('installer', '启动安装退出协作管道失败，应用继续启动', error)
+    })
+  } catch (error) {
+    logger.error('installer', '初始化安装退出协作服务失败，应用继续启动', error)
+  }
+}
+
+ipcMain.handle('updates:prepare-install-complete', (event, requestId, result) => {
+  const preparation = installPreparation
+  if (isQuitting || !isMainWindowSender(event) || !preparation || preparation.requestId !== requestId ||
+    event.sender !== preparation.contents || event.senderFrame !== preparation.frame) return { success: false }
+  return { success: installQuitService?.complete(requestId, result) === true }
+})
+
+ipcMain.handle('backend:ready', (event) => isMainWindowSender(event) ? backendService.waitUntilReady() : false)
 
 // 窗口控制相关 ipcMain 事件
 ipcMain.on('window-minimize', () => {
