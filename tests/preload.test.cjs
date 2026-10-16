@@ -55,6 +55,15 @@ test('playback time bridge rejects non-finite and negative values', () => {
   assert.equal(sent[0][1], 1200)
 })
 
+test('startup bridge exposes only fixed backend and renderer readiness channels', async () => {
+  const { exposed, invoked, sent } = loadBridge()
+  await exposed.electronAPI.waitForBackend()
+  exposed.electronAPI.notifyReady()
+  assert.equal(invoked[0][0], 'backend:ready')
+  assert.equal(sent[0][0], 'renderer:ready')
+  assert.equal(exposed.electronAPI.send, undefined)
+})
+
 test('updates expose fixed operations and release state subscriptions without leaking Electron events', async () => {
   const { exposed, ipc, invoked } = loadBridge()
   const updates = exposed.electronAPI.updates

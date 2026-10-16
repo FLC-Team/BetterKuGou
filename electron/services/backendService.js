@@ -6,8 +6,8 @@ const { spawn } = require('child_process')
 const { utilityProcess } = require('electron')
 
 const BACKEND_PORT = 6500
-const STARTUP_CHECK_DELAY = 2000
-const HEALTH_CHECK_DELAY = 1000
+const STARTUP_TIMEOUT = 10_000
+const HEALTH_RETRY_DELAY = 100
 const STOP_TIMEOUT = 5000
 
 /** 管理单个本地 API 进程，启动、健康检查和停止共享同一生命周期。 */
@@ -24,6 +24,9 @@ function createBackendService({
   let healthTimer = null
   let healthRequest = null
   let stopPromise = null
+  let readinessPromise = Promise.resolve(false)
+  let resolveReadiness = null
+  let lastStartupError = null
 
   function resolveBackend() {
     const directory = isDev
@@ -36,10 +39,8 @@ function createBackendService({
     }
   }
 
-  function clearTimers() {
-    if (startupTimer) clearTimeout(startupTimer)
+  function cancelHealthCheck() {
     if (healthTimer) clearTimeout(healthTimer)
-    startupTimer = null
     healthTimer = null
     if (healthRequest) {
       const request = healthRequest
@@ -48,22 +49,52 @@ function createBackendService({
     }
   }
 
-  /** 只验证当前实例；重试和停止都会取消此前未完成的请求。 */
+  function clearTimers() {
+    if (startupTimer) clearTimeout(startupTimer)
+    startupTimer = null
+    cancelHealthCheck()
+  }
+
+  /** 同一次启动共享结果；终止时解除等待并释放探测，避免渲染入口悬挂。 */
+  function completeReadiness(ready) {
+    const resolve = resolveReadiness
+    resolveReadiness = null
+    clearTimers()
+    if (resolve) resolve(ready)
+    else readinessPromise = Promise.resolve(ready)
+  }
+
+  function waitUntilReady() {
+    return backendProcess && !stopPromise ? readinessPromise : Promise.resolve(false)
+  }
+
+  /** 立即探测当前实例；启动期短暂失败重试，统一启动期限防止无限等待。 */
   function checkHealth() {
     if (!backendProcess || stopPromise) return
     const processToCheck = backendProcess
-    if (healthTimer) clearTimeout(healthTimer)
-    if (healthRequest) {
-      const previousRequest = healthRequest
-      healthRequest = null
-      previousRequest.destroy()
-    }
+    cancelHealthCheck()
     logger.trace('backendService', '🔍 测试后端连接...')
 
-    healthTimer = setTimeout(() => {
-      healthTimer = null
-      if (backendProcess !== processToCheck || stopPromise) return
-      const request = http.request({
+    let request = null
+    const handleFailure = (error) => {
+      if (backendProcess !== processToCheck || stopPromise || (request && healthRequest !== request)) return
+      healthRequest = null
+      request?.destroy()
+      if (resolveReadiness) {
+        lastStartupError = error
+        healthTimer = setTimeout(() => {
+          healthTimer = null
+          if (backendProcess === processToCheck && !stopPromise) checkHealth()
+        }, HEALTH_RETRY_DELAY)
+      } else {
+        completeReadiness(false)
+        logger.error('backendService', '❌ 后端连接测试失败:', error)
+        onStatus({ status: 'disconnected', error: error.message })
+      }
+    }
+
+    try {
+      request = http.request({
         hostname: 'localhost',
         port: BACKEND_PORT,
         path: '/',
@@ -73,20 +104,17 @@ function createBackendService({
         response.resume()
         if (healthRequest !== request || backendProcess !== processToCheck || stopPromise) return
         if (typeof response.statusCode !== 'number' || response.statusCode < 200 || response.statusCode >= 300) {
-          onStatus({ status: 'disconnected', error: `Backend HTTP ${response.statusCode}` })
+          handleFailure(new Error(`Backend HTTP ${response.statusCode}`))
           return
         }
+        completeReadiness(true)
         logger.trace('backendService', '✅ 后端连接测试成功，状态码:', response.statusCode)
         onProgress(70, '后端服务就绪', 'backend')
         onStatus({ status: 'connected', port: BACKEND_PORT })
       })
       healthRequest = request
 
-      request.on('error', (error) => {
-        if (healthRequest !== request || backendProcess !== processToCheck || stopPromise) return
-        logger.error('backendService', '❌ 后端连接测试失败:', error.message)
-        onStatus({ status: 'disconnected', error: error.message })
-      })
+      request.on('error', handleFailure)
 
       request.on('timeout', () => {
         request.destroy(new Error('Backend health check timed out'))
@@ -96,13 +124,17 @@ function createBackendService({
       })
 
       request.end()
-    }, HEALTH_CHECK_DELAY)
+    } catch (error) {
+      handleFailure(error)
+    }
   }
 
   function start() {
     if (stopPromise) return backendProcess
     if (backendProcess) return backendProcess
     clearTimers()
+    lastStartupError = null
+    readinessPromise = new Promise(resolve => { resolveReadiness = resolve })
 
     onProgress(10, '正在启动后端服务...', 'backend')
     const { directory, entry } = resolveBackend()
@@ -117,6 +149,7 @@ function createBackendService({
       logger.error('backendService', '❌', error.message)
       onProgress(30, '后端启动失败', 'backend')
       onStatus({ status: 'error', error: error.message })
+      completeReadiness(false)
       return null
     }
 
@@ -133,6 +166,7 @@ function createBackendService({
       logger.error('backendService', '❌ 启动后端进程失败:', error)
       onProgress(30, '后端启动失败', 'backend')
       onStatus({ status: 'error', error: error.message })
+      completeReadiness(false)
       return null
     }
     backendProcess = launchedProcess
@@ -141,7 +175,7 @@ function createBackendService({
       if (backendProcess !== launchedProcess || stopPromise) return
       const message = data.toString().trim()
       logger.trace('backendService', `📤 [后端输出] ${message}`)
-      if (message.includes('listening') || message.includes('started') || message.includes(String(BACKEND_PORT))) {
+      if (resolveReadiness && (message.includes('listening') || message.includes('started') || message.includes(String(BACKEND_PORT)))) {
         onProgress(40, '后端服务已启动', 'backend')
         onStatus({ status: 'running', port: BACKEND_PORT })
       }
@@ -155,6 +189,7 @@ function createBackendService({
     launchedProcess.on('error', (error) => {
       if (backendProcess !== launchedProcess || stopPromise) return
       logger.error('backendService', '❌ 启动后端进程失败:', error)
+      completeReadiness(false)
       onStatus({ status: 'error', error: error.message })
     })
 
@@ -163,7 +198,7 @@ function createBackendService({
       if (code !== 0 && !isQuitting()) logger.error('backendService', '❌ 后端异常退出')
       if (backendProcess === launchedProcess) {
         backendProcess = null
-        clearTimers()
+        completeReadiness(false)
         onStatus({ status: 'disconnected', port: BACKEND_PORT, exitCode: code })
       }
     })
@@ -171,15 +206,13 @@ function createBackendService({
     startupTimer = setTimeout(() => {
       startupTimer = null
       if (backendProcess !== launchedProcess || stopPromise) return
-      if (launchedProcess.pid) {
-        logger.trace('backendService', '🎯 后端进程启动成功，PID:', launchedProcess.pid)
-        onProgress(60, '后端进程运行中...', 'backend')
-        checkHealth()
-      } else {
-        logger.error('backendService', '❌ 后端进程启动失败')
-        onProgress(30, '后端启动失败', 'backend')
-      }
-    }, STARTUP_CHECK_DELAY)
+      const error = new Error('Backend startup timed out', { cause: lastStartupError })
+      completeReadiness(false)
+      logger.error('backendService', '❌ 后端启动超时:', error)
+      onProgress(30, '后端启动超时', 'backend')
+      onStatus({ status: 'error', error: error.message })
+    }, STARTUP_TIMEOUT)
+    checkHealth()
 
     return launchedProcess
   }
@@ -187,7 +220,7 @@ function createBackendService({
   /** 复用正在执行的停止任务，并在退出或失败时释放定时器与监听器。 */
   function stop() {
     if (stopPromise) return stopPromise
-    clearTimers()
+    completeReadiness(false)
     const processToStop = backendProcess
     if (!processToStop) {
       logger.trace('backendService', '🔄 后端服务器未运行，跳过关闭')
@@ -259,6 +292,7 @@ function createBackendService({
     start,
     stop,
     checkHealth,
+    waitUntilReady,
     isRunning: () => Boolean(backendProcess)
   }
 }

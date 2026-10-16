@@ -46,8 +46,7 @@ let tray = null
 let isQuitting = false
 let cleanupPromise = null
 let cleanupComplete = false
-let startupWindowTimer = null
-let showWindowTimer = null
+let mainWindowReady = false
 let unsubscribeSettings = null
 let updateService = null
 let installRequest = null
@@ -83,7 +82,7 @@ const backendService = createBackendService({
 
 function broadcastPlayerControl(action) {
   const wins = BrowserWindow.getAllWindows().filter(w => !w.isDestroyed())
-  if (wins.length === 0) {
+  if (!mainWindowReady || wins.length === 0) {
     pendingPlayerControls.push(action)
     logger.trace('main', '🕒 窗口未就绪, 已缓存控制指令:', action)
     return
@@ -431,7 +430,8 @@ function createLoadingWindow() {
   loadingWindow.loadFile(path.join(__dirname, 'loading.html'), {
     query: { logo: pathToFileURL(getAppTrayIcon()).href }
   }).catch(error => {
-    logger.error('main', '加载启动窗口失败', error)
+    // 启动中退出会主动中止导航，不将其记为启动失败。
+    if (!isQuitting) logger.error('main', '加载启动窗口失败', error)
   })
 
   loadingWindow.on('closed', () => {
@@ -564,10 +564,6 @@ function performApplicationCleanup() {
 }
 
 async function cleanupApplicationResources() {
-  if (startupWindowTimer) clearTimeout(startupWindowTimer)
-  if (showWindowTimer) clearTimeout(showWindowTimer)
-  startupWindowTimer = null
-  showWindowTimer = null
   unsubscribeSettings?.()
   unsubscribeSettings = null
   logger.trace('main', '🗑️ 开始应用退出清理流程...')
@@ -658,6 +654,8 @@ async function cleanupApplicationResources() {
 
 // 创建浏览器窗口
 function createWindow() {
+  if (isQuitting || (mainWindow && !mainWindow.isDestroyed())) return
+  mainWindowReady = false
   updateLoadingProgress(75, '正在加载前端界面...', 'frontend')
 
   mainWindow = new BrowserWindow({
@@ -690,37 +688,13 @@ function createWindow() {
     : pathToFileURL(path.join(__dirname, '../dist/index.html')).href
 
   mainWindow.loadURL(urlLocation).catch(error => {
-    logger.error('main', '加载主窗口失败', error)
+    if (!isQuitting) logger.error('main', '加载主窗口失败', error)
   })
 
   // 页面加载完成后的处理
   mainWindow.webContents.on('did-finish-load', () => {
     if (isQuitting) return
     updateLoadingProgress(90, '准备就绪', 'login')
-    // 冲刷之前缓存的播放器控制指令
-    if (pendingPlayerControls.length) {
-      logger.trace('main', '🚀 发送缓存的播放器控制指令: ', pendingPlayerControls)
-      pendingPlayerControls.splice(0).forEach(action => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('player:control', action)
-        }
-      })
-    }
-
-    // 立即显示主窗口并关闭加载窗口
-    if (showWindowTimer) clearTimeout(showWindowTimer)
-    showWindowTimer = setTimeout(() => {
-      showWindowTimer = null
-      if (isQuitting) return
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.show()
-        mainWindow.focus()
-      }
-      closeLoadingWindow()
-
-      // 启动内存自动清理
-      startMemoryCleanup()
-    }, 300)
   })
 
   // 在开发环境中打开开发者工具
@@ -780,12 +754,8 @@ app.whenReady().then(async () => {
   // 启动后端服务器
   backendService.start()
 
-  // 立即创建主窗口(不等待后端完全启动)
-  startupWindowTimer = setTimeout(() => {
-    startupWindowTimer = null
-    if (isQuitting) return
-    createWindow()
-  }, 1500)
+  // 与后端并行加载界面；渲染入口只在首批请求前等待实际服务就绪。
+  createWindow()
 
   // 在 macOS 上，当点击 dock 图标且没有其他窗口打开时，通常会重新创建一个窗口
   app.on('activate', () => {
@@ -798,6 +768,24 @@ app.whenReady().then(async () => {
   userRequestedQuit = true
   app.quit()
 })
+
+/** 首屏挂载后才显示窗口，避免依赖固定延时或文档 load 事件猜测 Vue 就绪。 */
+ipcMain.on('renderer:ready', (event) => {
+  if (isQuitting || mainWindowReady || !isMainWindowSender(event)) return
+  mainWindowReady = true
+  mainWindow.show()
+  mainWindow.focus()
+  closeLoadingWindow()
+  pendingPlayerControls.splice(0).forEach(action => mainWindow.webContents.send('player:control', action))
+  startMemoryCleanup()
+})
+
+function isMainWindowSender(event) {
+  return Boolean(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents &&
+    event.senderFrame === mainWindow.webContents.mainFrame)
+}
+
+ipcMain.handle('backend:ready', (event) => isMainWindowSender(event) ? backendService.waitUntilReady() : false)
 
 // 窗口控制相关 ipcMain 事件
 ipcMain.on('window-minimize', () => {

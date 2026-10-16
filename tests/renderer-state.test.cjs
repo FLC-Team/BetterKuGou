@@ -159,7 +159,7 @@ function loadApp(electronAPI = {}, overrides = {}) {
     fetchUserPlaylists, userPlaylists, userPlaylistsLoaded, userLoggedIn, userInfo,
     handleShowLogin, handleLoginSuccess, handleLogout, handleAuthExpired, handleNavigate,
     pageSessionKey, pageSessionVersion, selectedPlaylistId, showLogin, currentView,
-    performMemoryCleanup, drain: () => shortcutUpdateQueue
+    performMemoryCleanup, createLazyView, cachedPageNames, drain: () => shortcutUpdateQueue
   })`, sandbox))
   return {
     ...app,
@@ -180,6 +180,123 @@ test('settings initialization writes once and leaves browser paths unset', async
   assert.equal(writes, 1)
   assert.equal(store.settings.download.downloadPath, '')
   assert.equal(store.settings.download.cachePath, '')
+})
+
+test('startup settings reads begin together and apply persisted choices before becoming ready', async () => {
+  const defaults = deferred()
+  const paths = deferred()
+  const saved = deferred()
+  const reads = []
+  let onUpdate
+  let writes = 0
+  const loaded = loadStore({
+    getDefaults() { reads.push('defaults'); return defaults.promise },
+    getDefaultPaths() { reads.push('paths'); return paths.promise },
+    get() { reads.push('settings'); return saved.promise },
+    set() { writes++; return Promise.resolve() },
+    onUpdate(callback) { onUpdate = callback; return () => {} }
+  })
+  const initialization = loaded.initSettings()
+  const store = loaded.useSettingsStore()
+  assert.deepEqual(reads, ['defaults', 'paths', 'settings'])
+  assert.equal(store.ready.value, false)
+  saved.resolve({ schemaVersion: 1, custom: { theme: 'light' }, download: { downloadPath: '/saved/music' } })
+  defaults.resolve({ software: { defaultPage: 'favorites' } })
+  await Promise.resolve()
+  assert.equal(store.ready.value, false, 'the initial snapshot waits for all required defaults')
+  paths.resolve({ downloadPath: '/default/music', cachePath: '/default/cache' })
+  await initialization
+  assert.equal(store.ready.value, true)
+  assert.equal(store.settings.custom.theme, 'light')
+  assert.equal(store.settings.software.defaultPage, 'favorites')
+  assert.equal(store.settings.download.downloadPath, '/saved/music')
+  assert.equal(store.settings.download.cachePath, '/default/cache')
+  assert.equal(writes, 0, 'an existing snapshot is not written back during initialization')
+  onUpdate({ schemaVersion: 1, custom: { theme: 'dark' } })
+  assert.equal(store.settings.custom.theme, 'dark')
+  assert.equal(store.settings.download.cachePath, '/default/cache', 'later broadcasts reuse resolved defaults')
+})
+
+test('startup settings keep the saved snapshot when parallel default reads fail', async () => {
+  const reads = []
+  let writes = 0
+  const loaded = loadStore({
+    getDefaults: async () => { reads.push('defaults'); throw new Error('defaults unavailable') },
+    getDefaultPaths: async () => { reads.push('paths'); throw new Error('paths unavailable') },
+    get: async () => { reads.push('settings'); return { schemaVersion: 1, custom: { theme: 'light' } } },
+    set: async () => { writes++ }
+  })
+  await loaded.initSettings()
+  const store = loaded.useSettingsStore()
+  assert.deepEqual(reads, ['defaults', 'paths', 'settings'])
+  assert.equal(store.settings.custom.theme, 'light')
+  assert.equal(store.settings.download.downloadPath, '')
+  assert.equal(store.ready.value, true)
+  assert.equal(writes, 0)
+})
+
+test('lazy pages load on first navigation and retain their KeepAlive state and component refs', async t => {
+  const sourceApp = loadApp()
+  t.after(() => sourceApp.dispose())
+  const gate = deferred()
+  let loads = 0
+  let mounts = 0
+  const FavoritePage = sourceApp.createLazyView('收藏', () => { loads++; return gate.promise })
+  const makeNode = (type, text = '') => ({ type, text, children: [], parent: null })
+  const renderer = vue.createRenderer({
+    createElement: makeNode,
+    createText: text => makeNode('text', text),
+    createComment: text => makeNode('comment', text),
+    setText: (node, text) => { node.text = text },
+    setElementText: (node, text) => { node.text = text; node.children = [] },
+    patchProp() {},
+    insert(node, parent, anchor) {
+      if (node.parent) node.parent.children.splice(node.parent.children.indexOf(node), 1)
+      node.parent = parent
+      const index = anchor ? parent.children.indexOf(anchor) : -1
+      parent.children.splice(index < 0 ? parent.children.length : index, 0, node)
+    },
+    remove(node) {
+      if (node.parent) node.parent.children.splice(node.parent.children.indexOf(node), 1)
+      node.parent = null
+    },
+    parentNode: node => node.parent,
+    nextSibling: node => node.parent?.children[node.parent.children.indexOf(node) + 1] || null
+  })
+  const page = vue.ref('home')
+  const activePage = vue.ref(null)
+  const HomePage = { name: 'HomeView', render: () => vue.h('div', 'home') }
+  const ui = renderer.createApp({
+    render: () => vue.h(vue.KeepAlive, { include: sourceApp.cachedPageNames, max: 12 }, {
+      default: () => [vue.h(page.value === 'home' ? HomePage : FavoritePage, { key: page.value, ref: activePage })]
+    })
+  })
+  ui.mount(makeNode('root'))
+  t.after(() => ui.unmount())
+  assert.equal(loads, 0, 'the initial home page must not load other views')
+  page.value = 'favorite'
+  await vue.nextTick()
+  assert.equal(loads, 1)
+  gate.resolve({
+    name: 'FavoriteView',
+    setup(_props, { expose }) {
+      const query = vue.ref('')
+      expose({ query })
+      vue.onMounted(() => { mounts++ })
+      return () => vue.h('div', query.value)
+    }
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  await vue.nextTick()
+  assert.ok(activePage.value, 'async components forward refs to the resolved view')
+  activePage.value.query = 'remembered search'
+  page.value = 'home'
+  await vue.nextTick()
+  page.value = 'favorite'
+  await vue.nextTick()
+  assert.equal(activePage.value.query, 'remembered search')
+  assert.equal(loads, 1)
+  assert.equal(mounts, 1, 'the cached resolved view is reactivated without remounting')
 })
 
 test('settings initialization handles a rejected persistence operation', async () => {

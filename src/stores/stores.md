@@ -11,7 +11,7 @@
 ## 状态与接口
 
 - `useSettingsStore()` 暴露稳定的 `settings` 引用和 ready/loading/error/revision 状态。
-- `initSettings()` 复用初始化 Promise，优先读取 `window.settingsAPI`，浏览器回退 LocalStorage。
+- `initSettings()` 复用初始化 Promise，并发读取 `window.settingsAPI` 的默认设置、默认目录与已保存设置，再统一补全、应用主题并就绪；任一读取失败沿用对应回退，浏览器回退 LocalStorage。
 - 默认分组为 playback/desktopLyrics/download/custom/shortcuts/software/session，Schema 版本为 1。
 - 当前版本的设置也按默认值补全缺失分组，保留已保存的用户选择。
 - 主题包列表保存在 `custom.themePackages`，选择的包 ID 使用原 `custom.theme`；旧配置自动补全空列表，不迁移或删除已有配色。

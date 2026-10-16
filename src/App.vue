@@ -1,26 +1,36 @@
 <script setup>
 import { logger } from './utils/logger.js'
 
-import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ref, computed, defineAsyncComponent, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { TitleBar, Sidebar, MusicPlayer } from './components/index.js'
-import {
-  LoginView,
-  HomeView,
-  FavoriteView,
-  SettingsView,
-  PersonalFMView,
-  DailyRecommendView,
-  RankDetailView,
-  SearchView,
-  ArtistView,
-  AlbumDetailView
-} from './views/index.js'
+import HomeView from './views/HomeView.vue'
 import { clearLoginInfo, getLoginInfo, isLoggedIn } from './api/auth.js'
 import { getUserPlaylists, KUGOU_AUTH_EXPIRED_EVENT } from './api/music.js'
 import { useSettingsStore } from './stores/settingsStore.js'
 import { cloneDeep } from './utils/objectUtils.js'
-import ThemeStudio from './components/common/ThemeStudio.vue'
 import ThemeRecovery from './components/common/ThemeRecovery.vue'
+
+/** 非首页界面首次使用时加载，保留原组件名供 KeepAlive 缓存。 */
+function createLazyView(name, loader) {
+  return defineAsyncComponent({
+    loader,
+    onError(error, _retry, fail) {
+      logger.error('App', `加载${name}界面失败`, error)
+      fail()
+    }
+  })
+}
+
+const LoginView = createLazyView('登录', () => import('./views/LoginView.vue'))
+const FavoriteView = createLazyView('收藏与歌单', () => import('./views/FavoriteView.vue'))
+const SettingsView = createLazyView('设置', () => import('./views/SettingsView.vue'))
+const PersonalFMView = createLazyView('私人 FM', () => import('./views/PersonalFMView.vue'))
+const DailyRecommendView = createLazyView('每日推荐', () => import('./views/DailyRecommendView.vue'))
+const RankDetailView = createLazyView('排行榜', () => import('./views/RankDetailView.vue'))
+const SearchView = createLazyView('搜索', () => import('./views/SearchView.vue'))
+const ArtistView = createLazyView('歌手', () => import('./views/ArtistView.vue'))
+const AlbumDetailView = createLazyView('专辑', () => import('./views/AlbumDetailView.vue'))
+const ThemeStudio = createLazyView('外观编辑器', () => import('./components/common/ThemeStudio.vue'))
 
 const themeStudioOpen = ref(false)
 const settingsViewRef = ref(null)

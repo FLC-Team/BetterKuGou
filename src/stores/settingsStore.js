@@ -91,23 +91,27 @@ let pendingMutations = []
 let writeInFlight = false
 let bufferedExternalSettings = null
 
-async function resolvePathDefaults(settings) {
-  const resolved = cloneDeep(settings)
+async function fetchDefaultPaths() {
   if (bridge?.getDefaultPaths) {
     try {
-      const paths = await bridge.getDefaultPaths()
-      if (paths?.downloadPath) {
-        resolved.download.downloadPath = paths.downloadPath
-      }
-      if (paths?.cachePath) {
-        resolved.download.cachePath = paths.cachePath
-      }
-      return resolved
+      return (await bridge.getDefaultPaths()) ?? null
     } catch (err) {
       logger.warn('settingsStore', '获取默认路径失败', err)
     }
   }
   // 浏览器预览无法确定本机目录，保留空值；桌面端由主进程提供路径。
+  return null
+}
+
+async function resolvePathDefaults(settings, paths) {
+  const resolved = cloneDeep(settings)
+  const defaults = paths === undefined ? await fetchDefaultPaths() : paths
+  if (defaults?.downloadPath) {
+    resolved.download.downloadPath = defaults.downloadPath
+  }
+  if (defaults?.cachePath) {
+    resolved.download.cachePath = defaults.cachePath
+  }
   return resolved
 }
 
@@ -258,11 +262,15 @@ async function initSettings() {
   initPromise = (async () => {
     state.loading = true
     try {
-      const defaults = await fetchDefaultSettings()
-      const defaultResolved = await resolvePathDefaults(defaults)
+      // 三个只读 IPC 互不依赖，避免首屏挂载前串行等待主进程往返。
+      const [defaults, paths, remote] = await Promise.all([
+        fetchDefaultSettings(),
+        fetchDefaultPaths(),
+        loadFromBridge()
+      ])
+      const defaultResolved = await resolvePathDefaults(defaults, paths)
       defaultSnapshot = cloneDeep(defaultResolved)
 
-      const remote = await loadFromBridge()
       const local = !remote ? loadFromLocalStorage() : null
       const base = remote ?? local ?? defaultResolved
 

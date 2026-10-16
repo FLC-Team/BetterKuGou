@@ -10,6 +10,8 @@ function subscribe(channel, callback) {
 }
 
 const electronAPI = {
+  waitForBackend: () => ipcRenderer.invoke('backend:ready'),
+  notifyReady: () => ipcRenderer.send('renderer:ready'),
   minimize: () => ipcRenderer.send('window-minimize'),
   maximize: () => ipcRenderer.send('window-maximize'),
   unmaximize: () => ipcRenderer.send('window-unmaximize'),

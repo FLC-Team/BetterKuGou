@@ -10,13 +10,20 @@ function loadMain({ uninitialized = false } = {}) {
   const timers = new Map()
   let timerId = 0
   let stopCalls = 0
+  let startCalls = 0
+  let releaseReady
+  let releaseBackend
+  const readyGate = new Promise(resolve => { releaseReady = resolve })
+  const backendGate = new Promise(resolve => { releaseBackend = resolve })
   let releaseStop
   const stopGate = new Promise(resolve => { releaseStop = resolve })
   const app = new EventEmitter()
   app.isPackaged = false
   app.commandLine = { appendSwitch() {} }
-  app.whenReady = () => new Promise(() => {})
+  app.whenReady = () => readyGate
   app.getPath = () => '/user-data'
+  app.getAppPath = () => '/app'
+  app.getVersion = () => '0.1.0'
   app.quitCalls = 0
   app.quit = () => { app.quitCalls += 1 }
   class Window extends EventEmitter {
@@ -25,8 +32,11 @@ function loadMain({ uninitialized = false } = {}) {
       this.options = options
       this.hidden = false
       this.destroyed = false
+      this.showCalls = 0
+      this.sent = []
       this.webContents = Object.assign(new EventEmitter(), {
-        send() {}, openDevTools() {}, session: { clearCache: async () => {} }
+        send: (...args) => this.sent.push(args), mainFrame: {},
+        openDevTools() {}, session: { clearCache: async () => {} }
       })
       windows.push(this)
     }
@@ -34,16 +44,20 @@ function loadMain({ uninitialized = false } = {}) {
     loadURL() { return Promise.resolve() }
     loadFile() { return Promise.resolve() }
     hide() { this.hidden = true }
-    show() {}
+    show() { this.showCalls += 1 }
     focus() {}
     close() { this.destroyed = true; this.emit('closed') }
   }
   Window.getAllWindows = () => windows.filter(window => !window.destroyed)
+  const handlers = new Map()
+  const ipcMain = Object.assign(new EventEmitter(), { handle: (channel, callback) => handlers.set(channel, callback) })
   const electron = {
     app, BrowserWindow: Window,
-    ipcMain: Object.assign(new EventEmitter(), { handle() {} }),
+    ipcMain,
     globalShortcut: { unregisterAll() {} }, dialog: {}, shell: {},
-    nativeImage: { createFromPath: () => ({}) }, Tray: class {}, Menu: {}
+    nativeImage: { createFromPath: () => ({ isEmpty: () => true }) },
+    Tray: class extends EventEmitter { setContextMenu() {} setToolTip() {} destroy() {} },
+    Menu: { buildFromTemplate: value => value }
   }
   const silent = Object.fromEntries(['log', 'debug', 'info', 'warn', 'error', 'trace'].map(method => [method, () => {}]))
   const context = vm.createContext({
@@ -52,11 +66,14 @@ function loadMain({ uninitialized = false } = {}) {
       if (name === './logger') return silent
       if (name === './services/updateService') return { createUpdateService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/backendService') return { createBackendService: () => ({
-        start() {}, stop: () => { stopCalls += 1; return stopGate }
+        start() { startCalls += 1 }, waitUntilReady: () => backendGate,
+        stop: () => { stopCalls += 1; return stopGate }
       }) }
-      if (name === './settingsStore') return { getSettings: () => {
+      if (name === './settingsStore') return {
+        initSettingsStore: async () => {}, ensureCacheDirectory: async () => {},
+        onSettingsChange: () => () => {}, getSettings: () => {
         if (uninitialized) throw new Error('Settings store not initialized')
-        return { software: { minimizeToTray: true } }
+        return { software: { minimizeToTray: true, updates: {} } }
       } }
       return require(name)
     },
@@ -69,9 +86,54 @@ function loadMain({ uninitialized = false } = {}) {
     clearInterval(id) { timers.delete(id) }
   })
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../electron/main.js'), 'utf8'), context)
-  const api = vm.runInContext('({ createWindow, createLoadingWindow, createDesktopLyricWindow, performApplicationCleanup, startMemoryCleanup, stopMemoryCleanup })', context)
-  return { api, app, windows, timers, releaseStop, stopCalls: () => stopCalls }
+  const api = vm.runInContext('({ createWindow, createLoadingWindow, createDesktopLyricWindow, performApplicationCleanup, startMemoryCleanup, stopMemoryCleanup, broadcastPlayerControl })', context)
+  return { api, app, windows, timers, releaseStop, releaseReady, releaseBackend, ipcMain, handlers,
+    stopCalls: () => stopCalls, startCalls: () => startCalls }
 }
+
+test('startup creates the main window immediately and only its mounted top frame can reveal it', async () => {
+  const fixture = loadMain()
+  fixture.releaseReady()
+  for (let i = 0; i < 8; i++) await Promise.resolve()
+  assert.equal(fixture.startCalls(), 1)
+  assert.equal(fixture.windows.length, 2)
+  const [loading, main] = fixture.windows
+  assert.equal(fixture.timers.size, 0, 'window creation must not use a fixed startup delay')
+  main.webContents.emit('did-finish-load')
+  assert.equal(main.showCalls, 0, 'document load does not imply Vue has mounted')
+  const event = { sender: main.webContents, senderFrame: main.webContents.mainFrame }
+  const wait = fixture.handlers.get('backend:ready')(event)
+  assert.equal(await fixture.handlers.get('backend:ready')({ sender: loading.webContents }), false)
+  fixture.releaseBackend(true)
+  assert.equal(await wait, true)
+  fixture.api.broadcastPlayerControl('pause')
+  assert.equal(main.sent.some(args => args[0] === 'player:control'), false)
+  fixture.ipcMain.emit('renderer:ready', { ...event, senderFrame: {} })
+  assert.equal(main.showCalls, 0)
+  fixture.ipcMain.emit('renderer:ready', event)
+  assert.equal(main.showCalls, 1)
+  assert.equal(loading.destroyed, true)
+  assert.ok(main.sent.some(args => args[0] === 'player:control' && args[1] === 'pause'))
+  fixture.ipcMain.emit('renderer:ready', event)
+  assert.equal(main.showCalls, 1, 'repeated readiness cannot refocus the window')
+  const cleanup = fixture.api.performApplicationCleanup()
+  fixture.releaseStop()
+  await cleanup
+  assert.equal(fixture.timers.size, 0)
+})
+
+test('a readiness message during exit cannot reopen a hidden startup window', async () => {
+  const fixture = loadMain()
+  fixture.api.createWindow()
+  const main = fixture.windows[0]
+  const cleanup = fixture.api.performApplicationCleanup()
+  fixture.ipcMain.emit('renderer:ready', { sender: main.webContents, senderFrame: main.webContents.mainFrame })
+  fixture.api.createWindow()
+  assert.equal(main.showCalls, 0)
+  assert.equal(fixture.windows.length, 1)
+  fixture.releaseStop()
+  await cleanup
+})
 
 test('explicit quit allows the main window to close despite minimize-to-tray', async () => {
   const fixture = loadMain()

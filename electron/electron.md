@@ -9,7 +9,7 @@
 ## 重要文件
 
 - `main.js`：应用入口，编排启动、窗口、托盘、IPC 和退出清理。
-- `preload.js`：通过 `contextBridge` 暴露 `electronAPI`、`settingsAPI`、`loadingAPI`、`desktopLyricAPI`；事件订阅隐藏 Electron event 并返回解绑函数，`electronAPI.updates` 提供固定的更新操作及状态订阅。
+- `preload.js`：通过 `contextBridge` 暴露 `electronAPI`、`settingsAPI`、`loadingAPI`、`desktopLyricAPI`；事件订阅隐藏 Electron event 并返回解绑函数，`electronAPI.updates` 提供固定的更新操作及状态订阅；`waitForBackend()` 与 `notifyReady()` 仅桥接固定的启动就绪频道。
 - `settingsStore.js`：设置默认值、Schema 补全、导入导出、自启协调与串行原子持久化。
 - `autoLaunch.js`：封装 Windows/macOS 登录启动设置；不支持的平台返回明确的状态或错误。
 - `logger.js`：主进程日志级别与输出入口，默认 `info`，通过 `BK_LOG_LEVEL` 或 `DEBUG` 开启诊断。
@@ -18,7 +18,7 @@
 
 ## 核心流程
 
-1. `app.whenReady()` 创建加载窗口和托盘，初始化设置，再启动本地 API 与主窗口。
+1. `app.whenReady()` 创建加载窗口和托盘，初始化设置后并行启动本地 API 与主窗口，不等待固定定时器。渲染入口并行初始化设置与等待实际 HTTP 就绪，后端失败或 10 秒截止仍允许界面挂载；主窗口顶层页面挂载后的首帧通过 `renderer:ready` 显示窗口并关闭加载窗，仅处理一次，退出中忽略就绪。启动期间的播放指令暂存到渲染就绪后发送。
 2. 渲染进程经 preload 请求设置或系统能力，主进程执行后通过 IPC 返回结果或广播更新。
 3. 播放器上报歌曲、播放状态、歌词及毫秒时间，主进程更新托盘并转发给桌面歌词。
    主进程缓存最近歌词和毫秒时间；窗口 ready 时按设置、歌曲、歌词、时间顺序重放，换曲清空旧内容，相同歌曲元数据更新保留歌词。
