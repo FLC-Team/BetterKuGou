@@ -21,6 +21,7 @@
 - `software.updates` 默认 `{ autoCheck: true, autoDownload: false, channel: 'stable' }`；双端补全旧配置，布尔开关严格校验、渠道限定 stable/beta，移除未知字段及任何自动安装开关。更新服务只消费保存成功的设置，检查结果、进度和本机安装包路径不进入本 store。
 - `updateSettings()` 默认合并，`overwriteSettings()` 替换，均保留响应式对象引用。
 - `saveSessionSnapshot()` 合并队列、当前歌曲、索引及播放时间、音量和模式。
+- `flushPendingSettings()` 等待已有串行写入及其间新增的事务，传播持久化失败；供安装前保存确认使用，不能把队列用于恢复的 catch 当作保存成功。
 
 ## 持久化流程
 

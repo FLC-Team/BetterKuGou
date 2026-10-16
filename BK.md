@@ -13,6 +13,7 @@ Vue 3 渲染界面与播放器，Electron 主进程提供窗口、托盘、桌�
 - [KuGouMusicApi/](./KuGouMusicApi/KuGouMusicApi.md)：随应用启动的第三方本地 API。
 - [public/](./public/public.md)：公共 Logo 和安装图标。
 - [scripts/](./scripts/scripts.md)：正式静态检查工具。
+- [installer/](./installer/installer.md)：Windows NSIS 品牌页面、升级退出客户端及 macOS DMG 静态品牌资源。
 - [tests/](./tests/tests.md)：Node 回归测试及 Vue/HTTP 集成边界验证。
 - `.github/`：开发提示和多平台自动构建工作流；推送 `master`、针对 `master` 的 PR 和手动触发执行检查、测试及构建。推送 `v*` 标签时创建 Release，只上传 Windows 安装程序、Linux 安装包和 macOS DMG，不包含便携版或 ZIP。
 - `.vscode/`：编辑器建议配置。
@@ -60,6 +61,8 @@ Vue 3 渲染界面与播放器，Electron 主进程提供窗口、托盘、桌�
 15. 设置分为播放与歌词、外观与主题、快捷键、启动与应用、下载与缓存；歌词翻译同步已打开的歌词页，主题精调复用完整主题包及原保存流程。桌面歌词大小、样式和锁定由同一设置存储持久化并双向同步，重开窗口立即重放当前歌词与时间。音乐下载引擎尚未接入，其预留配置保持兼容但禁用。
 16. “启动与应用”的 AppUpdates 读取实际安装版本，沿原保存流程编辑 `software.updates`，默认 `autoCheck=true`、`autoDownload=false`、`channel=stable`；保存成功后主进程服务应用策略，启动延迟 10 秒及每 24 小时自动检查。独立 Worker 获取固定 FLC-Team/BetterKuGou 发布和安装包，版本与下载各自先用 git.tangbai.cc，失败再尝试 GitHub；正式版同时排除发布标记与 SemVer 后缀中的预发布，不推荐降级。
     Worker 随 extraResources 发布到 `resources/updater/updateWorker.cjs`，在 `userData/updates/` 流式写入临时文件并校验大小及可用 SHA256。更新 IPC 仅允许主窗口顶层页面，渲染侧只提交资产 ID；运行状态不持久化，重开设置通过订阅与 revision 快照恢复显示，离页继续下载。下载完成不安装，用户点击并原生确认后由 Worker 再次复核同一文件才打开安装包；AppImage 只定位文件，不自动退出应用。
+
+17. Windows 安装器经 `installer/windows.nsh` 扩展 NSIS，首次安装明确确认 LICENSE，升级沿用原目录和范围，以完整 SemVer 区分更新、重装和额外确认的降级。用户在安装器确认后，通过每 PID 本机管道请求保存退出；主窗口排空设置、复核并保存最终会话后才回执，主进程走正常清理。旧版、不明进程、保存失败或超时要求手动退出，进程全部退出后才调用旧卸载器，不强制结束。macOS 使用品牌 DMG 的 Finder 拖放，Linux 使用系统包管理或 AppImage 文件替换。
 
 禁止改变既有技术栈和协议，禁止新建重复 store/日志/插件架构。目录职责与局部设计细节见各目录速查。
 

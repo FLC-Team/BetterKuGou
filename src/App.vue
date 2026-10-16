@@ -34,6 +34,113 @@ const ThemeStudio = createLazyView('外观编辑器', () => import('./components
 
 const themeStudioOpen = ref(false)
 const settingsViewRef = ref(null)
+const preparingInstall = ref(false)
+let installPreparationRequestId = null
+let unsubscribeInstallPreparation = null
+const installBlockedEvents = ['pointerdown', 'click', 'keydown', 'input', 'change', 'submit']
+
+function blockInputDuringInstall(event) {
+  if (!preparingInstall.value) return
+  event.preventDefault()
+  event.stopImmediatePropagation()
+}
+
+function setInstallPreparation(active) {
+  preparingInstall.value = active
+  for (const name of installBlockedEvents) {
+    if (active) document.addEventListener(name, blockInputDuringInstall, true)
+    else document.removeEventListener(name, blockInputDuringInstall, true)
+  }
+}
+
+/** 安装器明确请求后，等草稿和最终会话落盘才确认；取消使迟到的保存结果失效。 */
+async function handleInstallPreparation(message) {
+  const api = window.electronAPI?.updates
+  if (!message || typeof message.requestId !== 'string') return
+  if (message.phase === 'canceled') {
+    if (installPreparationRequestId !== message.requestId) return
+    installPreparationRequestId = null
+    setInstallPreparation(false)
+    resetAutoLyricTimer()
+    queueSessionPersist()
+    return
+  }
+  if (message.phase !== 'prepare' || installPreparationRequestId || !api?.completePrepareForInstall) return
+  const requestId = message.requestId
+  installPreparationRequestId = requestId
+  setInstallPreparation(true)
+  clearAutoLyricTimer()
+  if (sessionPersistTimer) clearTimeout(sessionPersistTimer)
+  sessionPersistTimer = null
+  const isCurrent = () => installPreparationRequestId === requestId && !isAppUnmounting
+  try {
+    await nextTick()
+    if (!isCurrent()) return
+    if (!settingsReady.value) throw new Error('设置尚未就绪，无法准备更新')
+    if (settingsViewRef.value && !await settingsViewRef.value.flushEditableSettings()) {
+      throw new Error('设置草稿保存失败')
+    }
+    if (!isCurrent()) return
+    await nextTick()
+    // MediaSession、已开始的异步选歌及自然续播不经过 DOM。写入期间若它们
+    // 改变歌曲、队列或跳转位置，重新保存，不能确认一个已过期的快照。
+    while (isCurrent()) {
+      const snapshot = collectSessionSnapshot()
+      const capturedAt = Date.now()
+      if (Object.keys(snapshot).length) await saveSessionSnapshot(snapshot)
+      if (!isCurrent()) return
+      await flushPendingSettings()
+      await nextTick()
+      if (!isCurrent()) return
+      if (sameInstallSession(snapshot, collectSessionSnapshot(), capturedAt)) break
+    }
+    if (!isCurrent()) return
+    const result = await api.completePrepareForInstall(requestId, { success: true })
+    if (isCurrent() && (result?.success === false || result?.accepted === false)) {
+      installPreparationRequestId = null
+      setInstallPreparation(false)
+      resetAutoLyricTimer()
+    }
+  } catch (error) {
+    if (!isCurrent()) return
+    logger.error('App', '安装前保存状态失败', error)
+    try {
+      await api.completePrepareForInstall(requestId, { success: false, errorCode: 'SAVE_FAILED' })
+    } catch (reportError) {
+      logger.error('App', '报告安装准备失败时通信异常', reportError)
+    } finally {
+      if (isCurrent()) {
+        installPreparationRequestId = null
+        setInstallPreparation(false)
+        resetAutoLyricTimer()
+      }
+    }
+  }
+}
+
+/** 自然播放时间允许前进，选歌、暂停、音量、队列和实际跳转必须重新保存。 */
+function sameInstallSession(saved, current, capturedAt) {
+  const withoutClock = value => {
+    const copy = { ...value }
+    if (copy.playbackState) {
+      copy.playbackState = { ...copy.playbackState }
+      delete copy.playbackState.currentTime
+      delete copy.playbackState.duration
+    }
+    return copy
+  }
+  if (JSON.stringify(withoutClock(saved)) !== JSON.stringify(withoutClock(current))) return false
+  if (!saved.playbackState || !current.playbackState) return true
+  const elapsed = saved.playbackState.isPlaying ? Math.max(0, Date.now() - capturedAt) / 1000 : 0
+  const savedTime = Number(saved.playbackState.currentTime)
+  const currentTime = Number(current.playbackState.currentTime)
+  if (saved.playbackState.isPlaying) {
+    // 缓冲中 isPlaying 仍可能为 true；停留原位置也是有效的自然播放状态。
+    return currentTime >= savedTime - .05 && currentTime <= savedTime + elapsed + 1
+  }
+  return Math.abs(currentTime - savedTime) <= .05
+}
+
 async function openThemeStudio() {
   if (settingsViewRef.value && !await settingsViewRef.value.flushEditableSettings()) return
   themeStudioOpen.value = true
@@ -397,6 +504,7 @@ const {
   settings,
   ready: settingsReady,
   saveSessionSnapshot,
+  flushPendingSettings,
   getSessionSnapshot,
   defaults: getSettingsDefaults
 } = useSettingsStore()
@@ -546,6 +654,7 @@ const handleFavoritesChanged = () => {
 
 // 快捷键处理
 const handleKeyDown = (event) => {
+  if (preparingInstall.value) return
   // 如果正在输入,忽略快捷键
   const target = event.target
   if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
@@ -708,6 +817,7 @@ watch(
 onMounted(() => {
   if (window.electronAPI?.onGlobalShortcut) {
     unsubscribeGlobalShortcut = window.electronAPI.onGlobalShortcut((action) => {
+      if (preparingInstall.value) return
       logger.trace('App', '🌐 全局快捷键触发:', action)
 
       // 执行对应的操作
@@ -752,6 +862,8 @@ onMounted(() => {
 // 应用启动时检查登录状态
 onMounted(() => {
 
+  unsubscribeInstallPreparation = window.electronAPI?.updates?.onPrepareForInstall?.(handleInstallPreparation)
+
   // 添加快捷键监听
   document.addEventListener('keydown', handleKeyDown)
 
@@ -781,6 +893,9 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   isAppUnmounting = true
+  installPreparationRequestId = null
+  setInstallPreparation(false)
+  unsubscribeInstallPreparation?.()
   playlistDirectoryRequestId++
   playlistDirectoryTask = null
   shortcutGeneration += 1
@@ -886,7 +1001,7 @@ function collectSessionSnapshot() {
 }
 
 function queueSessionPersist({ immediate = false } = {}) {
-  if (!settingsReady.value) return
+  if (!settingsReady.value || preparingInstall.value) return
 
   if (!shouldPersistSession()) {
     return
@@ -1139,6 +1254,14 @@ function performMemoryCleanup() {
 </script>
 
 <template>
+  <Teleport to="body">
+    <div v-if="preparingInstall" class="install-preparation" role="status" aria-live="polite">
+      <div class="install-preparation-message">
+        <p>正在保存，准备更新</p>
+        <span>保存完成后将关闭 BetterKuGou，请稍候。</span>
+      </div>
+    </div>
+  </Teleport>
   <div class="app-container" :class="{ 'has-player': hasPlayer, 'has-floating-player': hasPlayer && settings.custom?.playerStyle === 'netease' }">
     <TitleBar
       @show-login="handleShowLogin"

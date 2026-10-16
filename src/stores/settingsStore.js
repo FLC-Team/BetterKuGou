@@ -396,6 +396,21 @@ async function resetSessionSnapshot() {
   await updateSettings({ session: cloneDeep(baseDefaultSettings.session) })
 }
 
+/** 等待所有已排队的设置写入；保存失败不能被队列的恢复分支隐藏。 */
+async function flushPendingSettings() {
+  let pending
+  do {
+    pending = persistQueue
+    await pending
+  } while (pending !== persistQueue)
+  if (state.error?.source === 'persist') {
+    const error = new Error(state.error.message)
+    error.code = state.error.code
+    throw error
+  }
+  if (pendingMutations.length) await persistSettings()
+}
+
 export function useSettingsStore() {
   return {
     settings: state.settings,
@@ -413,7 +428,8 @@ export function useSettingsStore() {
     chooseDirectory,
     getSessionSnapshot,
     saveSessionSnapshot,
-    resetSessionSnapshot
+    resetSessionSnapshot,
+    flushPendingSettings
   }
 }
 

@@ -50,6 +50,8 @@ let mainWindowReady = false
 let unsubscribeSettings = null
 let updateService = null
 let installRequest = null
+let installQuitService = null
+let installPreparation = null
 // 用户主动退出标志，用于区分托盘驻留和真正退出
 let userRequestedQuit = false
 // 当前播放信息(由渲染进程通过 IPC 推送)
@@ -81,6 +83,7 @@ const backendService = createBackendService({
 })
 
 function broadcastPlayerControl(action) {
+  if (installPreparation) return
   const wins = BrowserWindow.getAllWindows().filter(w => !w.isDestroyed())
   if (!mainWindowReady || wins.length === 0) {
     pendingPlayerControls.push(action)
@@ -574,6 +577,13 @@ async function cleanupApplicationResources() {
     stopMemoryCleanup()
 
     try {
+      if (installQuitService) await installQuitService.stop()
+    } catch (error) {
+      logger.error('installer', '关闭安装退出协作管道失败', error)
+    }
+    releaseInstallPreparation()
+
+    try {
       if (updateService) await updateService.stop()
     } catch (error) {
       logger.error('updates', '停止更新任务失败', error)
@@ -756,6 +766,7 @@ app.whenReady().then(async () => {
 
   // 与后端并行加载界面；渲染入口只在首批请求前等待实际服务就绪。
   createWindow()
+  initializeInstallQuitService()
 
   // 在 macOS 上，当点击 dock 图标且没有其他窗口打开时，通常会重新创建一个窗口
   app.on('activate', () => {
@@ -784,6 +795,75 @@ function isMainWindowSender(event) {
   return Boolean(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents &&
     event.senderFrame === mainWindow.webContents.mainFrame)
 }
+
+/** 每次准备只绑定当时的主窗口和顶层 frame，导航与销毁立即失效旧保存请求。 */
+function releaseInstallPreparation() {
+  if (!installPreparation) return
+  for (const [emitter, name, listener] of installPreparation.listeners) {
+    emitter.removeListener(name, listener)
+  }
+  installPreparation = null
+}
+
+function notifyInstallPreparation(payload) {
+  if (payload.phase === 'canceled') {
+    const preparation = installPreparation
+    if (!preparation || preparation.requestId !== payload.requestId) return
+    releaseInstallPreparation()
+    if (!preparation.window.isDestroyed() && !preparation.contents.isDestroyed?.()) {
+      preparation.contents.send('updates:prepare-install', payload)
+    }
+    return
+  }
+  if (isQuitting || !mainWindowReady || !mainWindow || mainWindow.isDestroyed()) return false
+  releaseInstallPreparation()
+  const window = mainWindow
+  const contents = window.webContents
+  const requestId = payload.requestId
+  const cancel = () => installQuitService?.cancel('RENDERER_CHANGED', requestId)
+  const navigation = (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) cancel()
+  }
+  const listeners = [
+    [contents, 'did-start-navigation', navigation],
+    [contents, 'render-process-gone', cancel],
+    [contents, 'destroyed', cancel],
+    [window, 'closed', cancel]
+  ]
+  installPreparation = { requestId, window, contents, frame: contents.mainFrame, listeners }
+  listeners.forEach(([emitter, name, listener]) => emitter.on(name, listener))
+  contents.send('updates:prepare-install', payload)
+  return true
+}
+
+/** Windows 打包版才开放每 PID 管道；失败不得阻塞窗口、后端或播放器启动。 */
+function initializeInstallQuitService() {
+  if (process.platform !== 'win32' || !app.isPackaged || isQuitting || installQuitService) return
+  try {
+    const { createInstallQuitService } = require('./services/installQuitService')
+    installQuitService = createInstallQuitService({
+      logger,
+      onPrepare: notifyInstallPreparation,
+      onQuit() {
+        releaseInstallPreparation()
+        userRequestedQuit = true
+        app.quit()
+      }
+    })
+    void installQuitService.start().catch(error => {
+      logger.error('installer', '启动安装退出协作管道失败，应用继续启动', error)
+    })
+  } catch (error) {
+    logger.error('installer', '初始化安装退出协作服务失败，应用继续启动', error)
+  }
+}
+
+ipcMain.handle('updates:prepare-install-complete', (event, requestId, result) => {
+  const preparation = installPreparation
+  if (isQuitting || !isMainWindowSender(event) || !preparation || preparation.requestId !== requestId ||
+    event.sender !== preparation.contents || event.senderFrame !== preparation.frame) return { success: false }
+  return { success: installQuitService?.complete(requestId, result) === true }
+})
 
 ipcMain.handle('backend:ready', (event) => isMainWindowSender(event) ? backendService.waitUntilReady() : false)
 

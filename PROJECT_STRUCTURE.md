@@ -78,6 +78,7 @@ BK/
 9. 退出等待统一清理任务完成，释放更新 Worker、API、快捷键、托盘、窗口、监听器及定时器；托盘驻留不阻挡主动退出。
 10. 主题包通过设置页导入 custom.themePackages，themeManager 解析并整包更新 CSS 变量；JSON 导出只包含视觉快照，Vue 与 Electron 共用主题目录校验。
 11. 设置“启动与应用”编辑 software.updates，保存成功后配置 updateService；Worker 独立获取固定仓库发布与安装包，各自优先代理、失败尝试 GitHub。Worker 通过 extraResources 发布至 resources/updater/updateWorker.cjs，文件只写 userData/updates；运行状态留在内存，preload 只向主窗口暴露展示状态和固定操作。安装须用户主动点击、原生确认及确认前后校验，不自动退出应用，AppImage 只定位文件。
+12. `installer/` 维护 Windows 无边框 NSIS 安装和升级流程及 macOS DMG 品牌资源。用户在安装器确认后，经 `installQuitService` 的每 PID 命名管道请求客户端保存设置、复核会话并正常退出；仅当前主窗口顶层 frame 的当前请求可确认，失败或超时提示手动退出。Linux 保留系统包管理与 AppImage 替换，发布工作流匹配实际产物名称。
 
 ## 常用命令
 
@@ -88,7 +89,7 @@ npm run check
 npm test
 npm run build
 npm run electron:build -- --dir
-npm run dist:portable
+npm run dist:win
 ```
 
 中间产物位于 `dist/`、`dist-electron/`，发布产物位于 `release/`。

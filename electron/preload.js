@@ -30,7 +30,9 @@ const electronAPI = {
     cancel: () => ipcRenderer.invoke('updates:cancel'),
     revealDownloadedFile: () => ipcRenderer.invoke('updates:reveal'),
     requestInstall: () => ipcRenderer.invoke('updates:install'),
-    onState: (callback) => subscribe('updates:state', callback)
+    onState: (callback) => subscribe('updates:state', callback),
+    onPrepareForInstall: (callback) => subscribe('updates:prepare-install', callback),
+    completePrepareForInstall: (requestId, result) => ipcRenderer.invoke('updates:prepare-install-complete', requestId, result)
   },
 
   // 全局快捷键 API

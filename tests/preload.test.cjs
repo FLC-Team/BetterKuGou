@@ -89,3 +89,19 @@ test('updates expose fixed operations and release state subscriptions without le
   assert.equal(ipc.listenerCount('updates:state'), 0)
   assert.equal(updates.send, undefined)
 })
+
+test('installer preparation uses fixed channels, hides IPC objects and releases its subscription', async () => {
+  const { exposed, ipc, invoked } = loadBridge()
+  const updates = exposed.electronAPI.updates
+  const received = []
+  const dispose = updates.onPrepareForInstall(payload => received.push(payload))
+  const prepare = { requestId: 'current', phase: 'prepare' }
+  const canceled = { requestId: 'current', phase: 'canceled', errorCode: 'TIMEOUT' }
+  ipc.emit('updates:prepare-install', { sender: 'privileged' }, prepare)
+  ipc.emit('updates:prepare-install', { sender: 'privileged' }, canceled)
+  assert.deepEqual(received, [prepare, canceled])
+  await updates.completePrepareForInstall('current', { success: true })
+  assert.deepEqual(Array.from(invoked[0]), ['updates:prepare-install-complete', 'current', { success: true }])
+  dispose()
+  assert.equal(ipc.listenerCount('updates:prepare-install'), 0)
+})

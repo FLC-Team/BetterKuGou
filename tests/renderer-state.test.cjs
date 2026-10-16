@@ -144,10 +144,11 @@ function loadApp(electronAPI = {}, overrides = {}) {
     KUGOU_AUTH_EXPIRED_EVENT: 'expired',
     useSettingsStore: () => ({
       settings,
-      ready: vue.ref(false),
+      ready: vue.ref(Boolean(overrides.settingsReady)),
       defaults: () => ({ session: { playbackState: {} } }),
       getSessionSnapshot: () => ({}),
-      saveSessionSnapshot: async () => {}
+      saveSessionSnapshot: overrides.saveSessionSnapshot || (async () => {}),
+      flushPendingSettings: overrides.flushPendingSettings || (async () => {})
     })
   })
   const script = stripImports(fs.readFileSync(path.join(root, 'src/App.vue'), 'utf8')
@@ -159,7 +160,8 @@ function loadApp(electronAPI = {}, overrides = {}) {
     fetchUserPlaylists, userPlaylists, userPlaylistsLoaded, userLoggedIn, userInfo,
     handleShowLogin, handleLoginSuccess, handleLogout, handleAuthExpired, handleNavigate,
     pageSessionKey, pageSessionVersion, selectedPlaylistId, showLogin, currentView,
-    performMemoryCleanup, createLazyView, cachedPageNames, drain: () => shortcutUpdateQueue
+    performMemoryCleanup, createLazyView, cachedPageNames, drain: () => shortcutUpdateQueue,
+    handleInstallPreparation, preparingInstall, settingsViewRef, sameInstallSession
   })`, sandbox))
   return {
     ...app,
@@ -916,4 +918,151 @@ test('an expired response from a previous account does not log out the current a
   const currentConfig = requestHandler({ params: {} })
   await assert.rejects(successHandler({ data: { error_code: 20017 }, config: currentConfig }), { code: 'KUGOU_AUTH_EXPIRED' })
   assert.equal(expirations, 1)
+})
+
+test('installation preparation waits for draft, final session and persistence before acknowledging', async () => {
+  const draft = deferred()
+  const saved = deferred()
+  const drained = deferred()
+  const calls = []
+  const replies = []
+  const app = loadApp({ updates: { completePrepareForInstall: async (...args) => { replies.push(args); return { accepted: true } } } }, {
+    settingsReady: true,
+    saveSessionSnapshot: snapshot => { calls.push(['session', snapshot]); return saved.promise },
+    flushPendingSettings: () => { calls.push(['drain']); return drained.promise }
+  })
+  calls.length = 0 // Initial session migration is separate from the installation request.
+  app.settings.software.restorePlaylist = true
+  app.settings.software.restorePlaybackState = true
+  app.settingsViewRef.value = { flushEditableSettings: () => { calls.push(['draft']); return draft.promise } }
+  app.currentSong.value = { hash: 'current' }
+  app.playlist.value = [{ hash: 'current' }]
+  app.musicPlayerRef.value = { isPlaying: true, volume: 65, $refs: { audioPlayer: { currentTime: 42, duration: 180 } } }
+  const preparation = app.handleInstallPreparation({ requestId: 'install-1', phase: 'prepare' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(app.preparingInstall.value, true)
+  assert.equal(calls[0][0], 'draft')
+  assert.equal(replies.length, 0)
+  draft.resolve(true)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls[1][0], 'session')
+  assert.equal(calls[1][1].playbackState.currentTime, 42)
+  assert.equal(calls[1][1].playbackState.isPlaying, true)
+  assert.equal(calls[1][1].playlist[0].hash, 'current')
+  saved.resolve()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls[2][0], 'drain')
+  assert.equal(replies.length, 0)
+  drained.resolve()
+  await preparation
+  assert.equal(replies[0][0], 'install-1')
+  assert.equal(replies[0][1].success, true)
+  assert.equal(app.preparingInstall.value, true)
+  await app.dispose()
+})
+
+test('failed drafts block installation and restore controls without saving a replacement session', async () => {
+  const replies = []
+  let sessionWrites = 0
+  const app = loadApp({ updates: { completePrepareForInstall: async (...args) => { replies.push(args) } } }, {
+    settingsReady: true,
+    saveSessionSnapshot: async () => { sessionWrites++ }
+  })
+  sessionWrites = 0
+  app.settingsViewRef.value = { flushEditableSettings: async () => false }
+  await app.handleInstallPreparation({ requestId: 'failed-draft', phase: 'prepare' })
+  assert.equal(sessionWrites, 0)
+  assert.equal(replies[0][1].success, false)
+  assert.equal(replies[0][1].errorCode, 'SAVE_FAILED')
+  assert.equal(app.preparingInstall.value, false)
+  await app.dispose()
+})
+
+test('canceled installation preparation ignores a late successful draft flush', async () => {
+  const draft = deferred()
+  const replies = []
+  let drained = 0
+  const app = loadApp({ updates: { completePrepareForInstall: async (...args) => { replies.push(args) } } }, {
+    settingsReady: true,
+    flushPendingSettings: async () => { drained++ }
+  })
+  app.settingsViewRef.value = { flushEditableSettings: () => draft.promise }
+  const preparation = app.handleInstallPreparation({ requestId: 'canceled-install', phase: 'prepare' })
+  await vue.nextTick()
+  await app.handleInstallPreparation({ requestId: 'unrelated-request', phase: 'canceled' })
+  assert.equal(app.preparingInstall.value, true)
+  await app.handleInstallPreparation({ requestId: 'canceled-install', phase: 'canceled' })
+  draft.resolve(true)
+  await preparation
+  assert.equal(replies.length, 0)
+  assert.equal(drained, 0)
+  assert.equal(app.preparingInstall.value, false)
+  await app.dispose()
+})
+
+test('a rejected preparation acknowledgement unblocks the application', async () => {
+  const app = loadApp({ updates: { completePrepareForInstall: async () => ({ accepted: false }) } }, { settingsReady: true })
+  await app.handleInstallPreparation({ requestId: 'stale-at-main', phase: 'prepare' })
+  assert.equal(app.preparingInstall.value, false)
+  await app.dispose()
+})
+
+test('a song change during installation saving is persisted again before acknowledging', async () => {
+  const firstSave = deferred()
+  const snapshots = []
+  const replies = []
+  let recording = false
+  const app = loadApp({ updates: { completePrepareForInstall: async (...args) => { replies.push(args); return { success: true } } } }, {
+    settingsReady: true,
+    saveSessionSnapshot: snapshot => {
+      if (!recording) return Promise.resolve()
+      snapshots.push(snapshot)
+      return snapshots.length === 1 ? firstSave.promise : Promise.resolve()
+    }
+  })
+  app.settings.software.restorePlaylist = true
+  app.currentSong.value = { hash: 'A' }
+  app.playlist.value = [{ hash: 'A' }, { hash: 'B' }]
+  recording = true
+  const preparation = app.handleInstallPreparation({ requestId: 'switch-during-save', phase: 'prepare' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(snapshots[0].currentSong.hash, 'A')
+  app.currentSong.value = { hash: 'B' }
+  app.playlistIndex.value = 1
+  firstSave.resolve()
+  await preparation
+  assert.equal(snapshots.length, 2)
+  assert.equal(snapshots[1].currentSong.hash, 'B')
+  assert.equal(snapshots[1].playlistIndex, 1)
+  assert.equal(replies.length, 1)
+  assert.equal(replies[0][1].success, true)
+  await app.dispose()
+})
+
+test('buffering during a slow installation save is stable while a real seek requires another snapshot', async () => {
+  const app = loadApp()
+  const snapshot = { playbackState: { isPlaying: true, currentTime: 42, duration: 180 } }
+  assert.equal(app.sameInstallSession(snapshot, snapshot, Date.now() - 5000), true)
+  assert.equal(app.sameInstallSession(snapshot, { playbackState: { ...snapshot.playbackState, currentTime: 120 } }, Date.now()), false)
+  assert.equal(app.sameInstallSession(snapshot, { playbackState: { ...snapshot.playbackState, currentTime: 10 } }, Date.now()), false)
+  await app.dispose()
+})
+
+test('settings drain waits for queued commits and exposes a failed write until a successful retry', async () => {
+  const fixture = await queuedSettingsFixture()
+  const write = fixture.store.updateSettings({ custom: { theme: 'light' } })
+  const failedWrite = assert.rejects(write, /disk unavailable/)
+  let drained = false
+  const flush = fixture.store.flushPendingSettings().then(() => { drained = true })
+  const failedFlush = assert.rejects(flush, /disk unavailable/)
+  await fixture.flush()
+  assert.equal(drained, false)
+  fixture.requests[0].reject(new Error('disk unavailable'))
+  await Promise.all([failedWrite, failedFlush])
+  const retry = fixture.store.updateSettings({ custom: { theme: 'light' } })
+  await fixture.flush()
+  fixture.commit(1)
+  await retry
+  await fixture.store.flushPendingSettings()
+  assert.equal(fixture.store.error.value, null)
 })

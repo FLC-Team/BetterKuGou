@@ -1,3 +1,25 @@
+.install-preparation {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: grid;
+  place-items: center;
+  background: var(--bg-overlay);
+  color: var(--color-text);
+  cursor: wait;
+}
+
+.install-preparation-message {
+  padding: 30px 36px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-background-light);
+  box-shadow: var(--shadow-lg);
+}
+
+.install-preparation-message p { margin: 0 0 10px; font-size: 20px; font-weight: 600; }
+.install-preparation-message span { color: var(--color-text-secondary); font-size: 13px; line-height: 1.8; }
+
 .app-container {
   height: 100vh;
   display: flex;

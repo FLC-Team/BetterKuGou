@@ -66,23 +66,49 @@
     "linux": {
       "target": ["AppImage", "deb", "rpm"],
       "icon": "public/logo.png",
-      "category": "AudioVideo",
-      "maintainer": "鸢夏 <1925019494@qq.com>"
+      "category": "AudioVideo;Audio;Player",
+      "maintainer": "鸢夏 <1925019494@qq.com>",
+      "synopsis": "BetterKuGou music player",
+      "description": "BetterKuGou 音乐播放器，提供音乐播放、同步歌词、歌单和个性化主题。",
+      "desktop": {
+        "Name": "BetterKuGou",
+        "GenericName": "Music Player",
+        "GenericName[zh_CN]": "音乐播放器",
+        "Comment[zh_CN]": "音乐播放、同步歌词与个性化主题",
+        "Keywords": "Music;Audio;Player;Lyrics;",
+        "Keywords[zh_CN]": "音乐;播放器;歌词;歌单;",
+        "StartupNotify": "true"
+      }
     },
     "mac": {
       "target": ["dmg", "zip"],
       "icon": "public/logo.png"
     },
+    "dmg": {
+      "background": "installer/assets/dmg-background.png",
+      "window": {
+        "width": 640,
+        "height": 420
+      },
+      "iconSize": 96,
+      "iconTextSize": 12,
+      "contents": [
+        { "x": 184, "y": 218, "type": "file" },
+        { "x": 456, "y": 218, "type": "link", "path": "/Applications" }
+      ]
+    },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
+      "allowToChangeInstallationDirectory": false,
+      "include": "installer/windows.nsh",
+      "installerLanguages": ["zh_CN"],
+      "runAfterFinish": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "deleteAppDataOnUninstall": false,
       "installerIcon": "public/logo.ico",
       "uninstallerIcon": "public/logo.ico",
       "installerHeaderIcon": "public/logo.ico",
-      "license": "LICENSE",
       "artifactName": "${productName}-v${version}-setup.${ext}"
     }
   },

@@ -7,6 +7,7 @@
 - `backendService.js`：创建并管理本地酷狗 API Utility Process，处理启动、健康检查、状态通知及退出清理。
 - `updateService.js`：调度应用更新 Worker、已提交更新策略、状态与进度广播、任务去重、取消及退出清理；保留安装包私有路径供主进程复核。
 - `updateWorker.cjs`：独立 Node Worker，负责固定仓库发布分页、SemVer/平台架构筛选、双源网络请求、流式下载和文件校验；仅使用 Node 内置模块，随 extraResources 发布。
+- `installQuitService.js`：Windows 安装退出协作，使用 Node 内置 net 和每 PID 命名管道承载固定能力探测、保存退出协议，不启动旧版 exe 或强制结束进程。
 
 ## 核心函数与数据流
 
@@ -32,6 +33,8 @@
 已提交设置 → updateService 调度 → updateWorker 检查/下载/校验 → 带 revision 的主窗口展示状态；用户确认安装 → Worker 再次复核 → 主进程打开同一安装包。
 
 ## 生命周期保障
+
+- 安装协作端点为 `\\.\pipe\BetterKuGou.InstallQuit.v1.<PID>`，默认用户权限，不开启全用户读写。短 ASCII 行协议仅支持 `HELLO/1`、`QUIT/1`，回复 `READY/1`、`SAVED/1` 或固定失败码；能力握手限 1 秒，保存准备限 10 秒，安装器等待实际进程退出限 30 秒。只允许一个保存请求；当前随机 requestId 的一次回执有效，断开/超时/停止先失效再通知取消，停止不等待回执。SAVED 不代表文件可覆盖，安装器另查真实进程退出。
 
 - 停止尚未完成时不创建第二个后端实例；重复停止共享同一任务。
 - 正常退出清理停止超时及临时退出监听，关闭中的网络回调不能再报告连接成功。

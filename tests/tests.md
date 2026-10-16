@@ -15,6 +15,11 @@
 - `main-lifecycle.test.cjs`：无固定延时的主窗口创建、仅主窗口顶层页面挂载后显示及启动期间播放指令冲刷、启动中退出、托盘模式主动退出、并发清理、窗口隔离、定时器释放和初始化失败关闭路径。
 - `startup.test.cjs`：运行真实渲染入口，验证设置与后端任一完成顺序、读取失败仍等待另一任务、无桥接浏览器预览及挂载后首帧就绪通知。
 - `preload.test.cjs`：白名单桥接、事件隐藏、订阅解绑和播放时间输入边界。
+- `install-quit-service.test.cjs`：真实本机命名管道能力探测、保存确认后退出、断开/超时/失败/并发取消及资源释放。
+- `install-quit-integration.test.cjs`：仅 Windows 打包版启动协作、主窗口顶层 frame/请求代次、重载/崩溃取消与保存中托盘操作拦截。
+- `installer-packaging.test.cjs`：真实 Linux 产物命名、两类发布上传规则、更新器架构识别及 DMG/NSIS 配置与资源尺寸。
+- `installer-nsis.test.cjs`：提取实际安装器函数编译执行，验证完整 SemVer 的 29 组优先级与非法版本，以及真实 Win32 管道成功保存退出通信、错误服务器 PID/安装路径拒绝、读取 SAVED 并关闭句柄；非 Windows 或缺少编译器明确跳过，Windows CI 打包后要求实际运行。原生探针限时 3 秒，不安装、不操作注册表，临时文件及进程自动清理。
+- `renderer-state.test.cjs` 同时覆盖安装前等待草稿/会话/持久化、保存失败恢复、取消后迟到结果失效及保存期间异步切歌重新采样。
 - `logger.test.cjs`：日志级别、敏感数据处理及日志保留边界。
 - `api-server.test.cjs`：本地 HTTP 参数映射、查询优先级、缓存隔离、脱敏和服务启动异常。
 - `renderer-state.test.cjs`：启动设置并发读取及失败回退、真实 Vue 异步页 KeepAlive/ref 保持，以及渲染设置提交与回滚、设置页保护播放会话、认证缓存、搜索竞态、快捷键及根组件清理。
