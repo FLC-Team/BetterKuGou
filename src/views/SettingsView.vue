@@ -53,6 +53,7 @@
           <header class="section-header"><span class="section-number">04</span><div><h2 id="software-heading">启动与应用</h2><p>下一次打开，接着上一次的心情。</p></div></header>
           <div v-for="option in softwareOptions" :key="option.id" class="setting-item"><div class="setting-info"><label class="setting-label" :for="'software-' + option.id">{{ option.label }}</label><p class="setting-desc" :id="'software-' + option.id + '-desc'">{{ option.description }}</p></div><label class="setting-switch"><input :id="'software-' + option.id" type="checkbox" v-model="localSettings.software[option.id]" :aria-describedby="'software-' + option.id + '-desc'"><span class="slider"></span></label></div>
           <div class="setting-item"><div class="setting-info"><label class="setting-label" for="default-page">启动页面</label><p class="setting-desc">默认打开推荐；收藏页需要登录账号。</p></div><select id="default-page" class="setting-select" v-model="localSettings.software.defaultPage"><option value="home">推荐首页</option><option value="favorites">我的收藏</option></select></div>
+          <AppUpdates v-model="localSettings.software.updates" :before-action="flushEditableSettings" @current-version="appVersion = $event" />
           <div class="setting-group"><div class="group-heading"><div><h3>备份与迁移</h3><p class="setting-desc">导入或导出完整设置。分享配色请使用上方的主题包。</p></div></div><div class="setting-actions"><button class="outline-btn" type="button" @click="handleExportSettings" :disabled="isExporting || isImporting">{{ isExporting ? '导出中…' : '导出设置' }}</button><button class="outline-btn" type="button" @click="handleImportSettings" :disabled="isImporting || isExporting">{{ isImporting ? '导入中…' : '导入设置' }}</button></div></div>
           <div class="about-links"><button type="button" @click="openFeedbackUrl">反馈与建议 ↗</button><button type="button" @click="openLicenseUrl">使用协议 ↗</button><button type="button" @click="openProjectUrl">项目主页 ↗</button></div>
         </section>
@@ -76,6 +77,8 @@ import { useSettingsStore } from '../stores/settingsStore.js'
 import { cloneDeep, mergeDeep, replaceReactive } from '../utils/objectUtils.js'
 import ThemePackages from '../components/common/ThemePackages.vue'
 import ThemeAdjustments from '../components/common/ThemeAdjustments.vue'
+import AppUpdates from '../components/common/AppUpdates.vue'
+import packageInfo from '../../package.json'
 import { applyTheme } from '../utils/themeManager.js'
 
 const emit = defineEmits(['close', 'settings-changed', 'open-theme-studio'])
@@ -84,8 +87,8 @@ async function openThemeStudio() {
   if (await flushEditableSettings()) emit('open-theme-studio')
 }
 
-// 从 package.json 获取版本信息
-const appVersion = ref('0.1.6-alpha-pre1')
+// 桌面端由更新服务提供实际安装版本；浏览器预览使用构建版本。
+const appVersion = ref(typeof packageInfo === 'object' ? packageInfo.version : '')
 
 const sections = [
   { id: 'playback', label: '播放与歌词' },

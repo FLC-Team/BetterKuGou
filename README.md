@@ -28,6 +28,14 @@
 - macOS: `BetterKuGou-*.dmg` 或 `BetterKuGou-*.zip`
 - Linux: `BetterKuGou-*.AppImage`、`*.deb`、`*.rpm`
 
+### 检查与下载更新
+
+桌面客户端中打开“设置 → 启动与应用 → 应用更新”，可手动检查版本、查看更新说明、下载更新包或取消任务。版本与下载分别优先使用 [git.tangbai.cc](https://git.tangbai.cc/) 获取 [FLC-Team/BetterKuGou 发布](https://github.com/FLC-Team/BetterKuGou/releases)，失败后尝试 GitHub 原站，检查和下载在后台进行。
+
+默认开启自动检查，启动 10 秒后检查，此后每 24 小时一次；自动下载默认关闭，可在此开启。更新渠道默认“正式版”，会排除版本号含 alpha 等预发布后缀的版本，即使 GitHub 未将其标记为预发布；“测试版”同时包含正式版与预发布。渠道与开关保存成功后生效，应用只提供高于当前版本的更新。
+
+下载完成不会自动安装或退出应用。点击“手动安装”并在系统对话框明确确认后，才会打开已复核的安装包；AppImage 请通过“打开所在文件夹”自行处理。Linux 可选择发布中适配当前架构的 AppImage、DEB 或 RPM。离开设置页继续下载，重新进入可查看进度；下载文件位于应用用户数据目录下的 updates 文件夹。
+
 ### 源码运行
 
 1. 克隆仓库

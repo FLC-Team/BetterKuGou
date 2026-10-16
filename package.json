@@ -35,6 +35,10 @@
     ],
     "extraResources": [
       {
+        "from": "electron/services/updateWorker.cjs",
+        "to": "updater/updateWorker.cjs"
+      },
+      {
         "from": "KuGouMusicApi",
         "to": "backend",
         "filter": [

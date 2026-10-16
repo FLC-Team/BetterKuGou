@@ -15,6 +15,7 @@ if (process.platform === 'win32' && !process.env.BK_SKIP_CHCP && !app.isPackaged
 const path = require('path')
 const { pathToFileURL } = require('url')
 const { createBackendService } = require('./services/backendService')
+const { createUpdateService } = require('./services/updateService')
 const {
   initSettingsStore,
   getSettings,
@@ -48,6 +49,8 @@ let cleanupComplete = false
 let startupWindowTimer = null
 let showWindowTimer = null
 let unsubscribeSettings = null
+let updateService = null
+let installRequest = null
 // 用户主动退出标志，用于区分托盘驻留和真正退出
 let userRequestedQuit = false
 // 当前播放信息(由渲染进程通过 IPC 推送)
@@ -309,8 +312,98 @@ function subscribeToSettingsUpdates() {
       if (!win.isDestroyed()) win.webContents.send('settings:updated', nextSettings)
     })
     syncDesktopLyricSettings(nextSettings)
+    updateService?.configure(nextSettings.software.updates)
   })
 }
+
+/** 更新网络、文件和校验在 Worker 中执行，窗口启动无需等待。 */
+function initializeUpdateService() {
+  updateService = createUpdateService({
+    workerPath: app.isPackaged
+      ? path.join(process.resourcesPath, 'updater', 'updateWorker.cjs')
+      : path.join(app.getAppPath(), 'electron', 'services', 'updateWorker.cjs'),
+    downloadRoot: path.join(app.getPath('userData'), 'updates'),
+    currentVersion: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch,
+    logger,
+    onState: (state) => {
+      if (!isQuitting && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('updates:state', state)
+      }
+    }
+  })
+  updateService.configure(getSettings().software.updates)
+}
+
+/** 更新桥接仅允许主窗口的顶层页面，路径与下载地址不接收渲染输入。 */
+function getUpdatesForSender(event) {
+  if (isQuitting || !mainWindow || mainWindow.isDestroyed() ||
+      event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+    throw new Error('更新操作只能从应用主窗口发起。')
+  }
+  if (!updateService) throw new Error('更新服务尚未就绪，请稍后重试。')
+  return updateService
+}
+
+ipcMain.handle('updates:get-state', (event) => getUpdatesForSender(event).getState())
+ipcMain.handle('updates:check', (event) => getUpdatesForSender(event).check())
+ipcMain.handle('updates:download', (event, assetId) => getUpdatesForSender(event).download(assetId))
+ipcMain.handle('updates:cancel', (event) => getUpdatesForSender(event).cancel())
+ipcMain.handle('updates:reveal', async (event) => {
+  try {
+    const updates = getUpdatesForSender(event)
+    const file = await updates.getDownloadedFile()
+    getUpdatesForSender(event)
+    shell.showItemInFolder(file.path)
+    return { success: true }
+  } catch (error) {
+    logger.error('updates', '定位更新安装包失败', error)
+    return { success: false, error: error.message }
+  }
+})
+
+/** 只有用户主动点击并在原生对话框确认后才打开已校验的包，不退出或安排安装。 */
+ipcMain.handle('updates:install', async (event) => {
+  let updates
+  try {
+    updates = getUpdatesForSender(event)
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
+  if (installRequest) return { canceled: true }
+  installRequest = Promise.resolve().then(async () => {
+    const file = await updates.getDownloadedFile()
+    if (!['exe', 'dmg', 'deb', 'rpm'].includes(file.format)) {
+      throw new Error('请打开所在文件夹，自行处理此更新包。')
+    }
+    getUpdatesForSender(event)
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: 'question',
+      title: '手动安装更新',
+      message: `打开 ${file.assetName}？`,
+      detail: '将打开已下载的安装包，后续安装由你确认。BetterKuGou 将保持运行。',
+      buttons: ['取消', '打开安装包'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    })
+    if (response !== 1) return { canceled: true }
+    getUpdatesForSender(event)
+    const confirmed = await updates.getDownloadedFile()
+    if (confirmed.path !== file.path || confirmed.assetId !== file.assetId || confirmed.version !== file.version) {
+      throw new Error('更新包已改变，请重新确认安装。')
+    }
+    getUpdatesForSender(event)
+    const errorMessage = await shell.openPath(confirmed.path)
+    if (errorMessage) throw new Error(errorMessage)
+    return { success: true }
+  }).catch(error => {
+    logger.error('updates', '用户手动打开更新包失败', error)
+    return { success: false, error: error.message }
+  }).finally(() => { installRequest = null })
+  return installRequest
+})
 // 存储已注册的全局快捷键映射: accelerator -> action
 const registeredShortcuts = new Map()
 // 内存清理定时器
@@ -483,6 +576,12 @@ async function cleanupApplicationResources() {
     // 1. 停止所有定时器和后台任务
     logger.trace('main', '🛑 停止内存清理定时器...')
     stopMemoryCleanup()
+
+    try {
+      if (updateService) await updateService.stop()
+    } catch (error) {
+      logger.error('updates', '停止更新任务失败', error)
+    }
 
     // 2. 注销所有全局快捷键
     logger.trace('main', '⌨️ 注销全局快捷键...')
@@ -671,6 +770,12 @@ app.whenReady().then(async () => {
 
   subscribeToSettingsUpdates()
   syncDesktopLyricSettings(getSettings())
+  try {
+    initializeUpdateService()
+  } catch (error) {
+    // 更新服务失败不能影响正常启动和播放。
+    logger.error('updates', '初始化更新服务失败', error)
+  }
 
   // 启动后端服务器
   backendService.start()

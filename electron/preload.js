@@ -20,6 +20,17 @@ const electronAPI = {
   // 外部链接打开 API
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
 
+  // 更新任务只接受已检查出的资产 ID；安装始终经过主窗口确认。
+  updates: {
+    getState: () => ipcRenderer.invoke('updates:get-state'),
+    check: () => ipcRenderer.invoke('updates:check'),
+    download: (assetId) => ipcRenderer.invoke('updates:download', assetId),
+    cancel: () => ipcRenderer.invoke('updates:cancel'),
+    revealDownloadedFile: () => ipcRenderer.invoke('updates:reveal'),
+    requestInstall: () => ipcRenderer.invoke('updates:install'),
+    onState: (callback) => subscribe('updates:state', callback)
+  },
+
   // 全局快捷键 API
   registerGlobalShortcut: (accelerator, action) =>
     ipcRenderer.invoke('shortcut:register', accelerator, action),

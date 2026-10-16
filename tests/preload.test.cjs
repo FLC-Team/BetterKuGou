@@ -9,13 +9,14 @@ function loadBridge() {
   const exposed = {}
   const ipc = new EventEmitter()
   const sent = []
+  const invoked = []
   ipc.send = (...args) => sent.push(args)
-  ipc.invoke = async () => true
+  ipc.invoke = async (...args) => { invoked.push(args); return true }
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../electron/preload.js'), 'utf8'), {
     require: () => ({ ipcRenderer: ipc, contextBridge: { exposeInMainWorld: (name, value) => { exposed[name] = value } } }),
     window: {}, console
   })
-  return { exposed, ipc, sent }
+  return { exposed, ipc, sent, invoked }
 }
 
 test('window and auxiliary subscriptions hide Electron events and release only their own listener', () => {
@@ -52,4 +53,30 @@ test('playback time bridge rejects non-finite and negative values', () => {
   exposed.electronAPI.updateCurrentTime(1.2)
   assert.equal(sent[0][0], 'player:time-update')
   assert.equal(sent[0][1], 1200)
+})
+
+test('updates expose fixed operations and release state subscriptions without leaking Electron events', async () => {
+  const { exposed, ipc, invoked } = loadBridge()
+  const updates = exposed.electronAPI.updates
+  await updates.getState()
+  await updates.check()
+  await updates.download(123)
+  await updates.cancel()
+  await updates.revealDownloadedFile()
+  await updates.requestInstall()
+  assert.deepEqual(invoked.map(args => Array.from(args)), [
+    ['updates:get-state'], ['updates:check'], ['updates:download', 123],
+    ['updates:cancel'], ['updates:reveal'], ['updates:install']
+  ])
+  const received = []
+  const dispose = updates.onState((...args) => received.push(args))
+  const state = { revision: 3, status: 'downloaded' }
+  ipc.emit('updates:state', { sender: 'privileged' }, state)
+  assert.deepEqual(received, [[state]])
+  dispose()
+  dispose()
+  ipc.emit('updates:state', {}, state)
+  assert.equal(received.length, 1)
+  assert.equal(ipc.listenerCount('updates:state'), 0)
+  assert.equal(updates.send, undefined)
 })

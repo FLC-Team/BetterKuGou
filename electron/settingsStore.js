@@ -95,6 +95,13 @@ function ensureSchema(settings) {
     theme: ['classic', 'gradient', 'minimal'].includes(desktop.theme) ? desktop.theme : 'classic',
     locked: typeof desktop.locked === 'boolean' ? desktop.locked : false
   }
+  if (!isPlainObject(normalized.software)) normalized.software = cloneDeep(defaultsCache.software)
+  const updates = isPlainObject(normalized.software.updates) ? normalized.software.updates : {}
+  normalized.software.updates = {
+    autoCheck: typeof updates.autoCheck === 'boolean' ? updates.autoCheck : true,
+    autoDownload: typeof updates.autoDownload === 'boolean' ? updates.autoDownload : false,
+    channel: ['stable', 'beta'].includes(updates.channel) ? updates.channel : 'stable'
+  }
   return normalized
 }
 
@@ -186,6 +193,7 @@ function createDefaults(app) {
     },
     software: {
       autoLaunch: false,
+      updates: { autoCheck: true, autoDownload: false, channel: 'stable' },
       restorePlaylist: true,
       restorePlaybackState: true,
       defaultPage: 'home',

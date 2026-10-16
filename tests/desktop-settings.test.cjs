@@ -34,6 +34,7 @@ function desktopFixture() {
         onSettingsChange(callback) { listener = callback; return () => {} },
         async setSettings(patch) { writes.push(patch); snapshot = { desktopLyrics: { ...snapshot.desktopLyrics, ...patch.desktopLyrics } }; listener?.(snapshot); return snapshot }
       }
+      if (name === './services/updateService') return { createUpdateService: () => ({ configure() {}, stop: async () => {} }) }
       return require(name)
     },
     __dirname: path.resolve(__dirname, '../electron'), process: { platform: 'linux', env: {} }, setTimeout, clearTimeout, setInterval, clearInterval
