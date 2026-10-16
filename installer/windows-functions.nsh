@@ -63,12 +63,56 @@ FunctionEnd
   Pop $0
 !macroend
 
+; SetCtlColors parses RGB values at compile time and cannot consume NSIS
+; variables. Select a literal palette at runtime; SYSCLR keeps accessible colors.
+!macro BKSetColors HANDLE FG BG
+  !if "${FG}" == "$BKText"
+    !define BK_CTL_LIGHT_TEXT 111C30
+    !define BK_CTL_DARK_TEXT F3F5FA
+  !else if "${FG}" == "$BKMuted"
+    !define BK_CTL_LIGHT_TEXT 64748B
+    !define BK_CTL_DARK_TEXT AAB7CC
+  !else
+    !error "Unknown BetterKuGou foreground role: ${FG}"
+  !endif
+  !if "${BG}" == "$BKBg"
+    !define BK_CTL_LIGHT_BG FFFFFF
+    !define BK_CTL_DARK_BG 151A23
+  !else if "${BG}" == "$BKBrandBg"
+    !define BK_CTL_LIGHT_BG F4F7FC
+    !define BK_CTL_DARK_BG 142238
+  !else
+    !error "Unknown BetterKuGou background role: ${BG}"
+  !endif
+  ${If} $BKHighContrast != 0
+    SetCtlColors ${HANDLE} SYSCLR:8 SYSCLR:5
+  ${ElseIf} $BKDark == 1
+    SetCtlColors ${HANDLE} ${BK_CTL_DARK_TEXT} ${BK_CTL_DARK_BG}
+  ${Else}
+    SetCtlColors ${HANDLE} ${BK_CTL_LIGHT_TEXT} ${BK_CTL_LIGHT_BG}
+  ${EndIf}
+  !undef BK_CTL_LIGHT_TEXT
+  !undef BK_CTL_DARK_TEXT
+  !undef BK_CTL_LIGHT_BG
+  !undef BK_CTL_DARK_BG
+!macroend
+
+; The Windows visual style can ignore a radio/checkbox's foreground color.
+; Classic native painting respects the dark palette and keeps keyboard behavior.
+!macro BKChoiceColors HANDLE
+  ${If} $BKDark == 1
+  ${AndIf} $BKHighContrast == 0
+    System::Call 'uxtheme::SetWindowTheme(p ${HANDLE}, w "", w "")'
+  ${EndIf}
+  !insertmacro BKSetColors ${HANDLE} $BKText $BKBg
+!macroend
+
 !macro BKRootLabel X Y W H TEXT FONT FG BG
-  System::Call 'user32::CreateWindowExW(i 0, w "STATIC", w "${TEXT}", i 0x50000000, i 0, i 0, i 0, i 0, p $HWNDPARENT, p 0, p 0, p 0)p.r0'
+  System::Call 'user32::CreateWindowExW(i 0, w "STATIC", w "${TEXT}", i 0x54000000, i 0, i 0, i 0, i 0, p $HWNDPARENT, p 0, p 0, p 0)p.r0'
   StrCpy $BKProgressControls "$BKProgressControls$0."
   !insertmacro BKMove $0 ${X} ${Y} ${W} ${H}
   SendMessage $0 ${WM_SETFONT} ${FONT} 1
-  SetCtlColors $0 ${FG} ${BG}
+  !insertmacro BKSetColors $0 ${FG} ${BG}
 !macroend
 
 Function BKGuiInit
@@ -117,7 +161,7 @@ Function BKGuiInit
     IntFmt $BKText "%06X" $0
     StrCpy $BKMuted $BKText
   ${EndIf}
-  SetCtlColors $HWNDPARENT $BKText $BKBg
+  !insertmacro BKSetColors $HWNDPARENT $BKText $BKBg
   System::Call 'user32::GetWindowLongW(p $HWNDPARENT, i -16)i.r0'
   IntOp $0 $0 & 0xFF3BFFFF
   System::Call 'user32::SetWindowLongW(p $HWNDPARENT, i -16, i r0)'
@@ -152,9 +196,9 @@ Function BKGuiInit
   SendMessage $BKNext ${WM_SETFONT} $BKFont 1
   SendMessage $BKBack ${WM_SETFONT} $BKFont 1
   SendMessage $BKCancel ${WM_SETFONT} $BKFont 1
-  System::Call 'user32::CreateWindowExW(i 0, w "STATIC", w "", i 0x50000000, i 0, i 0, i 0, i 0, p $HWNDPARENT, p 0, p 0, p 0)p.r0'
+  System::Call 'user32::CreateWindowExW(i 0, w "STATIC", w "", i 0x54000000, i 0, i 0, i 0, i 0, p $HWNDPARENT, p 0, p 0, p 0)p.r0'
   !insertmacro BKMove $0 0 424 250 76
-  SetCtlColors $0 $BKText $BKBrandBg
+  !insertmacro BKSetColors $0 $BKText $BKBrandBg
 FunctionEnd
 
 Function BKColorRefToRgb
@@ -246,11 +290,7 @@ Function BKCommonPage
     Abort
   ${EndIf}
   !insertmacro BKMove $BKPage 0 0 760 424
-  SetCtlColors $BKPage $BKText $BKBg
-  ${NSD_CreateLabel} 0 0 250 500 ""
-  Pop $0
-  !insertmacro BKMove $0 0 0 250 500
-  SetCtlColors $0 $BKText $BKBrandBg
+  !insertmacro BKSetColors $BKPage $BKText $BKBg
   ${NSD_CreateBitmap} 56 66 128 128 ""
   Pop $0
   !insertmacro BKMove $0 56 66 128 128
@@ -265,17 +305,17 @@ Function BKCommonPage
   Pop $0
   !insertmacro BKMove $0 32 226 208 52
   SendMessage $0 ${WM_SETFONT} $BKFont 1
-  SetCtlColors $0 $BKText $BKBrandBg
+  !insertmacro BKSetColors $0 $BKText $BKBrandBg
   ${NSD_CreateLabel} 32 276 190 90 "让音乐，$\r$\n回到生活里。"
   Pop $0
   !insertmacro BKMove $0 32 276 190 90
   SendMessage $0 ${WM_SETFONT} $BKBrandFont 1
-  SetCtlColors $0 $BKText $BKBrandBg
+  !insertmacro BKSetColors $0 $BKText $BKBrandBg
   ${NSD_CreateLabel} 32 380 192 20 "${VERSION} · Windows"
   Pop $0
   !insertmacro BKMove $0 32 380 192 20
   SendMessage $0 ${WM_SETFONT} $BKSmallFont 1
-  SetCtlColors $0 $BKMuted $BKBrandBg
+  !insertmacro BKSetColors $0 $BKMuted $BKBrandBg
   ${NSD_CreateButton} 714 10 32 28 "×"
   Pop $BKClose
   !insertmacro BKMove $BKClose 714 10 32 28
@@ -283,8 +323,14 @@ Function BKCommonPage
   ${NSD_CreateLink} 32 18 190 22 "BetterKuGou  ·  移动窗口"
   Pop $BKDrag
   !insertmacro BKMove $BKDrag 32 18 190 22
-  SetCtlColors $BKDrag $BKMuted $BKBrandBg
+  !insertmacro BKSetColors $BKDrag $BKMuted $BKBrandBg
   ${NSD_OnClick} $BKDrag BKDragClick
+  ; New child windows start at the bottom of the sibling Z order. Create the
+  ; background last so WS_CLIPSIBLINGS cannot clip the logo and brand text.
+  ${NSD_CreateLabel} 0 0 250 500 ""
+  Pop $0
+  !insertmacro BKMove $0 0 0 250 500
+  !insertmacro BKSetColors $0 $BKText $BKBrandBg
   ShowWindow $BKBack 0
   EnableWindow $BKCancel 1
   EnableWindow $BKNext 1
@@ -307,12 +353,12 @@ Function BKHeading
   Pop $BKTitle
   !insertmacro BKMove $BKTitle 292 66 420 46
   SendMessage $BKTitle ${WM_SETFONT} $BKTitleFont 1
-  SetCtlColors $BKTitle $BKText $BKBg
+  !insertmacro BKSetColors $BKTitle $BKText $BKBg
   ${NSD_CreateLabel} 294 122 416 44 "$BKSubtitle"
   Pop $BKSubtitleControl
   !insertmacro BKMove $BKSubtitleControl 294 122 416 44
   SendMessage $BKSubtitleControl ${WM_SETFONT} $BKFont 1
-  SetCtlColors $BKSubtitleControl $BKMuted $BKBg
+  !insertmacro BKSetColors $BKSubtitleControl $BKMuted $BKBg
 FunctionEnd
 
 Function BKScopePage
@@ -330,20 +376,20 @@ Function BKScopePage
   Pop $BKCurrentUser
   !insertmacro BKMove $BKCurrentUser 294 202 408 32
   SendMessage $BKCurrentUser ${WM_SETFONT} $BKFont 1
-  SetCtlColors $BKCurrentUser $BKText $BKBg
+  !insertmacro BKChoiceColors $BKCurrentUser
   ${NSD_CreateLabel} 314 240 382 38 "无需管理员权限，其他用户不会受到影响。"
   Pop $0
   !insertmacro BKMove $0 314 240 382 38
-  SetCtlColors $0 $BKMuted $BKBg
+  !insertmacro BKSetColors $0 $BKMuted $BKBg
   ${NSD_CreateRadioButton} 294 294 408 32 "为这台电脑的所有用户安装"
   Pop $BKAllUsers
   !insertmacro BKMove $BKAllUsers 294 294 408 32
   SendMessage $BKAllUsers ${WM_SETFONT} $BKFont 1
-  SetCtlColors $BKAllUsers $BKText $BKBg
+  !insertmacro BKChoiceColors $BKAllUsers
   ${NSD_CreateLabel} 314 332 382 42 "需要 Windows 管理员授权。"
   Pop $0
   !insertmacro BKMove $0 314 332 382 42
-  SetCtlColors $0 $BKMuted $BKBg
+  !insertmacro BKSetColors $0 $BKMuted $BKBg
   ${If} $installMode == "all"
     ${NSD_Check} $BKAllUsers
   ${Else}
@@ -419,11 +465,11 @@ Function BKPreparePage
     !insertmacro BKMove $0 294 180 416 170
     SendMessage $0 ${EM_SETREADONLY} 1 0
     SendMessage $0 ${WM_SETFONT} $BKSmallFont 1
-    SetCtlColors $0 $BKText $BKBg
+    !insertmacro BKSetColors $0 $BKText $BKBg
     ${NSD_CreateLabel} 294 360 416 40 "保留设置、主题及播放记录。$\r$\n安装位置：$INSTDIR"
     Pop $0
     !insertmacro BKMove $0 294 360 416 40
-    SetCtlColors $0 $BKMuted $BKBg
+    !insertmacro BKSetColors $0 $BKMuted $BKBg
     ${If} $BKAction == "重新安装"
       SendMessage $BKNext ${WM_SETTEXT} 0 "STR:重新安装"
     ${ElseIf} $BKAction == "降级"
@@ -436,12 +482,12 @@ Function BKPreparePage
     ${NSD_CreateLabel} 294 180 416 24 "安装位置"
     Pop $0
     !insertmacro BKMove $0 294 180 416 24
-    SetCtlColors $0 $BKText $BKBg
+    !insertmacro BKSetColors $0 $BKText $BKBg
     ${NSD_CreateDirRequest} 294 212 322 32 "$INSTDIR"
     Pop $BKPathInput
     !insertmacro BKMove $BKPathInput 294 212 322 32
     SendMessage $BKPathInput ${WM_SETFONT} $BKFont 1
-    SetCtlColors $BKPathInput $BKText $BKBrandBg
+    !insertmacro BKSetColors $BKPathInput $BKText $BKBrandBg
     ${NSD_CreateBrowseButton} 628 212 82 32 "浏览…"
     Pop $0
     !insertmacro BKMove $0 628 212 82 32
@@ -452,12 +498,12 @@ Function BKPreparePage
     ${NSD_CreateLabel} 294 260 416 26 "版本 ${VERSION}  ·  所需空间约 $BKRequired MB"
     Pop $0
     !insertmacro BKMove $0 294 260 416 26
-    SetCtlColors $0 $BKMuted $BKBg
+    !insertmacro BKSetColors $0 $BKMuted $BKBg
     ${NSD_CreateCheckbox} 294 318 416 28 "我已阅读并同意许可证与使用声明"
     Pop $BKLicense
     !insertmacro BKMove $BKLicense 294 318 416 28
     SendMessage $BKLicense ${WM_SETFONT} $BKFont 1
-    SetCtlColors $BKLicense $BKText $BKBg
+    !insertmacro BKChoiceColors $BKLicense
     ${NSD_OnClick} $BKLicense BKLicenseChanged
     ${NSD_CreateLink} 314 354 320 24 "查看许可证与使用声明"
     Pop $0
@@ -549,8 +595,7 @@ Function BKProgressShow
   FindWindow $BKPage "#32770" "" $HWNDPARENT
   !insertmacro BKMove $BKPage 292 180 424 224
   StrCpy $BKProgressControls ""
-  !insertmacro BKRootLabel 0 0 250 500 "" $BKFont $BKText $BKBrandBg
-  System::Call 'user32::CreateWindowExW(i 0, w "STATIC", w "", i 0x5000000E, i 0, i 0, i 0, i 0, p $HWNDPARENT, p 0, p 0, p 0)p.r0'
+  System::Call 'user32::CreateWindowExW(i 0, w "STATIC", w "", i 0x5400000E, i 0, i 0, i 0, i 0, p $HWNDPARENT, p 0, p 0, p 0)p.r0'
   StrCpy $BKProgressControls "$BKProgressControls$0."
   !insertmacro BKMove $0 56 66 128 128
   Push $0
@@ -566,17 +611,19 @@ Function BKProgressShow
   !insertmacro BKRootLabel 32 380 192 20 "${VERSION} · Windows" $BKSmallFont $BKMuted $BKBrandBg
   !insertmacro BKRootLabel 292 66 420 46 "正在$BKAction" $BKTitleFont $BKText $BKBg
   !insertmacro BKRootLabel 294 122 416 44 "正在写入应用文件，请保持此窗口打开。" $BKFont $BKMuted $BKBg
-  SetCtlColors $BKPage $BKText $BKBg
+  !insertmacro BKSetColors $BKPage $BKText $BKBg
   GetDlgItem $0 $BKPage 1006
   SendMessage $0 ${WM_SETTEXT} 0 "STR:正在$BKAction BetterKuGou，请稍候。"
   !insertmacro BKMove $0 0 0 416 54
-  SetCtlColors $0 $BKText $BKBg
+  !insertmacro BKSetColors $0 $BKText $BKBg
   GetDlgItem $0 $BKPage 1004
   !insertmacro BKMove $0 0 76 416 18
   GetDlgItem $0 $BKPage 1027
   ShowWindow $0 0
   GetDlgItem $0 $BKPage 1016
   ShowWindow $0 0
+  ; Keep the progress brand background beneath all of its native controls too.
+  !insertmacro BKRootLabel 0 0 250 500 "" $BKFont $BKText $BKBrandBg
 FunctionEnd
 
 Function .onInstFailed
@@ -619,11 +666,11 @@ Function BKFinishPage
   Pop $0
   !insertmacro BKMove $0 294 200 416 100
   SendMessage $0 ${WM_SETFONT} $BKFont 1
-  SetCtlColors $0 $BKMuted $BKBg
+  !insertmacro BKSetColors $0 $BKMuted $BKBg
   ${NSD_CreateLabel} 294 328 416 54 "你的设置、主题和播放记录会继续保留。"
   Pop $0
   !insertmacro BKMove $0 294 328 416 54
-  SetCtlColors $0 $BKMuted $BKBg
+  !insertmacro BKSetColors $0 $BKMuted $BKBg
   SendMessage $BKNext ${WM_SETTEXT} 0 "STR:启动 BetterKuGou"
   SendMessage $BKCancel ${WM_SETTEXT} 0 "STR:关闭"
   ${If} $BKDone != 1

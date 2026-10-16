@@ -22,6 +22,10 @@ HKCU 与 HKLM 同时存在安装记录时阻止继续。使用现有应用 ID �
 
 Windows 基准 760 × 500，按系统 DPI 缩放，启动时读取深浅主题，高对比度使用系统颜色。准备及完成页可通过品牌区“移动窗口”入口使用系统移动操作；执行期间关闭与移动被禁用。进度使用真实 NSIS 安装进度控件，没有模拟百分比。
 
+控件颜色统一通过 `BKSetColors` 按主题选择编译期 RGB 常量，高对比度使用 `SYSCLR`；不得直接将运行时颜色变量传入 NSIS `SetCtlColors`。品牌底板在同组内容之后创建并启用兄弟控件裁剪，避免遮住 Logo、标题与说明；进度页也遵循这一层级约束。
+
+深色模式的单选框和复选框通过 `BKChoiceColors` 使用原生经典绘制，避免 Windows 视觉样式忽略浅色文字；高对比度继续使用系统样式。
+
 主按钮使用原生 Win32 Button 承载蓝色位图，保留可访问名称、键盘与焦点提示；高对比度保留系统原生按钮。进度装饰进入完成页时销毁，位图与字体在退出时释放。
 
 macOS 保留 Finder 拖放；DMG 背景说明首次安装与退出后替换。Linux 保留系统包管理器和 AppImage 替换方式。
@@ -31,3 +35,5 @@ macOS 保留 Finder 拖放；DMG 背景说明首次安装与退出后替换。Li
 打包入口与命令由根 `package.json` 维护，Windows include 指向本目录 `windows.nsh`。实际验证结果在任务交付中单独说明，编译成功不等于安装运行通过。
 
 静态图像由 `pwsh -NoProfile -File scripts/generate-installer-assets.ps1` 在 Windows PowerShell 7 下从公共 Logo 生成，可重复生成一致资源；其他平台直接打包已提交的 640 × 420 与 1280 × 840 DMG 背景。Windows 的实际版本比较由 `tests/installer-nsis.test.cjs` 提取原函数编译并执行验证。
+
+`tests/installer-ui.test.cjs` 编译实际界面函数，使用自有隐藏窗口验证控件颜色、Logo、层级和深色单选项文字。Windows CI 在打包获得编译器后要求这两组原生测试通过；测试不执行真实安装，完整安装及前台视觉检查仍需单独验证。
