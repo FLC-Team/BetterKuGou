@@ -8,6 +8,7 @@ import { clearLoginInfo, getLoginInfo, isLoggedIn } from './api/auth.js'
 import { getUserPlaylists, KUGOU_AUTH_EXPIRED_EVENT } from './api/music.js'
 import { useSettingsStore } from './stores/settingsStore.js'
 import { cloneDeep } from './utils/objectUtils.js'
+import { getSongSearchKeyword } from './utils/songMetadata.js'
 import ThemeRecovery from './components/common/ThemeRecovery.vue'
 
 /** 非首页界面首次使用时加载，保留原组件名供 KeepAlive 缓存。 */
@@ -182,6 +183,7 @@ const albumData = ref(null)
 
 // 搜索数据
 const searchQuery = ref('')
+const searchDraft = ref('')
 const searchResults = ref(null)
 
 // 用户歌单列表（TODO: 从API获取）
@@ -444,40 +446,26 @@ const handleRemoveFromPlaylist = (song) => {
   }
 }
 
-// 处理搜索歌曲
+/** All song-title entry points share title-only metadata normalization. */
 const handleSearch = (song) => {
-  logger.trace('App', '搜索歌曲:', song)
-
-  // 构造搜索关键词：优先使用歌曲名，如果没有则使用文件名
-  const songName = song.name || song.filename || song.audio_name || song.songname
-  const artistName = song.singername || (song.singerinfo && song.singerinfo.length > 0 ? song.singerinfo[0].singername : '')
-
-  // 构造搜索词：歌曲名 + 歌手名
-  let searchKeyword = songName
-  if (artistName) {
-    searchKeyword += ` ${artistName}`
-  }
-
-  if (searchKeyword.trim()) {
-    // 调用搜索请求处理函数
-    handleSearchRequest(searchKeyword.trim())
-  } else {
+  const keyword = getSongSearchKeyword(song)
+  if (!keyword) {
     logger.warn('App', '无法构造搜索关键词，歌曲信息不完整')
-    alert('无法搜索：歌曲信息不完整')
+    return
   }
+  handleSearchRequest(keyword)
 }
 
-// 处理搜索请求
-const handleSearchRequest = async (keywords) => {
-  logger.trace('App', '执行搜索:', keywords)
-  try {
-    searchQuery.value = keywords
-    currentView.value = 'search'
-    // 这里暂时不直接调用搜索API，而是在SearchView组件中处理
-  } catch (error) {
-    logger.error('App', '搜索失败:', error)
-    alert('搜索失败，请稍后重试')
-  }
+/** Keep drafts separate from submitted cache keys; navigation never changes playback. */
+const handleSearchRequest = (keywords) => {
+  const keyword = typeof keywords === 'string' ? keywords.trim() : ''
+  if (!keyword) return
+  musicPlayerRef.value?.closeLyrics?.()
+  if (musicPlayerRef.value) musicPlayerRef.value.showPlaylist = false
+  searchDraft.value = keyword
+  searchQuery.value = keyword
+  showLogin.value = false
+  currentView.value = 'search'
 }
 
 // 处理清空播放列表
@@ -1230,6 +1218,7 @@ function performMemoryCleanup() {
   </Teleport>
   <div class="app-container" :class="{ 'has-player': hasPlayer, 'has-floating-player': hasPlayer && settings.custom?.playerStyle === 'netease' }">
     <TitleBar
+      v-model="searchDraft"
       @show-login="handleShowLogin"
       @logout="handleLogout"
       @open-settings="handleShowSettings"
@@ -1273,7 +1262,7 @@ function performMemoryCleanup() {
               <HomeView
                 v-else-if="currentView === 'home'" key="home" class="page-view view-home"
                 :favorites-revision="favoritesRevision"
-                @navigate="handleNavigate" @play="handlePlay"
+                @navigate="handleNavigate" @play="handlePlay" @search="handleSearch"
               />
               <FavoriteView
                 v-else-if="userLoggedIn && (currentView === 'favorite' || currentView === 'playlist')"
@@ -1290,37 +1279,37 @@ function performMemoryCleanup() {
               <PersonalFMView
                 v-else-if="currentView === 'personal-fm'" key="personal-fm" class="page-view view-personal-fm"
                 :current-song="currentSong"
-                @navigate="handleNavigate" @play="handlePlay"
+                @navigate="handleNavigate" @play="handlePlay" @search="handleSearch"
               />
               <DailyRecommendView
                 v-else-if="currentView === 'daily-recommend'" key="daily-recommend" class="page-view view-daily-recommend"
                 :current-song="currentSong"
-                @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll"
+                @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll" @search="handleSearch"
               />
               <RankDetailView
                 v-else-if="currentView === 'rank' && rankData"
                 :key="'rank:' + (rankData.rankid ?? rankData.id)" class="page-view view-rank-detail"
                 :rank-data="rankData" :current-song="currentSong"
-                @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll"
+                @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll" @search="handleSearch"
               />
               <SearchView
                 v-else-if="currentView === 'search'" :key="'search:' + searchQuery" class="page-view view-search"
                 :search-keyword="searchQuery" :current-song="currentSong"
-                @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll" @play-next="handlePlayNext"
+                @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll" @play-next="handlePlayNext" @search="handleSearch"
               />
               <ArtistView
                 v-else-if="currentView === 'artist' && artistData"
                 :key="'artist:' + (artistData.id ?? artistData.name)" class="page-view view-artist"
                 :artist-id="artistData.id" :artist-name="artistData.name"
                 :current-song="currentSong"
-                @navigate="handleNavigate" @play="handlePlay"
+                @navigate="handleNavigate" @play="handlePlay" @search="handleSearch"
               />
               <AlbumDetailView
                 v-else-if="currentView === 'album' && albumData"
                 :key="'album:' + (albumData.id ?? albumData.name)" class="page-view view-album"
                 :album-id="albumData.id" :album-name="albumData.name"
                 :current-song="currentSong"
-                @navigate="handleNavigate" @play="handlePlay"
+                @navigate="handleNavigate" @play="handlePlay" @search="handleSearch"
               />
               <div v-else-if="!userLoggedIn && currentView !== 'home'" class="page-view login-required" key="login-required">
                 <svg viewBox="0 0 1024 1024" width="80" height="80" fill="currentColor" opacity="0.3">
@@ -1355,6 +1344,7 @@ function performMemoryCleanup() {
         @clear-playlist="handleClearPlaylist"
         @playlist-updated="handlePlaylistUpdated"
         @lyric-view-changed="handleLyricViewChanged"
+        @search="handleSearch"
       />
     </Transition>
   </div>

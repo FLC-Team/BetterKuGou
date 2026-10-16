@@ -106,7 +106,8 @@
 .play-overlay svg { width: 17px; height: 17px; fill: currentColor; }
 .song-play:hover .play-overlay, .song-play:focus-visible .play-overlay { opacity: 1; transform: none; }
 .song-play:hover .song-cover img { transform: scale(1.035); }
-.song-name { display: block; margin-top: 11px; font-size: calc(var(--font-size-sm) - 1px); font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.song-name { display: block; max-width: 100%; margin-top: 11px; color: var(--color-text); text-align: left; border-radius: 3px; font-size: calc(var(--font-size-sm) - 1px); font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.song-name:hover { color: var(--color-primary); }
 .artist-link { display: block; max-width: 100%; margin-top: 4px; font-size: calc(var(--font-size-xs) - 1px); color: var(--color-text-secondary); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: 2px; }
 .artist-link:hover:not(:disabled) { color: var(--color-primary); }
 .artist-link:disabled { cursor: default; }

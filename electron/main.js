@@ -1,5 +1,5 @@
 // 引入 Electron 模块
-const { app, BrowserWindow, ipcMain, dialog, globalShortcut, shell, Tray, Menu, nativeImage } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, globalShortcut, shell, Tray, Menu, nativeImage, clipboard } = require('electron')
 const logger = require('./logger')
 // 解决 Windows 控制台中文/emoji 乱码: 尝试切换到 UTF-8 代码页 (仅开发态且是 win32)
 if (process.platform === 'win32' && !process.env.BK_SKIP_CHCP && !app.isPackaged) {
@@ -795,6 +795,16 @@ function isMainWindowSender(event) {
   return Boolean(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents &&
     event.senderFrame === mainWindow.webContents.mainFrame)
 }
+
+/** 仅主窗口顶层可写入有限长度的纯文本，不提供读取剪贴板的能力。 */
+ipcMain.handle('clipboard:write-text', (event, text) => {
+  if (!isMainWindowSender(event)) throw new Error('不允许此窗口写入剪贴板')
+  if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > 1024 * 1024) {
+    throw new Error('剪贴板文本格式或长度不符合要求')
+  }
+  clipboard.writeText(text)
+  return true
+})
 
 /** 每次准备只绑定当时的主窗口和顶层 frame，导航与销毁立即失效旧保存请求。 */
 function releaseInstallPreparation() {

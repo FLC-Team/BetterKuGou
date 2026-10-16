@@ -64,7 +64,7 @@
             <ArtworkCover :src="song.imgurl || song.album_img || ''" class="song-cover" />
             <div class="song-info">
               <div class="song-title-line">
-                <button type="button" class="song-name" @click.stop="handlePlay(song)" @dblclick.stop :title="song.songname || song.filename || '未知歌曲'">{{ song.songname || song.filename }}</button>
+                <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="song.songname || song.filename || '未知歌曲'">{{ song.songname || song.filename }}</button>
                 <SongBadges :song="song" />
               </div>
               <button type="button" class="artist-link mobile-artist" @click.stop="goArtist(song)" @dblclick.stop>{{ song.author_name || song.singername || '未知歌手' }}</button>
@@ -112,7 +112,7 @@ export default {
       default: null
     }
   },
-  emits: ['navigate', 'play', 'play-all'],
+  emits: ['navigate', 'play', 'play-all', 'search'],
   setup() {
     const { settings } = useSettingsStore()
     return { settings }

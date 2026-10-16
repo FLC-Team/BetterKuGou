@@ -35,8 +35,8 @@
           <button type="button" class="fm-play" @click="handlePlay(song)" :aria-label="'播放 ' + (song.songname || song.filename)">
             <ArtworkCover :src="song.imgurl || song.album_img || ''" class="fm-cover" />
             <span class="fm-play-icon" aria-hidden="true">▶</span>
-            <span class="fm-song-title">{{ song.songname || song.filename }}</span>
           </button>
+          <button type="button" class="fm-song-title" :title="song.songname || song.filename" @click.stop="$emit('search', song)" @dblclick.stop>{{ song.songname || song.filename }}</button>
           <SongBadges :song="song" />
           <button type="button" class="artist-link" @click="goArtist(song)">{{ song.singername || song.author_name || '未知歌手' }}</button>
         </article>
@@ -56,7 +56,7 @@ import { useSettingsStore } from '../stores/settingsStore.js'
 export default {
   components: { ArtworkCover, SongBadges },
   name: 'PersonalFMView',
-  emits: ['navigate', 'play'],
+  emits: ['navigate', 'play', 'search'],
   props: {
     currentSong: {
       type: Object,

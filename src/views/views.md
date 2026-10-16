@@ -23,6 +23,7 @@
 ## 数据流与保障
 
 - 页面调用 api 封装，规整歌曲字段后发出 play/play-all/play-next/navigate 等事件。
+- 所有单曲歌名按钮发出 search(原歌曲对象)，App 统一生成只含歌名的关键词；歌名阻止 click/dblclick 冒泡，行其他区域双击与行内播放按钮维持播放。Home/FM 封面播放与歌名搜索是同级按钮，专辑序号是独立播放按钮；专辑卡和栏目名继续原导航。
 - App 持有导航、登录与播放队列，页面不自行创建音频播放器。
 - Home、Favorite、Artist、Album、Rank、Search、Daily 由 App 按资源缓存；页面往返复用数据、排序及滚动位置，真实登录会话变化时释放。登录、设置和动态私人 FM 不缓存。
 - Home 收藏变更只刷新 AI 推荐；每日推荐在跨本地日激活时刷新，首次 mounted/activated 不重复取数，模块请求合并并拒绝旧账号或卸载结果。

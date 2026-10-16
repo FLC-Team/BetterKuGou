@@ -754,7 +754,7 @@ test('direct selection and navigation commit the transition belonging to the suc
 })
 
 test('shuffle, automatic advance and priority queue playback retain their distinct transition intent', async t => {
-  const { player } = createPlayer(t)
+  const { player, audio } = createPlayer(t)
   player.playlist = ['A', 'B', 'C'].map(song)
   await player.requestSong(player.playlist[0])
   player.playMode = 'shuffle'
@@ -768,6 +768,9 @@ test('shuffle, automatic advance and priority queue playback retain their distin
   assert.equal(player.currentSong.hash, 'A')
   assert.equal(player.trackTransition, 'previous')
 
+  audio.currentTime = audio.duration
+  audio.ended = true
+  audio.paused = true
   player.handleEnded()
   await flush()
   assert.equal(player.currentSong.hash, 'C')
@@ -779,6 +782,9 @@ test('shuffle, automatic advance and priority queue playback retain their distin
   assert.equal(player.trackTransition, 'next')
 
   player.playNextQueue = [player.playlist[0]]
+  audio.currentTime = audio.duration
+  audio.ended = true
+  audio.paused = true
   player.handleEnded()
   await flush()
   assert.equal(player.currentSong.hash, 'A')
@@ -1105,6 +1111,8 @@ test('reselecting and repeating the active song do not restart its metadata tran
 
   player.playMode = 'single'
   audio.currentTime = audio.duration
+  audio.ended = true
+  audio.paused = true
   player.handleEnded()
   await flush()
   assert.equal(player.trackTransition, 'next')
@@ -1149,6 +1157,232 @@ test('a one-song loop restarts ended audio without fetching the same URL', async
   assert.equal(audio.currentTime, 0)
   assert.equal(audio.playCount, 2)
   assert.equal(requests, 1)
+})
+
+test('previous restarts the confirmed source in the final ten seconds across modes and pause states', async t => {
+  for (const mode of ['loop', 'single', 'shuffle']) {
+    for (const paused of [false, true]) {
+      for (const time of [170, 179.999, 180]) {
+        let requests = 0
+        const { player, audio, emitted } = createPlayer(t, {
+          getSongUrl: async hash => { requests++; return { status: 1, url: `https://example.test/${hash}.mp3` } }
+        })
+        player.playlist = ['A', 'B', 'C'].map(song)
+        await player.requestSong(player.playlist[1])
+        await flush()
+        player.playMode = mode
+        player.shuffledPlaylist = [...player.playlist]
+        player.playNextQueue = [player.playlist[2]]
+        const lyrics = player.currentLyrics
+        const source = audio.src
+        const transition = player.trackTransition
+        player.duration = 900
+        player.currentTime = 0
+        player.seekPreviewTime = 1
+        audio.currentTime = time
+        if (paused) audio.pause()
+        const plays = audio.playCount
+        const changes = emitted.filter(event => event.name === 'song-changed').length
+
+        assert.equal(await player.playPrevious(), true)
+
+        assert.equal(player.currentSong.hash, 'B', `${mode}/${paused}/${time}`)
+        assert.equal(player.currentIndex, 1)
+        assert.equal(audio.src, source)
+        assert.equal(audio.currentTime, 0)
+        assert.equal(player.currentTime, 0)
+        assert.equal(audio.paused, false)
+        assert.equal(audio.playCount, plays + (paused ? 1 : 0))
+        assert.equal(requests, 1)
+        assert.equal(player.currentLyrics, lyrics)
+        assert.equal(player.isLyricPlaceholder, false)
+        assert.equal(player.trackTransition, transition)
+        assert.equal(player.playNextQueue[0].hash, 'C')
+        assert.equal(emitted.filter(event => event.name === 'song-changed').length, changes)
+        assert.ok(emitted.some(event => event.name === 'playback-state-changed'))
+      }
+    }
+  }
+})
+
+test('previous keeps normal navigation outside the real final ten seconds or with unknown duration', async t => {
+  for (const [duration, time] of [[180, 169.999], [0, 0], [NaN, 175], [Infinity, 175], [180, NaN], [180, 181]]) {
+    const { player, audio } = createPlayer(t)
+    player.playlist = ['A', 'B', 'C'].map(song)
+    await player.requestSong(player.playlist[1])
+    player.duration = 180
+    player.seekPreviewTime = 175
+    audio.duration = duration
+    audio.currentTime = time
+    await player.playPrevious()
+    assert.equal(player.currentSong.hash, 'A', `${duration}/${time}`)
+  }
+})
+
+test('previous on a short track follows the same remaining-time rule and a second press navigates after a normal restart', async t => {
+  const { player, audio } = createPlayer(t)
+  player.playlist = ['A', 'B'].map(song)
+  await player.requestSong(player.playlist[1])
+  audio.duration = 8
+  audio.currentTime = 2
+  await player.playPrevious()
+  assert.equal(player.currentSong.hash, 'B')
+  assert.equal(audio.currentTime, 0)
+  audio.duration = 180
+  audio.currentTime = 175
+  await player.playPrevious()
+  assert.equal(player.currentSong.hash, 'B')
+  await player.playPrevious()
+  assert.equal(player.currentSong.hash, 'A')
+})
+
+test('restart playback failure and cancellation retain the confirmed track and cannot revive a stopped source', async t => {
+  for (const action of ['failure', 'stop', 'selection', 'previous']) {
+    const gate = deferred()
+    const { player, audio } = createPlayer(t)
+    player.playlist = ['A', 'B', 'C'].map(song)
+    await player.requestSong(player.playlist[1])
+    audio.currentTime = 175
+    audio.pause()
+    const play = audio.play.bind(audio)
+    audio.play = () => audio.src.endsWith('/B.mp3') ? gate.promise.then(play) : play()
+    const restart = player.playPrevious()
+    assert.equal(audio.currentTime, 0)
+    if (action === 'failure') gate.reject(new Error('Audio device unavailable'))
+    else if (action === 'stop') player.stopPlayback()
+    else if (action === 'selection') player.requestSong(player.playlist[2])
+    else player.playPrevious()
+    await restart
+    await flush()
+    if (action === 'failure') {
+      assert.equal(player.currentSong.hash, 'B')
+      assert.equal(audio.paused, true)
+    } else {
+      gate.resolve()
+      await flush()
+      if (action === 'stop') {
+        assert.equal(player.currentSong, null)
+        assert.equal(audio.src, '')
+        assert.equal(audio.paused, true)
+      } else {
+        assert.equal(player.currentSong.hash, action === 'selection' ? 'C' : 'A')
+      }
+    }
+    assert.equal(player.isLoadingSong, false)
+    assert.equal(player.pendingTimers.size, 0)
+  }
+})
+
+test('a previous request during another song load navigates from that target without restarting the old final seconds', async t => {
+  const waiting = deferred()
+  const { player, audio } = createPlayer(t, {
+    getSongUrl: hash => hash === 'B' ? waiting.promise : Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` })
+  })
+  player.playlist = ['A', 'B', 'C'].map(song)
+  await player.requestSong(player.playlist[0])
+  audio.currentTime = 175
+  const loading = player.requestSong(player.playlist[1])
+  await player.playPrevious()
+  await loading
+  await flush()
+  assert.equal(player.currentSong.hash, 'A')
+  assert.equal(audio.currentTime, 175)
+  assert.equal(player.isLoadingSong, false)
+  waiting.resolve({ status: 1, url: 'https://example.test/B.mp3' })
+  await flush()
+  assert.equal(audio.currentTime, 175)
+})
+
+test('an old ended event cannot advance a restarted source while its asynchronous seek completes or afterward', async t => {
+  for (const mode of ['loop', 'single', 'shuffle']) {
+    let requests = 0
+    const { player, audio } = createPlayer(t, {
+      getSongUrl: async hash => { requests++; return { status: 1, url: `https://example.test/${hash}.mp3` } }
+    })
+    player.playlist = ['A', 'B', 'C'].map(song)
+    await player.requestSong(player.playlist[0])
+    player.playMode = mode
+    player.shuffledPlaylist = [...player.playlist]
+    let position = 180
+    Object.defineProperty(audio, 'currentTime', {
+      get: () => position,
+      set(value) { position = value; audio.ended = false; audio.seeking = true }
+    })
+    audio.ended = true
+    audio.paused = true
+    const restart = player.playPrevious()
+    assert.equal(audio.currentTime, 0)
+    assert.equal(audio.seeking, true)
+    player.handleEnded()
+    await restart
+    audio.seeking = false
+    player.handleSeeked()
+    player.handleEnded()
+    await flush()
+    assert.equal(player.currentSong.hash, 'A', mode)
+    assert.equal(audio.currentTime, 0)
+    assert.equal(requests, 1)
+    assert.equal(audio.playCount, 2)
+  }
+})
+
+test('only genuinely ended audio outside a seek continues through normal automatic playback', async t => {
+  for (const mode of ['loop', 'single', 'shuffle']) {
+    const { player, audio } = createPlayer(t)
+    player.playlist = ['A', 'B', 'C'].map(song)
+    await player.requestSong(player.playlist[0])
+    player.playMode = mode
+    player.shuffledPlaylist = [player.playlist[0], player.playlist[2], player.playlist[1]]
+    audio.currentTime = audio.duration
+    audio.paused = true
+    audio.ended = true
+    audio.seeking = true
+    player.handleEnded()
+    await flush()
+    assert.equal(player.currentSong.hash, 'A', mode)
+    audio.seeking = false
+    player.handleEnded()
+    await flush()
+    assert.equal(player.currentSong.hash, mode === 'single' ? 'A' : mode === 'shuffle' ? 'C' : 'B', mode)
+    if (mode === 'single') assert.equal(audio.currentTime, 0)
+    else assert.equal(player.trackTransition, 'auto')
+  }
+})
+
+test('player song search closes overlays and emits the original song without changing playback', async t => {
+  const { player, audio, emitted } = createPlayer(t)
+  player.playlist = ['A', 'B'].map(song)
+  await player.requestSong(player.playlist[0])
+  player.showLyricView = true
+  player.showPlaylist = true
+  audio.currentTime = 45
+  const source = audio.src
+  player.searchSong(player.playlist[1])
+  assert.equal(player.showLyricView, false)
+  assert.equal(player.showPlaylist, false)
+  assert.equal(player.currentSong.hash, 'A')
+  assert.equal(audio.src, source)
+  assert.equal(audio.currentTime, 45)
+  assert.equal(audio.paused, false)
+  assert.equal(emitted.find(event => event.name === 'search').value, player.playlist[1])
+})
+
+test('only a successful real lyric response makes lyrics interactive and stale responses cannot replace defaults', async t => {
+  const waiting = deferred()
+  const { player } = createPlayer(t, { getLyric: hash => hash === 'A' ? waiting.promise : Promise.resolve({ status: 0 }) })
+  assert.equal(player.isLyricPlaceholder, true)
+  player.playlist = ['A', 'B'].map(song)
+  await player.requestSong(player.playlist[0])
+  assert.equal(player.isLyricPlaceholder, true)
+  await player.requestSong(player.playlist[1])
+  await flush()
+  assert.equal(player.isLyricPlaceholder, true)
+  waiting.resolve({ status: 1, decodeContent: '[00:01.00]Old real lyric' })
+  await flush()
+  assert.equal(player.isLyricPlaceholder, true)
+  assert.match(player.currentLyrics, /无法获取歌词/)
+  player.stopPlayback()
+  assert.equal(player.isLyricPlaceholder, true)
 })
 
 test('deleting a queued song replaces the parent queue and removes next-track state', async t => {

@@ -58,7 +58,7 @@
             <ArtworkCover :src="getCoverUrl(song.Image || song.img) || ''" class="song-cover" />
             <div class="song-info">
               <div class="song-title-line">
-                <button type="button" class="song-name" @click.stop="playSong(song)" @dblclick.stop :title="getSongName(song)">
+                <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="getSongName(song)">
                   {{ getSongName(song) }}
                   <span v-if="(song.FileSize && song.FileSize >= 5000000) || (song.filesize && song.filesize >= 5000000)" class="quality-badge">SQ</span>
                 </button>
@@ -115,7 +115,7 @@ export default {
     SongBadges,
     ContextMenu
   },
-  emits: ['play', 'play-all', 'play-next', 'navigate'],
+  emits: ['play', 'play-all', 'play-next', 'navigate', 'search'],
   props: {
     searchKeyword: {
       type: String,

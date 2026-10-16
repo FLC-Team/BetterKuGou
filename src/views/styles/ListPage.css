@@ -32,6 +32,8 @@
 .list-page .song-item.playing .song-name, .list-page .song-item.playing .col-index { color: var(--color-primary); }
 .list-page .col-index { display: flex; justify-content: center; align-items: center; gap: 4px; min-width: 0; color: var(--color-text-tertiary); font-size: var(--font-size-xs); font-variant-numeric: tabular-nums; }
 .list-page .sort-button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 28px; min-width: 32px; border-radius: 4px; color: inherit; font-size: inherit; }
+.list-page .index-play { min-height: 30px; width: 100%; color: inherit; font-size: inherit; border-radius: 3px; }
+.list-page .index-play:hover { color: var(--color-primary); }
 .list-page .sort-arrow { color: var(--color-primary); }
 .list-page .col-title { display: flex; align-items: center; gap: 13px; min-width: 0; }
 .list-page .song-cover { width: 46px; height: 46px; flex: 0 0 46px; border-radius: var(--radius-sm); object-fit: cover; }

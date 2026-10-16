@@ -36,6 +36,38 @@ function names(value) {
   return text(value)
 }
 
+/** Build a title-only query while preserving version suffixes and hyphens inside the title. */
+export function getSongSearchKeyword(song) {
+  if (!song || typeof song !== 'object') return ''
+  const titleFields = ['OriSongName', 'songname', 'song_name', 'audio_name', 'title']
+  const fileFields = ['name', 'filename', 'FileName']
+  const field = [...titleFields, ...fileFields].find(key => typeof song[key] === 'string' && song[key].trim())
+  if (!field) return ''
+  let title = song[field].trim()
+  const separator = /\s+[-—–](?:\s+|$)/
+  const match = separator.exec(title)
+  if (match) {
+    const artistFields = [song.singername, song.SingerName, song.singer_name, song.author_name, song.author,
+      song.singerinfo, song.singers, song.authors]
+    const artistNames = artistFields.flat(Infinity).flatMap(value => value && typeof value === 'object'
+      ? [value.name, value.singer_name, value.singername, value.author_name] : [value])
+      .filter(value => typeof value === 'string' && value.trim()).map(value => value.trim().toLocaleLowerCase())
+    const prefix = title.slice(0, match.index).trim().toLocaleLowerCase()
+    const collaborationSeparator = /\s*(?:、|&|＆|,|，|;|；|\/|／|\b(?:feat\.?|ft\.?|and)\b)\s*/i
+    const prefixArtists = prefix.split(collaborationSeparator).filter(Boolean)
+    const individualArtists = artistNames.flatMap(value => value.split(collaborationSeparator)).filter(Boolean)
+    const knownPrefix = artistNames.includes(prefix) ||
+      (prefixArtists.length > 1 && prefixArtists.every(value => individualArtists.includes(value)))
+    // Historical file/name strings omit separate artist metadata; known artists prevent
+    // treating a genuine title suffix such as "Hello - Live" as an artist separator.
+    if (prefix && (knownPrefix || (fileFields.includes(field) && artistNames.length === 0))) {
+      title = title.slice(match.index + match[0].length).trim()
+    }
+  }
+  if (fileFields.includes(field)) title = title.replace(/\.(mp3|flac|wav|aac|m4a|ogg|wma|ape|opus)$/i, '').trim()
+  return title
+}
+
 /** Match all loaded song, artist and album aliases, keeping the original rows and queue untouched. */
 export function filterSongs(songs, query) {
   const keyword = text(query).trim().toLocaleLowerCase()

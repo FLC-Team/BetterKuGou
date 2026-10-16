@@ -97,6 +97,10 @@ export default {
     UserMenu
   },
   props: {
+    modelValue: {
+      type: String,
+      default: ''
+    },
     userLoggedIn: {
       type: Boolean,
       default: false
@@ -115,7 +119,6 @@ export default {
       isMaximized: false,
       showUserMenu: false,
       userMenuPosition: { top: 0, right: 0 },
-      searchKeyword: '',
       // 图标路径配置 - 如需替换图标,只需修改这里的路径
       icons: {
         minimize: minimizeIcon,
@@ -123,6 +126,12 @@ export default {
         restore: restoreIcon,
         close: closeIcon
       }
+    }
+  },
+  computed: {
+    searchKeyword: {
+      get() { return this.modelValue },
+      set(value) { this.$emit('update:modelValue', value) }
     }
   },
   watch: {

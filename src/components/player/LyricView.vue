@@ -1,5 +1,5 @@
 <template>
-  <div class="lyric-view" v-if="visible" @click="closeLyricView" @keydown.esc.stop="closeLyricView" role="dialog" aria-label="歌曲歌词">
+  <div class="lyric-view" v-if="visible" @click="closeLyricView" @keydown.esc.stop="handleLyricEscape" role="dialog" aria-label="歌曲歌词">
     <!-- 模糊背景 -->
     <div class="lyric-background">
       <Transition name="track-background" @before-leave="retireTrackLayer">
@@ -39,7 +39,7 @@
         <div class="song-info">
           <div class="track-text-stage">
             <Transition :name="trackTransitionName" @before-leave="retireTrackLayer">
-              <h2 :key="song?.hash || 'empty'" class="song-title track-piece track-title">{{ getSongName(song) }}</h2>
+              <h2 :key="song?.hash || 'empty'" class="song-title track-piece track-title"><button type="button" class="song-title-search" @click="searchSong" :aria-label="`搜索歌曲 ${getSongName(song)}`" title="搜索这首歌">{{ getSongName(song) }}</button></h2>
             </Transition>
           </div>
           <div class="track-text-stage">
@@ -147,7 +147,9 @@
       <!-- 右侧歌词 -->
       <div class="lyrics-section">
         <Transition :name="trackTransitionName" @before-leave="retireTrackLayer">
-        <div :key="lyricContentKey" class="lyrics-container track-piece track-lyrics" ref="lyricsContainer">
+        <div :key="lyricContentKey" class="lyrics-container track-piece track-lyrics" :class="{ 'is-interactive': canBrowseLyrics, 'is-dragging': lyricPointer?.dragging }" ref="lyricsContainer"
+             @pointerdown="startLyricPointer($event, lyricContentKey)" @lostpointercapture="cancelLyricPointer"
+             @wheel="handleLyricWheel($event, lyricContentKey)">
           <div v-if="!lyrics" class="lyric-loading" role="status">正在加载歌词…</div>
           
           <!-- 所有歌词行，通过transform控制位置实现动画 -->
@@ -163,6 +165,14 @@
             }"
             :style="getLyricLineStyle(index)"
             :ref="createLyricLineRef(index, lyricContentKey)"
+            :role="isLyricLineInteractive(index) ? 'button' : undefined"
+            :tabindex="isLyricLineInteractive(index) ? 0 : undefined"
+            :aria-label="isLyricLineInteractive(index) ? `跳转至 ${formatTime(line.time)}，${line.text}` : undefined"
+            @click.stop="activateLyricLine(index, $event, lyricContentKey)"
+            @keydown.enter.stop.prevent="activateLyricLine(index, $event, lyricContentKey)"
+            @keydown.space.stop.prevent="activateLyricLine(index, $event, lyricContentKey)"
+            @focus="focusLyricLine(index, lyricContentKey)"
+            @contextmenu.prevent.stop="showLyricMenu($event, index, lyricContentKey)"
           >
             <!-- 主要歌词（原文） -->
             <div class="main-lyric">
@@ -227,15 +237,14 @@
             <div 
               v-if="lyrics && isBridgeActive && bridgeInfo"
               class="bridge-progress-bar overlay"
-              :style="{
-                transform: `translate(-50%, -50%) scaleX(${Math.max(0.05, (100 - bridgeProgress) / 100)})`,
-                backgroundColor: getBridgeProgressColor()
-              }"
+              :style="bridgeIndicatorStyle"
             ></div>
           </transition>
 
         </div>
         </Transition>
+        <button v-if="browsePosition != null" type="button" class="return-current-lyric" @click="returnToCurrentLyric">回到当前歌词</button>
+        <p v-if="copyFeedback" class="lyric-copy-feedback" role="status">{{ copyFeedback }}</p>
       </div>
 
       <!-- 关闭按钮 -->
@@ -245,6 +254,7 @@
         </svg>
       </button>
     </div>
+    <ContextMenu :visible="lyricMenuVisible" :position="lyricMenuPosition" :items="lyricMenuItems" @close="closeLyricMenu" />
   </div>
 </template>
 

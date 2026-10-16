@@ -12,6 +12,7 @@
 - `contextMenuManager.js`：管理一个活动菜单关闭回调。
 - `playbackQuality.js`：普通音质选项、偏好规范化及仅依响应格式/码率确认当前音源信息；不以偏好推断实际无损。
 - `songMetadata.js`：读取歌曲 VIP 徽标，兼容既有 `privilege` 的 8/10 数值与字符串、大小写字段和明确 VIP 标志；按歌曲、歌手、专辑的历史字段过滤歌曲，保留原数组与行对象。
+- `songMetadata.js` 的 getSongSearchKeyword 优先读取明确曲名，再兼容 name/filename/FileName；识别已知单人或多人歌手前缀，保留标题中的连字符和版本后缀，文件名去除音频扩展名，空或非文本名称不生成关键词。
 
 ## 核心流程
 

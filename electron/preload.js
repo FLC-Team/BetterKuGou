@@ -21,6 +21,7 @@ const electronAPI = {
 
   // 外部链接打开 API
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  writeClipboardText: (text) => ipcRenderer.invoke('clipboard:write-text', text),
 
   // 更新任务只接受已检查出的资产 ID；安装始终经过主窗口确认。
   updates: {

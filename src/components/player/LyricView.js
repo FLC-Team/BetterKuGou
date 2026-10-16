@@ -1,12 +1,15 @@
 
 import { logger } from '../../utils/logger.js'
 import { useSettingsStore } from '../../stores/settingsStore.js'
+import ContextMenu from '../common/ContextMenu.vue'
+import contextMenuManager from '../../utils/contextMenuManager.js'
 import repeatAllIcon from '../../assets/icons/repeat_all.svg'
 import repeatOneIcon from '../../assets/icons/repeat_one.svg'
 import shuffleIcon from '../../assets/icons/shuffle.svg'
 
 export default {
   name: 'LyricView',
+  components: { ContextMenu },
   props: {
     visible: {
       type: Boolean,
@@ -27,6 +30,10 @@ export default {
     lyricData: {
       type: Object,
       default: null
+    },
+    lyricsInteractive: {
+      type: Boolean,
+      default: false
     },
     currentPlayTime: {
       type: Number,
@@ -89,6 +96,17 @@ export default {
       previousBodyOverflow: null,
       previousFocus: null,
       seekPreviewTime: null,
+      hasTimedLyrics: false,
+      browsePosition: null,
+      browseBridgeAnchor: null,
+      browseReturnTimer: null,
+      lyricPointer: null,
+      suppressLyricClick: false,
+      lyricMenuVisible: false,
+      lyricMenuPosition: { x: 0, y: 0 },
+      lyricMenuSnapshot: null,
+      copyFeedback: '',
+      copyRequestId: 0,
       lastPlaybackTime: null,
       lineTransitionDuration: 0,
       viewportWidth: window.innerWidth,
@@ -118,6 +136,35 @@ export default {
     }
   },
   computed: {
+    canBrowseLyrics() {
+      return this.lyricsInteractive && this.hasTimedLyrics && this.visible && !this.pauseUpdates && !this.isDisposed &&
+        this.seekPreviewTime == null && this.previewTime == null
+    },
+    lyricMenuItems() {
+      const snapshot = this.lyricMenuSnapshot
+      if (!snapshot) return []
+      const items = [
+        { label: '复制本句', action: () => this.copyLyricText(snapshot.line) },
+        { label: '复制全部歌词', action: () => this.copyLyricText(snapshot.all) }
+      ]
+      if (snapshot.translation) {
+        items.push({ label: '复制本句及翻译', action: () => this.copyLyricText(snapshot.line + '\n' + snapshot.translation) })
+      }
+      return items
+    },
+    bridgeIndicatorStyle() {
+      let offset = 0
+      if (this.browsePosition != null && this.bridgeInfo) {
+        const anchor = this.bridgeInfo.startLyricIndex
+        const position = anchor === this.browseBridgeAnchor ? anchor + 1
+          : anchor < 0 ? 0 : this.getBrowseLinePosition(anchor) + 0.5
+        offset = (position - this.browsePosition) * this.lyricLineHeight
+      }
+      return {
+        transform: `translate(-50%, -50%) translateY(${offset}px) scaleX(${Math.max(0.05, (100 - this.bridgeProgress) / 100)})`,
+        backgroundColor: this.getBridgeProgressColor()
+      }
+    },
     trackTransitionName() {
       const type = ['previous', 'next', 'auto', 'select', 'shuffle'].includes(this.trackTransition)
         ? this.trackTransition : 'select'
@@ -262,6 +309,7 @@ export default {
         this.startUpdateLoop() // 启动RAF循环
         this.lockBodyScroll()
       } else {
+        this.resetLyricInteractions()
         this.cancelSeek()
         this.stopUpdateLoop() // 立即停止RAF循环，释放资源
         this.restoreBodyScroll()
@@ -287,6 +335,7 @@ export default {
     },
     song() {
       this.coverFailed = false
+      this.resetLyricInteractions()
       this.cancelSeek()
       this.lastPlaybackTime = null
     },
@@ -297,10 +346,15 @@ export default {
       if (this.visible && !this.pauseUpdates && !this.isDisposed) this.syncDisplayedTime()
     },
     previewTime() {
+      if (this.previewTime != null) this.resetLyricInteractions()
       if (this.visible && !this.pauseUpdates && !this.isDisposed) this.syncDisplayedTime(true)
+    },
+    lyricsInteractive(value) {
+      if (!value) this.resetLyricInteractions()
     },
     pauseUpdates(newVal) {
       if (newVal) {
+        this.resetLyricInteractions()
         this.cancelSeek()
         // 暂停更新时立即停止RAF循环
         this.stopUpdateLoop()
@@ -318,6 +372,7 @@ export default {
   },
   beforeUnmount() {
     this.isDisposed = true
+    this.resetLyricInteractions()
     this.seekPreviewTime = null
     if (process.env.NODE_ENV === 'development') {
       logger.debug('LyricView', '🔄 LyricView 组件即将卸载，清理所有资源')
@@ -332,6 +387,8 @@ export default {
       window.removeEventListener('resize', this.handleWindowResize)
       this.handleWindowResize.cancel()
     }
+    window.removeEventListener('blur', this.cancelLyricInteractions)
+    window.removeEventListener('keydown', this.handleInteractionKeydown)
     
     // 清理所有缓存
     this.styleCache.clear()
@@ -360,11 +417,219 @@ export default {
     // 监听窗口大小变化
     this.handleWindowResize = this.debounce(this.onWindowResize, 100)
     window.addEventListener('resize', this.handleWindowResize)
+    window.addEventListener('blur', this.cancelLyricInteractions)
+    window.addEventListener('keydown', this.handleInteractionKeydown)
     
     // 初始化窗口尺寸适配
     this.onWindowResize()
   },
   methods: {
+    /** 手动浏览冻结布局锚点，播放索引和逐字高亮继续按真实时间推进。 */
+    getBrowseLinePosition(index) {
+      return index + (this.browseBridgeAnchor != null && index > this.browseBridgeAnchor ? 1 : 0)
+    },
+    getLyricRelativePosition(index) {
+      if (this.browsePosition != null) return this.getBrowseLinePosition(index) - this.browsePosition
+      if (this.isBridgeActive && this.bridgeInfo) {
+        const anchor = this.bridgeInfo.startLyricIndex
+        return index - anchor - (index <= anchor ? 1 : 0)
+      }
+      return index - this.currentLyricIndex
+    },
+    isCurrentLyricEvent(event, key = this.lyricContentKey) {
+      return key === this.lyricContentKey && !event?.target?.closest?.('[inert]')
+    },
+    isLyricLineInteractive(index) {
+      const line = this.parsedLyrics[index]
+      return this.canBrowseLyrics && !!line && Number.isFinite(line.time) && line.time >= 0 &&
+        typeof line.text === 'string' && line.text.trim().length > 0
+    },
+    beginLyricBrowsing() {
+      if (this.browsePosition != null) return
+      this.browseBridgeAnchor = this.isBridgeActive ? this.bridgeInfo?.startLyricIndex ?? null : null
+      this.browsePosition = this.browseBridgeAnchor != null ? this.browseBridgeAnchor + 1 : this.currentLyricIndex
+    },
+    setBrowsePosition(position) {
+      const last = this.getBrowseLinePosition(this.parsedLyrics.length - 1)
+      this.browsePosition = Math.max(0, Math.min(last, position))
+    },
+    pauseBrowseReturn() {
+      if (this.browseReturnTimer != null) clearTimeout(this.browseReturnTimer)
+      this.browseReturnTimer = null
+    },
+    scheduleBrowseReturn() {
+      this.pauseBrowseReturn()
+      if (this.browsePosition == null || this.lyricPointer || this.lyricMenuVisible || !this.canBrowseLyrics) return
+      this.browseReturnTimer = setTimeout(() => {
+        this.browseReturnTimer = null
+        this.returnToCurrentLyric()
+      }, 5000)
+    },
+    /** 只在超过 6px 后捕获指针，普通单击仍由实际歌词行接收。 */
+    startLyricPointer(event, key) {
+      if (!this.canBrowseLyrics || !this.isCurrentLyricEvent(event, key) ||
+          event.button !== 0 || event.isPrimary === false || this.lyricPointer) return
+      this.closeLyricMenu()
+      this.pauseBrowseReturn()
+      this.suppressLyricClick = false
+      this.lyricPointer = {
+        id: event.pointerId, x: event.clientX, y: event.clientY,
+        host: event.currentTarget, dragging: false, position: null, lineHeight: this.lyricLineHeight
+      }
+      window.addEventListener('pointermove', this.moveLyricPointer, { passive: false })
+      window.addEventListener('pointerup', this.endLyricPointer)
+      window.addEventListener('pointercancel', this.cancelLyricPointer)
+    },
+    moveLyricPointer(event) {
+      const pointer = this.lyricPointer
+      if (!pointer || pointer.id !== event.pointerId) return
+      if (!this.canBrowseLyrics) {
+        this.cancelLyricInteractions()
+        return
+      }
+      if (!pointer.dragging) {
+        if (Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) <= 6) return
+        this.beginLyricBrowsing()
+        pointer.position = this.browsePosition
+        pointer.dragging = true
+        this.suppressLyricClick = true
+        pointer.host?.setPointerCapture?.(pointer.id)
+      }
+      event.preventDefault()
+      this.setBrowsePosition(pointer.position - (event.clientY - pointer.y) / pointer.lineHeight)
+    },
+    releaseLyricPointer() {
+      const pointer = this.lyricPointer
+      this.lyricPointer = null
+      window.removeEventListener('pointermove', this.moveLyricPointer)
+      window.removeEventListener('pointerup', this.endLyricPointer)
+      window.removeEventListener('pointercancel', this.cancelLyricPointer)
+      if (pointer?.host?.hasPointerCapture?.(pointer.id)) pointer.host.releasePointerCapture(pointer.id)
+    },
+    endLyricPointer(event) {
+      if (!this.lyricPointer || this.lyricPointer.id !== event.pointerId) return
+      this.releaseLyricPointer()
+      this.scheduleBrowseReturn()
+    },
+    cancelLyricPointer(event) {
+      if (!this.lyricPointer || (event && this.lyricPointer.id !== event.pointerId)) return
+      this.returnToCurrentLyric()
+      this.suppressLyricClick = true
+    },
+    handleLyricWheel(event, key) {
+      if (!this.canBrowseLyrics || !this.isCurrentLyricEvent(event, key) || this.lyricPointer || event.ctrlKey) return
+      if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return
+      event.preventDefault()
+      this.closeLyricMenu()
+      this.beginLyricBrowsing()
+      const unit = event.deltaMode === 1 ? this.lyricLineHeight
+        : event.deltaMode === 2 ? this.$refs.lyricsContainer?.clientHeight || this.viewportHeight : 1
+      this.setBrowsePosition(this.browsePosition + event.deltaY * unit / this.lyricLineHeight)
+      this.lineTransitionDuration = 0.12
+      this.scheduleBrowseReturn()
+    },
+    returnToCurrentLyric() {
+      const restoreLyricFocus = this.$refs.lyricsContainer?.contains?.(document.activeElement)
+      this.returnToCurrentLyricWithoutSync()
+      if (!this.isDisposed) {
+        this.syncDisplayedTime(true)
+        if (restoreLyricFocus) this.$nextTick(() => {
+          if (!this.isDisposed && this.browsePosition == null) this.lyricLineRefs[this.currentLyricIndex]?.focus({ preventScroll: true })
+        })
+      }
+    },
+    /** 切歌、关闭、暂停更新或卸载使拖动、菜单和迟到的复制反馈一并失效。 */
+    resetLyricInteractions() {
+      this.returnToCurrentLyricWithoutSync()
+      this.suppressLyricClick = false
+      this.copyRequestId += 1
+      this.copyFeedback = ''
+    },
+    returnToCurrentLyricWithoutSync() {
+      this.lyricMenuVisible = false
+      this.lyricMenuSnapshot = null
+      contextMenuManager.unregisterMenu(this.closeLyricMenu)
+      this.pauseBrowseReturn()
+      this.releaseLyricPointer()
+      this.browsePosition = null
+      this.browseBridgeAnchor = null
+    },
+    cancelLyricInteractions() {
+      this.resetLyricInteractions()
+      if (!this.isDisposed && this.visible && !this.pauseUpdates) this.syncDisplayedTime(true)
+    },
+    handleLyricEscape() {
+      if (this.lyricMenuVisible) this.closeLyricMenu()
+      else if (this.lyricPointer || this.browsePosition != null) this.cancelLyricInteractions()
+      else this.closeLyricView()
+    },
+    handleInteractionKeydown(event) {
+      if (event.key === 'Escape' && (this.lyricPointer || this.lyricMenuVisible)) {
+        event.preventDefault()
+        event.stopPropagation()
+        this.handleLyricEscape()
+      }
+    },
+    activateLyricLine(index, event, key) {
+      if (!this.isLyricLineInteractive(index) || !this.isCurrentLyricEvent(event, key)) return
+      if (this.suppressLyricClick && event?.type !== 'keydown') {
+        this.suppressLyricClick = false
+        event?.preventDefault?.()
+        return
+      }
+      this.seekTo(this.parsedLyrics[index].time)
+    },
+    focusLyricLine(index, key) {
+      if (this.lyricPointer || key !== this.lyricContentKey || !this.isLyricLineInteractive(index)) return
+      if (index === this.currentLyricIndex && this.browsePosition == null) return
+      this.beginLyricBrowsing()
+      this.setBrowsePosition(this.getBrowseLinePosition(index))
+      this.lineTransitionDuration = 0.24
+      this.scheduleBrowseReturn()
+    },
+    /** 菜单保存纯文本快照，空格和翻译不经过逐字 DOM 或后续歌曲状态。 */
+    showLyricMenu(event, index, key) {
+      if (!this.isLyricLineInteractive(index) || !this.isCurrentLyricEvent(event, key)) return
+      contextMenuManager.closeActiveMenu()
+      this.releaseLyricPointer()
+      this.beginLyricBrowsing()
+      this.pauseBrowseReturn()
+      const line = this.parsedLyrics[index]
+      this.lyricMenuSnapshot = {
+        line: line.text,
+        all: this.parsedLyrics.map(item => item.text).join('\n'),
+        translation: typeof line.translation === 'string' ? line.translation : ''
+      }
+      this.lyricMenuPosition = { x: event.clientX, y: event.clientY }
+      this.lyricMenuVisible = true
+      this.copyFeedback = ''
+      contextMenuManager.registerMenu(this.closeLyricMenu)
+    },
+    closeLyricMenu() {
+      this.lyricMenuVisible = false
+      this.lyricMenuSnapshot = null
+      contextMenuManager.unregisterMenu(this.closeLyricMenu)
+      this.scheduleBrowseReturn()
+    },
+    async copyLyricText(text) {
+      if (this.isDisposed || !this.visible || typeof text !== 'string' || !text) return
+      const requestId = ++this.copyRequestId
+      this.copyFeedback = '正在复制…'
+      try {
+        if (window.electronAPI?.writeClipboardText) await window.electronAPI.writeClipboardText(text)
+        else if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text)
+        else throw new Error('Clipboard unavailable')
+        if (!this.isDisposed && requestId === this.copyRequestId) this.copyFeedback = '已复制歌词'
+      } catch (error) {
+        if (!this.isDisposed && requestId === this.copyRequestId) {
+          this.copyFeedback = '复制失败，请重试'
+          logger.warn('LyricView', '复制歌词失败', { errorType: error?.name || 'Error' })
+        }
+      }
+    },
+    searchSong(event) {
+      if (!this.isDisposed && this.song && this.isCurrentLyricEvent(event)) this.$emit('search', this.song)
+    },
     /** 旧层只保留退场画面，不再参与辅助阅读或交互。 */
     retireTrackLayer(element) {
       element.setAttribute('aria-hidden', 'true')
@@ -393,6 +658,7 @@ export default {
 
     /** 新歌及其异步歌词各自定位；不继承上一首的桥段、高亮或长句位移。 */
     resetTrackLyrics() {
+      this.resetLyricInteractions()
       this.lyricLineRefs = {}
       this.scrollingLyricElement = null
       this.currentLyricIndex = 0
@@ -433,6 +699,7 @@ export default {
       const nextTime = Math.max(0, time)
       const isInitialPosition = this.lastPlaybackTime == null
       const delta = this.lastPlaybackTime == null ? 0 : nextTime - this.lastPlaybackTime
+      if (this.browsePosition != null && (isSeek || delta < -0.25 || delta > 1)) this.resetLyricInteractions()
       const previousIndex = this.currentLyricIndex
       const previousBridgeActive = this.isBridgeActive
       const previousBridgeAnchor = this.bridgeInfo?.startLyricIndex
@@ -554,16 +821,12 @@ export default {
 
     /** 桥段占用中心的一行，已唱完的前句留在其上方；屏外行保留位置以承接跨行跳转。 */
     getLyricLineStyle(index) {
-      let relativeIndex = index - this.currentLyricIndex
-      if (this.isBridgeActive && this.bridgeInfo) {
-        relativeIndex = index - this.bridgeInfo.startLyricIndex
-        if (index <= this.bridgeInfo.startLyricIndex) relativeIndex -= 1
-      }
+      const relativeIndex = this.getLyricRelativePosition(index)
       const distance = Math.abs(relativeIndex)
       const maxVisibleDistance = 8 // 最大可见距离
       const viewportWidth = this.viewportWidth
       const translateY = Math.max(-maxVisibleDistance - 1, Math.min(maxVisibleDistance + 1, relativeIndex)) * this.lyricLineHeight
-      const isCurrent = relativeIndex === 0
+      const isCurrent = !this.isBridgeActive && index === this.currentLyricIndex
 
       // 计算视觉效果
       let opacity = 1
@@ -605,9 +868,9 @@ export default {
         fontSize: isCurrent ? 'var(--current-font-size)' : 'var(--base-font-size)',
         fontWeight: fontWeight,
         zIndex: isCurrent ? 10 : 1,
-        transition: this.lineTransitionDuration > 0
+        transition: this.lyricPointer?.dragging ? 'none' : this.lineTransitionDuration > 0
           ? `transform ${this.lineTransitionDuration}s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.3s ease, filter 0.3s ease` : 'none',
-        pointerEvents: isCurrent ? 'auto' : 'none'
+        pointerEvents: distance <= maxVisibleDistance && this.isLyricLineInteractive(index) ? 'auto' : 'none'
       }
     },
     
@@ -798,6 +1061,8 @@ export default {
 
     // 解析歌词
     parseLyrics(lrcContent, rawLyricData = null) {
+      this.resetLyricInteractions()
+      this.hasTimedLyrics = false
       logger.trace('LyricView', '解析歌词，内容长度:', lrcContent?.length)
       logger.trace('LyricView', '歌词内容预览:', lrcContent?.substring(0, 200))
       logger.trace('LyricView', '原始歌词数据:', rawLyricData)
@@ -946,6 +1211,7 @@ export default {
       
       // 按时间排序
       result.sort((a, b) => a.time - b.time)
+      this.hasTimedLyrics = result.length > 0
       this.parsedLyrics = result.length > 0 ? result : [{ time: 0, text: '暂无歌词' }]
       
       // 检查是否有空格
@@ -1409,6 +1675,7 @@ export default {
 
     // 关闭歌词视图
     closeLyricView() {
+      this.resetLyricInteractions()
       this.$emit('close')
     },
 
@@ -1449,6 +1716,7 @@ export default {
     previewSeek(event) {
       const time = Number(event.target.value)
       if (!Number.isFinite(time) || !Number.isFinite(this.duration) || this.duration <= 0 || this.isDisposed || this.pauseUpdates) return
+      this.resetLyricInteractions()
       this.seekPreviewTime = Math.max(0, Math.min(this.duration, time))
       this.syncDisplayedTime(true)
     },
@@ -1469,6 +1737,7 @@ export default {
     seekTo(time) {
       if (this.isDisposed || this.pauseUpdates || !Number.isFinite(time) || !Number.isFinite(this.duration) || this.duration <= 0) return
       const target = Math.max(0, Math.min(this.duration, time))
+      this.resetLyricInteractions()
       this.$emit('seek', target)
       this.syncPlaybackTime(target, true)
     },

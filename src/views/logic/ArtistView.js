@@ -12,7 +12,7 @@ export default {
     artistName: { type: String, default: '' },
     currentSong: { type: Object, default: null }
   },
-  emits: ['play', 'navigate'],
+  emits: ['play', 'navigate', 'search'],
   data() {
     return {
       id: this.artistId || null,

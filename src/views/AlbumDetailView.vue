@@ -22,12 +22,12 @@
           <div class="col-duration">时长</div>
         </div>
         <div v-for="(song, idx) in songs" :key="song.hash || idx" class="song-item" :class="{ playing: !!song.hash && currentSong?.hash === song.hash }" :aria-current="song.hash && currentSong?.hash === song.hash ? 'true' : undefined" @dblclick="$emit('play', song)">
-          <div class="col-index">{{ String(idx + 1).padStart(2, '0') }}</div>
+          <div class="col-index"><button type="button" class="index-play" :aria-label="'播放 ' + getSongName(song.name)" @click.stop="$emit('play', song)" @dblclick.stop>{{ String(idx + 1).padStart(2, '0') }}</button></div>
           <div class="col-title">
             <ArtworkCover :src="song.cover || ''" class="song-cover" />
             <div class="song-info">
               <div class="song-title-line">
-                <button type="button" class="song-name" @click.stop="$emit('play', song)" @dblclick.stop :title="getSongName(song.name)">{{ getSongName(song.name) }}</button>
+                <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="getSongName(song.name)">{{ getSongName(song.name) }}</button>
                 <SongBadges :song="song" />
               </div>
               <span class="mobile-artist">{{ getSingerNames(song.singerinfo, song) || '未知歌手' }}</span>
@@ -62,7 +62,7 @@ export default {
     albumName: { type: String, default: '' },
     currentSong: { type: Object, default: null }
   },
-  emits: ['navigate','play'],
+  emits: ['navigate','play','search'],
   data() {
     return {
       id: this.albumId || null,

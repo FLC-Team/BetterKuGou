@@ -74,8 +74,8 @@
                 <img v-if="song.imgurl && !failedImages[fixImgUrl(song.imgurl, 400)]" :src="fixImgUrl(song.imgurl, 400)" alt="" loading="lazy" @error="markImageFailed(song.imgurl, 400)" />
                 <span class="play-overlay" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 5 11 7-11 7z" /></svg></span>
               </span>
-              <span class="song-name" :title="song.songname || song.filename || song.name">{{ song.songname || song.filename || song.name || '未知歌曲' }}</span>
             </button>
+            <button class="song-name" type="button" :title="song.songname || song.filename || song.name" @click.stop="$emit('search', song)" @dblclick.stop>{{ song.songname || song.filename || song.name || '未知歌曲' }}</button>
             <SongBadges :song="song" />
             <button class="artist-link" type="button" :title="song.singername || song.author_name" :disabled="!song.singername && !song.author_name" @click.stop="goArtistFromAISong(song)">{{ song.singername || song.author_name || '未知歌手' }}</button>
           </article>
@@ -121,6 +121,7 @@ function getAccountIdentity() {
 
 export default {
   name: 'HomeView',
+  emits: ['navigate', 'play', 'search'],
   components: { SongBadges },
   props: {
     favoritesRevision: { type: Number, default: 0 }

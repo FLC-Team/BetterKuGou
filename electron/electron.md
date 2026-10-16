@@ -42,6 +42,7 @@
 ## 窗口与兼容保障
 
 - 所有窗口禁用 Node 集成并启用上下文隔离；HTML 不直接使用 `require('electron')`。
+- electronAPI.writeClipboardText(text) 仅桥接 clipboard:write-text；主进程复用主窗口顶层发送方检查，只接受最多 1 MiB UTF-8 字符串并写纯文本，不提供读取、任意格式或通用 IPC 能力，不记录复制内容。
 - `updates:*` IPC 仅接受主窗口 webContents 及其顶层 frame；检查、下载、取消和定位均由主进程服务负责，下载参数只接受服务提供的资产 ID，渲染侧不能注入下载 URL 或本机路径。状态只向主窗口广播展示字段。
 - `electronAPI.updates.onPrepareForInstall()` 订阅准备/取消通知并返回解绑函数；`completePrepareForInstall(requestId, result)` 只反馈当前准备结果，不直接授权安装或退出。保存中屏蔽托盘播放操作，过期回执无效。
 - 安装只能由 `updates:install` 的用户动作触发：Worker 先校验文件，原生对话框默认取消，明确确认后再次校验并核对文件、版本和资产身份，随后才调用 `shell.openPath()`。只允许 exe/dmg/deb/rpm，AppImage 定位后由用户处理；启动、下载完成、退出均不安装，也不自动退出应用。

@@ -36,8 +36,8 @@
         </button>
         <div class="song-details">
           <div class="song-text-viewport song-title-viewport">
-            <Transition name="song-meta">
-              <div :key="currentSong.hash" class="song-name" :title="getSongName(currentSong.name)">{{ getSongName(currentSong.name) }}</div>
+            <Transition name="song-meta" @before-enter="setSongTitleInteractivity($event, true)" @before-leave="setSongTitleInteractivity($event, false)">
+              <button :key="currentSong.hash" type="button" class="song-name" :title="`搜索 ${getSongName(currentSong.name)}`" :aria-label="`搜索 ${getSongName(currentSong.name)}`" @click.stop="searchSong(currentSong)">{{ getSongName(currentSong.name) }}</button>
             </Transition>
           </div>
           <div class="song-text-viewport song-artist-viewport">
@@ -221,6 +221,7 @@
         @play="handlePlaylistPlay"
         @remove="handleRemoveSong"
         @clear="handleClearPlaylist"
+        @search="searchSong"
       />
 
       <!-- 播放模式右键菜单 -->
@@ -239,6 +240,7 @@
           :song="currentSong"
           :track-transition="trackTransition"
           :lyrics="currentLyrics"
+          :lyrics-interactive="!isLyricPlaceholder"
           :lyric-data="currentLyricData"
           :current-play-time="currentTime"
           :preview-time="seekPreviewTime"
@@ -258,6 +260,7 @@
           @toggle-play-mode="cyclePlayMode"
           @toggle-favorite="toggleFavorite"
           @seek="handleSeek"
+          @search="searchSong"
           @change-quality="changeQuality"
           @retry-quality="retryQualityChange"
         />

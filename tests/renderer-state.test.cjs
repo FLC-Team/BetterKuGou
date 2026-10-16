@@ -182,6 +182,7 @@ function loadApp(electronAPI = {}, overrides = {}) {
     console: quietConsole,
     logger: quietLogger,
     process: { env: { NODE_ENV: 'production' } },
+    ...loadModule('src/utils/songMetadata.js', {}, ['getSongSearchKeyword']),
     window: { electronAPI, addEventListener() {}, removeEventListener() {} },
     document: { addEventListener() {}, removeEventListener() {}, querySelectorAll: () => [] },
     localStorage: overrides.localStorage || { getItem: () => null },
@@ -214,7 +215,8 @@ function loadApp(electronAPI = {}, overrides = {}) {
     pageSessionKey, pageSessionVersion, selectedPlaylistId, showLogin, currentView,
     performMemoryCleanup, createLazyView, cachedPageNames, drain: () => shortcutUpdateQueue,
     handleInstallPreparation, preparingInstall, settingsViewRef, sameInstallSession,
-    collectSessionSnapshot, queueSessionPersist, restoredPlaybackState, handleSongChanged
+    collectSessionSnapshot, queueSessionPersist, restoredPlaybackState, handleSongChanged,
+    handleSearch, handleSearchRequest, searchQuery, searchDraft
   })`, sandbox))
   return {
     ...app,
@@ -226,6 +228,51 @@ function loadApp(electronAPI = {}, overrides = {}) {
     }
   }
 }
+
+test('song searches expose results and refill even an identical submitted query without changing playback', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  const playing = { hash: 'playing', name: 'Current Song' }
+  app.currentSong.value = playing
+  app.playlist.value = [playing, { hash: 'queued', name: 'Queued Song' }]
+  app.playlistIndex.value = 0
+  const queue = app.playlist.value
+  let closed = 0
+  app.musicPlayerRef.value = { closeLyrics() { closed++ }, showPlaylist: true }
+  app.showLogin.value = true
+  app.handleSearch({ FileName: 'Singer - New Song.mp3', SingerName: 'Singer' })
+  assert.equal(app.searchQuery.value, 'New Song')
+  assert.equal(app.searchDraft.value, 'New Song')
+  assert.equal(app.currentView.value, 'search')
+  assert.equal(app.showLogin.value, false)
+  assert.equal(app.musicPlayerRef.value.showPlaylist, false)
+  assert.equal(closed, 1)
+  app.searchDraft.value = 'Unsubmitted edits'
+  app.currentView.value = 'home'
+  app.handleSearch({ OriSongName: 'New Song', SingerName: 'Different Singer' })
+  assert.equal(app.searchDraft.value, 'New Song')
+  assert.equal(app.searchQuery.value, 'New Song')
+  assert.equal(app.currentSong.value.hash, 'playing')
+  assert.equal(app.playlist.value, queue)
+  assert.equal(app.playlistIndex.value, 0)
+})
+
+test('search drafts do not navigate until submitted and empty queries leave navigation unchanged', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  const initialView = app.currentView.value
+  app.searchDraft.value = 'draft'
+  assert.equal(app.currentView.value, initialView)
+  assert.equal(app.searchQuery.value, '')
+  for (const song of [null, {}, { singername: 'Artist' }]) app.handleSearch(song)
+  for (const keyword of ['', '  ', null, {}]) app.handleSearchRequest(keyword)
+  assert.equal(app.currentView.value, initialView)
+  assert.equal(app.searchDraft.value, 'draft')
+  app.handleSearchRequest('  Manual query  ')
+  assert.equal(app.searchDraft.value, 'Manual query')
+  assert.equal(app.searchQuery.value, 'Manual query')
+  assert.equal(app.currentView.value, 'search')
+})
 
 test('settings initialization writes once and leaves browser paths unset', async () => {
   let writes = 0

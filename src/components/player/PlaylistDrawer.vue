@@ -30,18 +30,18 @@
             @contextmenu.prevent.stop="showContextMenu($event, song, index)"
           >
           <!-- 播放状态指示器 -->
-          <div class="play-indicator">
+          <button type="button" class="play-indicator" :aria-label="'播放 ' + getSongName(song)" @click.stop="playSong(song)" @dblclick.stop>
             <svg v-if="isCurrentSong(song) && isPlaying" 
                  viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor">
               <path d="M304 176h80v672h-80zm336 0h80v672h-80z"/>
             </svg>
             <span v-else class="song-index">{{ index + 1 }}</span>
-          </div>
+          </button>
 
           <!-- 歌曲信息 -->
           <div class="song-info">
             <div class="song-title-line">
-              <div class="song-name">{{ getSongName(song) }}</div>
+              <button type="button" class="song-name" :title="getSongName(song)" @click.stop="$emit('search', song)" @dblclick.stop>{{ getSongName(song) }}</button>
               <SongBadges :song="song" />
             </div>
             <div class="song-artist">{{ getSingerNames(song) }}</div>
@@ -115,6 +115,7 @@ import contextMenuManager from '../../utils/contextMenuManager.js'
 
 export default {
   name: 'PlaylistDrawer',
+  emits: ['open', 'close', 'play', 'remove', 'clear', 'search'],
   components: {
     ContextMenu,
     SongBadges,
@@ -598,6 +599,9 @@ export default {
 
 .play-indicator {
   width: 20px;
+  min-height: 28px;
+  color: inherit;
+  border-radius: 3px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -625,7 +629,12 @@ export default {
   text-overflow: ellipsis;
   white-space: nowrap;
   margin-bottom: 4px;
+  text-align: left;
+  border-radius: 3px;
 }
+
+.song-name:hover, .play-indicator:hover { color: var(--color-primary); }
+.song-name:focus-visible, .play-indicator:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
 
 .song-title-line { display: flex; align-items: center; gap: 7px; min-width: 0; margin-bottom: 4px; }
 .song-title-line > .song-name { min-width: 0; margin-bottom: 0; }

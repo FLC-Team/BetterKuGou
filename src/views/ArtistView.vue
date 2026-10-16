@@ -39,7 +39,7 @@
               <ArtworkCover :src="song.cover || ''" class="song-cover" />
               <div class="song-info">
                 <div class="song-title-line">
-                  <button type="button" class="song-name" @click.stop="play(song)" @dblclick.stop :title="getSongName(song.name)">
+                  <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="getSongName(song.name)">
                     {{ getSongName(song.name) }}
                     <span v-if="song.relate_goods && song.relate_goods.some(g => g.level >= 5)" class="quality-badge">SQ</span>
                   </button>
@@ -87,7 +87,7 @@
               <ArtworkCover :src="song.cover || ''" class="song-cover" />
               <div class="song-info">
                 <div class="song-title-line">
-                  <button type="button" class="song-name" @click.stop="play(song)" @dblclick.stop :title="getSongName(song.name)">
+                  <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="getSongName(song.name)">
                     {{ getSongName(song.name) }}
                     <span v-if="song.relate_goods && song.relate_goods.some(g => g.level >= 5)" class="quality-badge">SQ</span>
                   </button>
