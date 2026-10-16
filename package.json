@@ -1,7 +1,7 @@
 {
   "name": "betterkugou",
   "private": true,
-  "version": "0.1.6-alpha-pre1",
+  "version": "0.1.7-alpha-pre1",
   "description": "BetterKuGou",
   "author": "鸢夏 <1925019494@qq.com>",
   "main": "electron/main.js",
