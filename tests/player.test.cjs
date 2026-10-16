@@ -141,6 +141,117 @@ function createFrameClock() {
   }
 }
 
+test('startup restores a paused track only after readiness without briefly playing or publishing zero', async t => {
+  const { component, player, audio, emitted } = createPlayer(t)
+  const listeners = qualityAudio(audio, player, { manualReady: true })
+  player.playlist = [song('A'), song('B')]
+  player.initialPlaybackState = { songHash: 'B', currentTime: 42, volume: 35, playMode: 'shuffle', isPlaying: false }
+  component.watch.song.handler.call(player, player.playlist[1])
+  await flush()
+  assert.equal(player.getPlaybackSnapshot(), null)
+  assert.equal(audio.playCount, 0)
+  assert.equal(emitted.filter(event => event.name === 'song-changed').length, 0)
+  audio.readyState = 4
+  audio.emit('canplay')
+  await flush()
+  assert.equal(player.currentSong.hash, 'B')
+  assert.equal(player.loadedSongHash, 'B')
+  assert.equal(player.currentIndex, 1)
+  assert.equal(audio.currentTime, 42)
+  assert.equal(audio.paused, true)
+  assert.equal(audio.playCount, 0)
+  assert.equal(audio.volume, .35)
+  assert.equal(player.getPlaybackSnapshot().playbackState.currentTime, 42)
+  assert.equal(player.getPlaybackSnapshot().playbackState.isPlaying, false)
+  assert.equal(player.playMode, 'shuffle')
+  assert.equal(listeners.get('canplay').size, 0)
+})
+
+test('startup seeks before the first play and consumes its state only for the initial matching song', async t => {
+  const { component, player, audio } = createPlayer(t)
+  qualityAudio(audio, player)
+  const playedAt = []
+  const play = audio.play.bind(audio)
+  audio.play = async () => { playedAt.push(audio.currentTime); await play() }
+  player.playlist = [song('A'), song('B')]
+  player.initialPlaybackState = { songHash: 'A', currentTime: 27, isPlaying: true }
+  component.watch.song.handler.call(player, player.playlist[0])
+  await flush()
+  assert.deepEqual(playedAt, [27])
+  assert.equal(player.getPlaybackSnapshot().playbackState.isPlaying, true)
+  component.watch.song.handler.call(player, player.playlist[1])
+  await flush()
+  component.watch.song.handler.call(player, player.playlist[0])
+  await flush()
+  assert.deepEqual(playedAt, [27, 0, 0])
+})
+
+test('a new selection, stop or unmount cancels startup readiness without leaking the old resume position', async t => {
+  for (const action of ['selection', 'stop', 'unmount']) {
+    const { component, player, audio, emitted } = createPlayer(t)
+    const listeners = qualityAudio(audio, player, { manualReady: true })
+    player.playlist = [song('A'), song('B')]
+    player.initialPlaybackState = { songHash: 'A', currentTime: 72, isPlaying: true }
+    component.watch.song.handler.call(player, player.playlist[0])
+    await flush()
+    if (action === 'selection') component.watch.song.handler.call(player, player.playlist[1])
+    else if (action === 'stop') player.stopPlayback()
+    else component.beforeUnmount.call(player)
+    await flush()
+    audio.readyState = 4
+    audio.emit('canplay')
+    await flush()
+    assert.equal(listeners.get('canplay').size, 0, action)
+    assert.equal(player.pendingTimers.size, 0, action)
+    assert.equal(emitted.some(event => event.name === 'song-changed' && event.value.hash === 'A'), false, action)
+    if (action === 'selection') {
+      assert.equal(player.currentSong.hash, 'B')
+      assert.equal(audio.currentTime, 0)
+    } else assert.equal(audio.src, '')
+  }
+})
+
+test('checkpoints retain the confirmed song and position through pending selection and temporary sources', async t => {
+  const nextUrl = deferred()
+  const nextPlay = deferred()
+  const { player, audio } = createPlayer(t, {
+    getSongUrl: hash => hash === 'B' ? nextUrl.promise : Promise.resolve({ status: 1, url: 'https://example.test/A.wav' })
+  })
+  qualityAudio(audio, player)
+  player.playlist = [song('A'), song('B')]
+  await player.requestSong(player.playlist[0])
+  audio.currentTime = 31
+  const pending = player.requestSong(player.playlist[1])
+  audio.currentTime = 34
+  assert.equal(player.getPlaybackSnapshot().currentSong.hash, 'A')
+  assert.equal(player.getPlaybackSnapshot().playbackState.currentTime, 34)
+  const play = audio.play.bind(audio)
+  audio.play = () => nextPlay.promise.then(play)
+  nextUrl.resolve({ status: 1, url: 'https://example.test/B.wav' })
+  await flush()
+  assert.equal(audio.currentTime, 0)
+  assert.equal(player.getPlaybackSnapshot().currentSong.hash, 'A')
+  assert.equal(player.getPlaybackSnapshot().playbackState.currentTime, 34)
+  assert.equal(player.getPlaybackSnapshot().playbackState.isPlaying, true)
+  nextPlay.resolve()
+  await pending
+  assert.equal(player.getPlaybackSnapshot().currentSong.hash, 'B')
+  assert.equal(player.getPlaybackSnapshot().playbackState.currentTime, 0)
+})
+
+test('native seek completion publishes a checkpoint for media controls and ignores source replacement', async t => {
+  const { player, audio, emitted } = createPlayer(t)
+  await player.requestSong(song('A'))
+  audio.currentTime = 57
+  player.handleSeeked()
+  assert.equal(player.currentTime, 57)
+  assert.equal(emitted.filter(event => event.name === 'playback-state-changed').length, 1)
+  player.isLoadingSong = true
+  audio.currentTime = 0
+  player.handleSeeked()
+  assert.equal(emitted.filter(event => event.name === 'playback-state-changed').length, 1)
+})
+
 /** Exercise lyric state against controllable animation frames and measurable text nodes. */
 function createLyric(t) {
   const frames = createFrameClock()

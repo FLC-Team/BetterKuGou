@@ -86,6 +86,9 @@ async function handleInstallPreparation(message) {
     // 改变歌曲、队列或跳转位置，重新保存，不能确认一个已过期的快照。
     while (isCurrent()) {
       const snapshot = collectSessionSnapshot()
+      if (hasPlayer.value && shouldPersistSession() && !Object.keys(snapshot).length) {
+        throw new Error('歌曲尚未加载完成，无法确认最终播放会话')
+      }
       const capturedAt = Date.now()
       if (Object.keys(snapshot).length) await saveSessionSnapshot(snapshot)
       if (!isCurrent()) return
@@ -381,6 +384,7 @@ const handleCreatePlaylist = () => {
 
 // 处理播放歌曲
 const handlePlay = (song) => {
+  restoredPlaybackState.value = null
   logger.trace('App', '🎵 [App.vue] handlePlay 调用:', song.name || song.filename)
   logger.trace('App', '🎵 [App.vue] 歌曲 hash:', song.hash)
   logger.trace('App', '🎵 [App.vue] 旧 currentSong:', currentSong.value?.name)
@@ -409,6 +413,7 @@ const handlePlayAll = async (songs) => {
 
   try {
     // 一次发布完整队列，避免 nextTick 微任务分批反复渲染和覆盖后续选歌。
+    restoredPlaybackState.value = null
     playlist.value = [...songs]
     playlistIndex.value = 0
     currentSong.value = songs[0]
@@ -478,6 +483,7 @@ const handleSearchRequest = async (keywords) => {
 // 处理清空播放列表
 const handleClearPlaylist = () => {
   logger.trace('App', '清空播放列表')
+  restoredPlaybackState.value = null
 
   playlist.value = []
   playlistIndex.value = 0
@@ -489,6 +495,7 @@ const handlePlaylistUpdated = (songs) => {
   if (!Array.isArray(songs)) return
   playlist.value = songs
   if (songs.length === 0) {
+    restoredPlaybackState.value = null
     playlistIndex.value = 0
     currentSong.value = null
     return
@@ -512,9 +519,11 @@ const {
 const defaultSessionTemplate = cloneDeep(getSettingsDefaults().session)
 const hasAppliedDefaultPage = ref(false)
 const hasRestoredSession = ref(false)
+const restoredPlaybackState = ref(null)
 let sessionPersistTimer = null
+let sessionCheckpointTimer = null
 let isRestoringSession = false
-let cleanupPlaybackSessionRestore = null
+const SESSION_CHECKPOINT_INTERVAL = 5000
 
 // 歌词界面显示状态
 const isLyricViewVisible = ref(false)
@@ -560,6 +569,7 @@ const handleNext = () => {
 const handleSongChanged = (song) => {
   logger.trace('App', '🎵 [App.vue] handleSongChanged - 歌曲已切换:', song.name || song.filename)
   logger.trace('App', '🎵 [App.vue] 歌曲 hash:', song.hash)
+  restoredPlaybackState.value = null
   // 避免对相同歌曲重复赋值，减少不必要的触发
   if (!currentSong.value || currentSong.value.hash !== song.hash) {
     currentSong.value = song
@@ -569,6 +579,7 @@ const handleSongChanged = (song) => {
   if (index !== -1) {
     playlistIndex.value = index
   }
+  void queueSessionPersist({ immediate: true })
 
   // 🔧 新的智能自动全屏逻辑：
   // - 如果用户已经在歌词界面，保持在歌词界面
@@ -882,6 +893,7 @@ onMounted(() => {
     window.addEventListener('beforeunload', handleBeforeUnload)
     window.addEventListener(KUGOU_AUTH_EXPIRED_EVENT, handleAuthExpired)
   }
+  startSessionCheckpoint()
 
   // 监听内存清理事件
   if (window.electronAPI && window.electronAPI.onMemoryCleanup) {
@@ -901,7 +913,7 @@ onBeforeUnmount(() => {
   shortcutGeneration += 1
   unsubscribeGlobalShortcut?.()
   unsubscribeMemoryCleanup?.()
-  cleanupPlaybackSessionRestore?.()
+  stopSessionCheckpoint()
   // 移除快捷键监听
   document.removeEventListener('keydown', handleKeyDown)
 
@@ -978,30 +990,27 @@ function shouldPersistSession() {
 }
 
 function collectSessionSnapshot() {
+  const player = musicPlayerRef.value
+  const confirmed = hasPlayer.value ? player?.getPlaybackSnapshot?.() : null
+  // 父级 currentSong 也承载待选目标。首曲尚未确认或新队列尚未接管音源时，
+  // 保留磁盘上的有效会话，不能把新歌身份与旧音源进度拼在一起。
+  if (hasPlayer.value && (!confirmed || !playlist.value.some(song => song.hash === confirmed.currentSong.hash))) return {}
   const snapshot = {}
   if (settings.software?.restorePlaylist) {
     snapshot.playlist = cloneDeep(playlist.value)
-    snapshot.playlistIndex = playlistIndex.value
-    snapshot.currentSong = cloneDeep(currentSong.value)
+    snapshot.currentSong = cloneDeep(confirmed?.currentSong || null)
+    snapshot.playlistIndex = confirmed ? playlist.value.findIndex(song => song.hash === confirmed.currentSong.hash) : 0
   }
 
   if (settings.software?.restorePlaybackState) {
-    const player = musicPlayerRef.value
-    const audio = player?.$refs?.audioPlayer
-    snapshot.playbackState = {
-      isPlaying: player?.isPlaying ?? false,
-      currentTime: audio?.currentTime ?? 0,
-      duration: audio?.duration ?? 0,
-      volume: player?.volume ?? 80,
-      playMode: player?.playMode ?? 'loop'
-    }
+    snapshot.playbackState = cloneDeep(confirmed?.playbackState || defaultSessionTemplate.playbackState)
   }
 
   return snapshot
 }
 
 function queueSessionPersist({ immediate = false } = {}) {
-  if (!settingsReady.value || preparingInstall.value) return
+  if (!settingsReady.value || !hasRestoredSession.value || isRestoringSession || isAppUnmounting || preparingInstall.value) return
 
   if (!shouldPersistSession()) {
     return
@@ -1020,8 +1029,9 @@ function queueSessionPersist({ immediate = false } = {}) {
   }
 
   if (immediate) {
-    void persist()
-    return
+    if (sessionPersistTimer) clearTimeout(sessionPersistTimer)
+    sessionPersistTimer = null
+    return persist()
   }
 
   if (sessionPersistTimer) {
@@ -1033,67 +1043,23 @@ function queueSessionPersist({ immediate = false } = {}) {
   }, 300)
 }
 
-async function applyPlaybackSession(state) {
-  if (!state) return
-  const player = musicPlayerRef.value
-  const audio = player?.$refs?.audioPlayer
-  if (!player || !audio) return
-  cleanupPlaybackSessionRestore?.()
-  const songHash = currentSong.value?.hash
-
-  const applyState = () => {
-    if (isAppUnmounting || currentSong.value?.hash !== songHash) return
-    if (state.playMode) {
-      player.playMode = state.playMode
-    }
-    if (typeof state.volume === 'number') {
-      player.volume = state.volume
-      audio.volume = Math.min(1, Math.max(0, state.volume / 100))
-    }
-    if (typeof state.currentTime === 'number') {
-      const targetTime = Math.max(0, state.currentTime)
-      audio.currentTime = Number.isFinite(targetTime) ? targetTime : 0
-      player.currentTime = audio.currentTime
-    }
-    if (typeof state.duration === 'number') {
-      player.duration = state.duration
-    }
-    if (state.isPlaying) {
-      audio.play().then(() => {
-        if (!isAppUnmounting && currentSong.value?.hash === songHash) player.isPlaying = !audio.paused
-      }).catch(error => {
-        if (isAppUnmounting || currentSong.value?.hash !== songHash) return
-        player.isPlaying = false
-        logger.warn('App', '恢复播放失败:', error)
-      })
-    } else {
-      audio.pause()
-      player.isPlaying = false
-    }
-  }
-
-  if (audio.readyState >= 1) {
-    applyState()
-    return
-  }
-
-  const handleLoaded = () => {
-    cleanupPlaybackSessionRestore?.()
-    applyState()
-  }
-
-  cleanupPlaybackSessionRestore = () => {
-    audio.removeEventListener('loadedmetadata', handleLoaded)
-    audio.removeEventListener('loadeddata', handleLoaded)
-    cleanupPlaybackSessionRestore = null
-  }
-
-  audio.addEventListener('loadedmetadata', handleLoaded)
-  audio.addEventListener('loadeddata', handleLoaded)
+/** 持续播放也定期落盘；等待本次保存后再计时，慢磁盘不会累积检查点任务。 */
+function startSessionCheckpoint() {
+  stopSessionCheckpoint()
+  sessionCheckpointTimer = setTimeout(async () => {
+    sessionCheckpointTimer = null
+    await queueSessionPersist({ immediate: true })
+    if (!isAppUnmounting) startSessionCheckpoint()
+  }, SESSION_CHECKPOINT_INTERVAL)
 }
 
-async function restoreSessionIfNeeded() {
-  if (hasRestoredSession.value || !settingsReady.value) return
+function stopSessionCheckpoint() {
+  if (sessionCheckpointTimer) clearTimeout(sessionCheckpointTimer)
+  sessionCheckpointTimer = null
+}
+
+function restoreSessionIfNeeded() {
+  if (hasRestoredSession.value || isRestoringSession || !settingsReady.value) return
   const session = getSessionSnapshot()
   const shouldRestorePlaylist = Boolean(settings.software?.restorePlaylist && Array.isArray(session.playlist) && session.playlist.length > 0)
   const shouldRestorePlayback = Boolean(settings.software?.restorePlaybackState && session.playbackState)
@@ -1112,12 +1078,10 @@ async function restoreSessionIfNeeded() {
       playlistIndex.value = playlistLength > 0 ? targetIndex : 0
       const fallbackSong = playlistLength > 0 ? (session.playlist?.[targetIndex] || session.playlist?.[0] || null) : null
       currentSong.value = cloneDeep(session.currentSong || fallbackSong)
-    }
-
-    await nextTick()
-
-    if (shouldRestorePlayback) {
-      await applyPlaybackSession(session.playbackState)
+      const actualIndex = playlist.value.findIndex(song => song.hash === currentSong.value?.hash)
+      if (actualIndex !== -1) playlistIndex.value = actualIndex
+      restoredPlaybackState.value = shouldRestorePlayback && currentSong.value?.hash
+        ? { ...cloneDeep(session.playbackState), songHash: currentSong.value.hash } : null
     }
 
     hasRestoredSession.value = true
@@ -1129,9 +1093,11 @@ async function restoreSessionIfNeeded() {
 watch(
   [settingsReady, () => settings.session, () => settings.software?.restorePlaylist, () => settings.software?.restorePlaybackState],
   () => {
-    void restoreSessionIfNeeded().catch(error => {
+    try {
+      restoreSessionIfNeeded()
+    } catch (error) {
       logger.error('App', '恢复播放会话失败:', error)
-    })
+    }
   },
   { immediate: true }
 )
@@ -1151,7 +1117,7 @@ watch(playlist, () => {
 }, { deep: true })
 
 watch(currentSong, () => {
-  cleanupPlaybackSessionRestore?.()
+  if (currentSong.value?.hash !== restoredPlaybackState.value?.songHash) restoredPlaybackState.value = null
   if (isRestoringSession) return
   queueSessionPersist({ immediate: true })
 })
@@ -1172,7 +1138,7 @@ watch(currentSong, (newVal, oldVal) => {
 }, { deep: true })
 
 watch(
-  () => musicPlayerRef.value?.isPlaying,
+  [() => musicPlayerRef.value?.isPlaying, () => musicPlayerRef.value?.volume, () => musicPlayerRef.value?.playMode],
   () => {
     if (isRestoringSession) return
     queueSessionPersist({ immediate: true })
@@ -1379,9 +1345,11 @@ function performMemoryCleanup() {
         ref="musicPlayerRef"
         :song="currentSong"
         :playlist="playlist"
+        :initial-playback-state="restoredPlaybackState"
         @previous="handlePrevious"
         @next="handleNext"
         @song-changed="handleSongChanged"
+        @playback-state-changed="queueSessionPersist({ immediate: true })"
         @toggle-playlist="handleTogglePlaylist"
         @toggle-favorite="handleToggleFavorite"
         @clear-playlist="handleClearPlaylist"
