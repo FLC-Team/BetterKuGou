@@ -1,56 +1,71 @@
 <template>
   <section class="app-updates" aria-labelledby="app-updates-heading">
     <header class="updates-heading">
-      <div><h3 id="app-updates-heading">应用更新</h3><p class="updates-description">优先通过 git.tangbai.cc 获取更新，失败后尝试 GitHub 原站。</p></div>
-      <span class="current-version">当前版本 v{{ state.currentVersion }}</span>
+      <div><p class="updates-eyebrow">KEEP THE MUSIC GOING</p><h3 id="app-updates-heading">应用更新</h3><p class="updates-description">检查新版本，按你的节奏更新。</p></div>
+      <img class="updates-brand" src="/logo.png" alt="" width="40" height="40">
     </header>
 
+    <div class="updates-result" :class="{ 'is-error': state.status === 'error' || actionError, 'is-ready': state.status === 'downloaded' }" :aria-busy="isBusy">
+      <div class="updates-overview">
+        <div class="current-version"><span class="version-label">当前版本</span><strong>v{{ state.currentVersion }}</strong><span class="version-product">BetterKuGou</span></div>
+        <div class="updates-summary">
+          <div class="updates-state-line"><span class="version-label">{{ state.release ? '可用版本' : '更新状态' }}</span><span class="updates-channel">{{ channelLabel }}</span></div>
+          <h4 class="updates-version">{{ available ? statusTitle : '桌面客户端专属' }}</h4>
+          <p v-if="available" class="updates-status" role="status" aria-live="polite"><span class="status-dot" :class="{ 'is-active': isBusy }" aria-hidden="true"></span>{{ statusText }}</p>
+          <p v-else class="updates-note">检查和下载更新仅在桌面客户端中可用。</p>
+        </div>
+      </div>
+
+      <template v-if="available">
+        <p v-if="actionError || state.error" class="updates-error" role="alert">{{ actionError || errorText(state.error) }}</p>
+        <p v-if="actionMessage" class="updates-feedback" role="status">{{ actionMessage }}</p>
+
+        <div v-if="state.status === 'downloading'" class="updates-progress">
+          <div class="progress-heading"><span>下载进度</span><strong>{{ hasDownloadProgress ? downloadPercent.toFixed(1) + '%' : '准备下载…' }}</strong></div>
+          <progress :value="hasDownloadProgress ? downloadPercent : undefined" max="100" aria-label="更新包下载进度"></progress>
+          <div class="progress-details"><span>{{ formatBytes(state.progress?.received) }} / {{ formatBytes(state.progress?.total) }}</span><span>可以离开此页，下载会在后台继续。</span></div>
+        </div>
+
+        <div v-if="assets.length > 1" class="asset-choice"><label for="update-asset">安装包格式</label><select id="update-asset" v-model="chosenAssetId" :disabled="isBusy || !!actionPending"><option v-for="asset in assets" :key="asset.id" :value="String(asset.id)">{{ assetLabel(asset) }}</option></select></div>
+        <p v-else-if="assets.length === 1 && !state.downloaded" class="asset-detail">{{ assetLabel(assets[0]) }}</p>
+        <p v-else-if="state.release && !assets.length" class="updates-note asset-empty">此版本没有适用于当前系统和架构的安装包，可在发布页查看。</p>
+
+        <div v-if="state.downloaded" class="downloaded-file"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8zM14 3v5h5M9 13h6M9 17h4" /></svg><div><span class="downloaded-label">更新包已下载</span><strong>{{ state.downloaded.name }}</strong><p>{{ canInstall ? '点击手动安装并确认后才会打开安装包。' : '请打开所在文件夹，自行处理安装包。' }}</p></div></div>
+
+        <div class="updates-actions">
+          <button type="button" :class="['update-button', { 'is-primary': !canDownload && !canInstall && !isBusy }]" @click="checkForUpdates" :disabled="isBusy || !!actionPending">{{ state.status === 'checking' ? '正在检查…' : '检查更新' }}</button>
+          <button v-if="canDownload" type="button" class="update-button is-primary" @click="downloadUpdate" :disabled="isBusy || !!actionPending || !selectedAsset">下载更新包</button>
+          <button v-if="isBusy" type="button" class="update-button" @click="cancelUpdate" :disabled="cancelPending">取消</button>
+          <button v-if="state.downloaded" type="button" class="update-button" @click="revealDownload" :disabled="!!actionPending">打开所在文件夹</button>
+          <button v-if="canInstall" type="button" class="update-button is-primary" @click="installUpdate" :disabled="!!actionPending">{{ actionPending === 'requestInstall' ? '等待确认…' : '手动安装' }}</button>
+        </div>
+        <div class="updates-metadata"><span v-if="state.checkedAt">上次检查：{{ checkedAtLabel }}</span><span v-if="sourceLabel">{{ sourceLabel }}</span></div>
+      </template>
+    </div>
+
+    <article v-if="available && state.release" class="update-release" aria-labelledby="release-notes-heading">
+      <header class="release-heading"><div><p class="updates-eyebrow">WHAT’S NEW</p><h4 id="release-notes-heading">{{ state.release.name || '新版本' }}</h4><span v-if="publishedAtLabel" class="release-date">{{ publishedAtLabel }} 发布</span></div><button type="button" class="updates-link" @click="openReleasePage" :disabled="!!actionPending">查看发布页 ↗</button></header>
+      <details v-if="state.release.notes" :key="state.release.id" class="release-notes" open><summary>更新说明<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg></summary><div class="release-notes-body" tabindex="0" aria-label="版本更新说明"><p>{{ state.release.notes }}</p></div></details>
+      <p v-else class="updates-note">此版本暂未提供更新说明。</p>
+    </article>
+
     <fieldset class="updates-preferences" :disabled="!available">
+      <legend>更新偏好</legend>
       <div class="updates-row">
-        <div><label for="update-channel">更新渠道</label><p>正式版只接收稳定更新；测试版同时接收正式版与预发布。</p></div>
-        <select id="update-channel" :value="preferences.channel" @change="setPreference('channel', $event.target.value)"><option value="stable">正式版</option><option value="beta">测试版</option></select>
+        <div><label for="update-channel">更新渠道</label><p id="update-channel-desc">正式版更稳定；测试版可提前体验新功能。</p></div>
+        <select id="update-channel" :value="preferences.channel" aria-describedby="update-channel-desc" @change="setPreference('channel', $event.target.value)"><option value="stable">正式版</option><option value="beta">测试版</option></select>
       </div>
       <div class="updates-row">
-        <div><label for="update-auto-check">自动检查更新</label><p id="update-auto-check-desc">启动后检查，此后每 24 小时检查一次；不会打断播放。</p></div>
+        <div><label for="update-auto-check">自动检查更新</label><p id="update-auto-check-desc">启动后 10 秒检查，此后每 24 小时一次。</p></div>
         <label class="updates-switch"><input id="update-auto-check" type="checkbox" :checked="preferences.autoCheck" aria-describedby="update-auto-check-desc" @change="setPreference('autoCheck', $event.target.checked)"><span></span></label>
       </div>
       <div class="updates-row">
-        <div><label for="update-auto-download">自动下载更新包</label><p id="update-auto-download-desc">发现新版本后自动下载。下载完成后仍需你手动安装。</p></div>
+        <div><label for="update-auto-download">自动下载更新包</label><p id="update-auto-download-desc">新版本在后台下载，安装时由你确认。</p></div>
         <label class="updates-switch"><input id="update-auto-download" type="checkbox" :checked="preferences.autoDownload" aria-describedby="update-auto-download-desc" @change="setPreference('autoDownload', $event.target.checked)"><span></span></label>
       </div>
     </fieldset>
-
-    <p v-if="!available" class="updates-note">检查和下载更新仅在桌面客户端中可用。</p>
-    <div v-else class="updates-result" :aria-busy="isBusy">
-      <div class="updates-summary"><p class="updates-status" role="status" aria-live="polite">{{ statusText }}</p><span v-if="sourceLabel" class="updates-source">{{ sourceLabel }}</span></div>
-      <p v-if="state.checkedAt" class="updates-note">上次检查：{{ checkedAtLabel }}</p>
-      <p v-if="actionError || state.error" class="updates-error" role="alert">{{ actionError || errorText(state.error) }}</p>
-      <p v-if="actionMessage" class="updates-note" role="status">{{ actionMessage }}</p>
-
-      <article v-if="state.release" class="update-release">
-        <div class="release-heading"><h4>{{ state.release.name || '新版本' }}</h4><span>v{{ state.release.version }}</span></div>
-        <details v-if="state.release.notes" class="release-notes"><summary>更新说明</summary><p>{{ state.release.notes }}</p></details>
-        <div v-if="assets.length > 1" class="updates-row asset-choice"><label for="update-asset">安装包格式</label><select id="update-asset" v-model="chosenAssetId" :disabled="isBusy || !!actionPending"><option v-for="asset in assets" :key="asset.id" :value="String(asset.id)">{{ assetLabel(asset) }}</option></select></div>
-        <p v-else-if="assets.length === 1" class="updates-note">{{ assetLabel(assets[0]) }}</p>
-        <p v-else class="updates-note">此版本没有适用于当前系统和架构的安装包，可在发布页查看。</p>
-        <button type="button" class="updates-link" @click="openReleasePage" :disabled="!!actionPending">查看发布页 ↗</button>
-      </article>
-
-      <div v-if="state.status === 'downloading'" class="updates-progress">
-        <progress :value="downloadPercent" max="100" aria-label="更新包下载进度"></progress>
-        <div><span>{{ downloadPercent.toFixed(1) }}%</span><span>{{ formatBytes(state.progress?.received) }} / {{ formatBytes(state.progress?.total) }}</span></div>
-      </div>
-      <p v-if="state.downloaded" class="updates-note">已下载：{{ state.downloaded.name }}。{{ canInstall ? '点击手动安装并确认后才会打开安装包。' : '请打开所在文件夹，自行处理安装包。' }}</p>
-
-      <div class="updates-actions">
-        <button type="button" @click="checkForUpdates" :disabled="isBusy || !!actionPending">{{ state.status === 'checking' ? '正在检查…' : '检查更新' }}</button>
-        <button v-if="canDownload" type="button" @click="downloadUpdate" :disabled="isBusy || !!actionPending || !selectedAsset">下载更新包</button>
-        <button v-if="isBusy" type="button" @click="cancelUpdate" :disabled="cancelPending">取消</button>
-        <button v-if="state.downloaded" type="button" @click="revealDownload" :disabled="!!actionPending">打开所在文件夹</button>
-        <button v-if="canInstall" type="button" @click="installUpdate" :disabled="!!actionPending">{{ actionPending === 'requestInstall' ? '等待确认…' : '手动安装' }}</button>
-      </div>
-      <p class="updates-note install-boundary">应用只检查和下载更新，安装始终由你手动发起。</p>
-    </div>
+    <p class="updates-footnote">安装由你手动发起，不会自动退出应用。</p>
+    <details class="updates-routing"><summary>更新来源</summary><p>优先通过 git.tangbai.cc 获取更新，失败后尝试 GitHub 原站。</p></details>
   </section>
 </template>
 
@@ -83,6 +98,11 @@ const canDownload = computed(() => assets.value.length > 0 && (state.value.statu
   || (selectedAsset.value && String(selectedAsset.value.id) !== String(state.value.selectedAssetId))))
 const canInstall = computed(() => state.value.status === 'downloaded' && ['exe', 'dmg', 'deb', 'rpm'].includes(String(state.value.downloaded?.format).toLowerCase()))
 const downloadPercent = computed(() => Math.max(0, Math.min(100, Number(state.value.progress?.percent) || 0)))
+const hasDownloadProgress = computed(() => state.value.progress?.percent != null && Number.isFinite(Number(state.value.progress.percent)))
+const channelLabel = computed(() => state.value.channel === 'beta' ? '测试版' : '正式版')
+const statusTitle = computed(() => state.value.release ? `v${state.value.release.version}` : ({
+  idle: '发现更好的版本', checking: '正在检查新版本', upToDate: '已是当前最新版本', error: '更新暂未完成'
+})[state.value.status] || '应用更新')
 const sourceLabel = computed(() => {
   const source = state.value.status === 'downloading' ? state.value.progress?.source : state.value.source
   return ['proxy', 'mirror'].includes(source) ? '来源：git.tangbai.cc'
@@ -92,11 +112,16 @@ const checkedAtLabel = computed(() => {
   const date = new Date(state.value.checkedAt)
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleString()
 })
+const publishedAtLabel = computed(() => {
+  if (!state.value.release?.publishedAt) return ''
+  const date = new Date(state.value.release.publishedAt)
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString()
+})
 const statusText = computed(() => ({
   idle: state.value.message || '随时检查是否有新版本。',
   checking: '正在检查新版本…',
   upToDate: '当前渠道暂无更高版本。',
-  available: `发现新版本 v${state.value.release?.version || ''}`,
+  available: '新版本已发布，可以下载更新包。',
   downloading: '正在下载更新包…',
   downloaded: '更新包已准备好，等待你手动安装。',
   error: state.value.message || '更新操作未完成，请重试。'
@@ -212,47 +237,4 @@ onBeforeUnmount(() => {
 })
 </script>
 
-<style scoped>
-.app-updates { margin-top: 21px; padding-top: 23px; border-top: 1px solid var(--color-border); min-width: 0; }
-.updates-heading, .updates-row, .updates-summary, .release-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
-.updates-heading { align-items: flex-start; flex-wrap: wrap; }
-.updates-heading h3 { margin: 0; font-size: var(--font-size-sm); font-weight: 600; }
-.updates-description, .updates-row p, .updates-note { margin-top: 5px; color: var(--color-text-secondary); font-size: calc(var(--font-size-xs) - 1px); line-height: 1.8; overflow-wrap: anywhere; }
-.current-version, .updates-source { color: var(--color-text-tertiary); font-size: 10px; line-height: 1.8; overflow-wrap: anywhere; }
-.updates-preferences { margin: 9px 0 0; padding: 0; border: 0; min-width: 0; }
-.updates-preferences:disabled { opacity: .55; }
-.updates-row { min-width: 0; padding: 17px 0; }
-.updates-row + .updates-row { border-top: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent); }
-.updates-row > div { flex: 1; min-width: 0; }
-.updates-row label { color: var(--color-text); font-size: var(--font-size-sm); font-weight: 500; line-height: 1.7; }
-.updates-row select { max-width: min(60%, 270px); min-width: 120px; min-height: 36px; padding: 8px 11px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); color: var(--color-text); background: var(--color-background-light); font-size: var(--font-size-xs); }
-.updates-row label.updates-switch { position: relative; display: block; flex: 0 0 37px; width: 37px; height: 22px; cursor: pointer; }
-.updates-switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
-.updates-switch span { display: block; width: 100%; height: 100%; border: 1px solid var(--color-border); border-radius: 20px; background: var(--color-background-lighter); pointer-events: none; transition: background .18s; }
-.updates-switch span::before { content: ''; position: absolute; width: 14px; height: 14px; left: 4px; top: 4px; border-radius: 50%; background: var(--color-text-secondary); transition: transform .18s; }
-.updates-switch input:checked + span { border-color: transparent; background: var(--color-primary); }
-.updates-switch input:checked + span::before { transform: translateX(15px); background: var(--color-on-primary); }
-.updates-switch input:focus-visible + span, button:focus-visible, select:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
-.updates-result { margin-top: 8px; padding: 17px; border: 1px solid var(--color-border); border-radius: var(--radius-md); }
-.updates-summary { flex-wrap: wrap; gap: 6px 15px; }
-.updates-status { color: var(--color-text); font-size: var(--font-size-xs); line-height: 1.8; }
-.updates-error { margin-top: 10px; color: var(--color-error); font-size: var(--font-size-xs); line-height: 1.8; overflow-wrap: anywhere; }
-.update-release { margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--color-border); }
-.release-heading { align-items: baseline; flex-wrap: wrap; gap: 5px 15px; color: var(--color-text-secondary); font-size: 11px; }
-.release-heading h4 { margin: 0; font-size: var(--font-size-sm); color: var(--color-text); overflow-wrap: anywhere; }
-.release-notes { margin: 14px 0; color: var(--color-text-secondary); font-size: var(--font-size-xs); line-height: 1.8; }
-.release-notes summary { cursor: pointer; color: var(--color-text); }
-.release-notes p { max-height: 240px; overflow-y: auto; margin-top: 10px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
-.asset-choice { gap: 12px; padding-bottom: 5px; }
-.updates-link { margin-top: 9px; color: var(--color-primary); font-size: 11px; }
-.updates-progress { margin-top: 17px; }
-.updates-progress progress { display: block; width: 100%; height: 6px; accent-color: var(--color-primary); }
-.updates-progress > div { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; margin-top: 8px; color: var(--color-text-secondary); font-size: 10px; font-variant-numeric: tabular-nums; }
-.updates-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
-.updates-actions button { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; padding: 7px 14px; border: 1px solid var(--color-border); border-radius: 40px; color: var(--color-text); font-size: 11px; }
-.updates-actions button:hover:not(:disabled) { border-color: var(--color-primary); color: var(--color-primary); }
-button:disabled { opacity: .45; cursor: default; }
-.install-boundary { margin-top: 13px; }
-@container (max-width: 430px) { .updates-row { gap: 15px; } .updates-row label { font-size: 12px; } .updates-result { padding: 13px; } .updates-row select { min-width: 105px; width: 120px; } }
-@media (prefers-reduced-motion: reduce) { .updates-switch span, .updates-switch span::before { transition: none; } }
-</style>
+<style scoped src="./AppUpdates.css"></style>

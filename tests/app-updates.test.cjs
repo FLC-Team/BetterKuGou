@@ -10,7 +10,8 @@ const packageInfo = require('../package.json')
 const quietLogger = { error() {} }
 const filename = path.join(root, 'src/components/common/AppUpdates.vue')
 const descriptor = parse(fs.readFileSync(filename, 'utf8'), { filename }).descriptor
-const compiled = compileScript(descriptor, { id: 'app-updates-test', inlineTemplate: true }).content
+// Keep real template behavior while avoiding DOM-only static HTML insertion in the in-memory host.
+const compiled = compileScript(descriptor, { id: 'app-updates-test', inlineTemplate: true, templateOptions: { compilerOptions: { hoistStatic: false } } }).content
   .replace(/^import\s*\{([^}]+)\}\s*from\s*['"]vue['"]\s*;?\s*$/gm, (_match, names) => `const { ${names.replace(/\bas\b/g, ':')} } = Vue`)
   .replace(/^import\b[^\n]*$/gm, '')
   .replace('export default', 'return')
@@ -303,4 +304,46 @@ test('missing platform packages link to the fixed project releases and release n
   assert.equal(ui.button('下载更新包'), undefined)
   await ui.click('查看发布页 ↗')
   assert.deepEqual(ui.opened, ['https://github.com/FLC-Team/BetterKuGou/releases'])
+})
+
+test('unknown download progress stays indeterminate and a real zero is distinct from missing progress', async t => {
+  const ui = mountUpdates(t, { snapshot: state(1, { status: 'downloading', release: release(), progress: { received: 0, total: 0, percent: null } }) })
+  await flush()
+  const progress = () => ui.nodes().find(node => node.type === 'progress')
+  assert.equal(progress().props.value, undefined, 'native progress must not claim 0% before a total is known')
+  assert.match(ui.text(), /准备下载…/)
+  assert.doesNotMatch(ui.text(), /0\.0%/)
+  ui.publish(state(2, { status: 'downloading', release: release(), progress: { received: 0, total: 1024, percent: 0 } }))
+  await flush()
+  assert.equal(progress().props.value, 0)
+  assert.match(ui.text(), /0\.0%/)
+  ui.publish(state(3, { status: 'downloading', release: release(), progress: { received: 1024, total: 1024, percent: 130 } }))
+  await flush()
+  assert.equal(progress().props.value, 100, 'presented progress remains within native bounds')
+  assert.equal(progress().props['aria-label'], '更新包下载进度')
+})
+
+test('release notes start expanded with keyboard access and malformed publication dates stay hidden', async t => {
+  const ui = mountUpdates(t, { snapshot: state(1, { status: 'available', release: { ...release(), publishedAt: 'not-a-date' } }) })
+  await flush()
+  const notes = ui.nodes().find(node => node.type === 'details' && node.props.class === 'release-notes')
+  assert.ok(notes)
+  assert.equal(notes.props.open, '')
+  const body = ui.nodes().find(node => node.props['aria-label'] === '版本更新说明')
+  assert.equal(body.props.tabindex, '0')
+  assert.match(ui.text(), /新的更新说明/)
+  assert.doesNotMatch(ui.text(), /Invalid Date/)
+})
+
+test('the active channel badge follows committed service state while the channel control keeps the draft', async t => {
+  const ui = mountUpdates(t)
+  await flush()
+  ui.byId('update-channel').props.onChange({ target: { value: 'beta' } })
+  await vue.nextTick()
+  const badge = () => ui.nodes().find(node => node.type === 'span' && node.props.class === 'updates-channel')
+  assert.equal(ui.byId('update-channel').props.value, 'beta')
+  assert.equal(badge().text, '正式版', 'unsaved channel must not appear applied to current results')
+  ui.publish(state(2, { channel: 'beta' }))
+  await flush()
+  assert.equal(badge().text, '测试版')
 })

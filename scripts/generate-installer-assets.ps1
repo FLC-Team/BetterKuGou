@@ -5,7 +5,7 @@ Run on Windows with PowerShell 7: pwsh -NoProfile -File scripts/generate-install
 Packaging consumes the committed files; macOS and Linux do not run this script.
 #>
 [CmdletBinding()]
-param()
+param([switch] $WindowsOnly)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -100,12 +100,18 @@ function Save-DmgBackground([int] $scale, [string] $filename) {
 }
 
 try {
-  Save-WindowsLogo 'logo-light.bmp' '#F4F7FC'
-  Save-WindowsLogo 'logo-dark.bmp' '#142238'
-  Save-DmgBackground 1 'dmg-background.png'
-  Save-DmgBackground 2 'dmg-background@2x.png'
+  Save-WindowsLogo 'logo-light.bmp' '#F1ECF4'
+  Save-WindowsLogo 'logo-dark.bmp' '#29252E'
+  if (-not $WindowsOnly) {
+    Save-DmgBackground 1 'dmg-background.png'
+    Save-DmgBackground 2 'dmg-background@2x.png'
+  }
 } finally {
   $brandLogo.Dispose()
 }
 
-Write-Output 'Installer artwork generated: two 128 x 128 BMPs and 640 x 420 / 1280 x 840 DMG backgrounds.'
+if ($WindowsOnly) {
+  Write-Output 'Installer artwork generated: two 128 x 128 Windows BMPs.'
+} else {
+  Write-Output 'Installer artwork generated: two 128 x 128 BMPs and 640 x 420 / 1280 x 840 DMG backgrounds.'
+}
