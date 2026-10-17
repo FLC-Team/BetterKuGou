@@ -207,6 +207,7 @@
       @pause="handlePause"
       @timeupdate="handleTimeUpdate"
       @seeked="handleSeeked"
+      @error="handleAudioError"
     ></audio>
     
     <!-- 播放列表抽屉 -->

@@ -57,6 +57,7 @@ function loadMain({ packaged = false } = {}) {
         nativeImage: { createFromPath: () => ({}) }, Tray: class {}, Menu: {}
       }
       if (name === './logger') return quiet
+      if (name === './services/playlistCacheService') return { createPlaylistCacheService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/backendService') return { createBackendService: () => ({ start() {}, stop: async () => {} }) }
       if (name === './services/updateService') return { createUpdateService: opts => { options = opts; return service } }
       if (name === './settingsStore') return { getSettings: () => settings, onSettingsChange: callback => { listener = callback; return () => {} } }

@@ -35,6 +35,10 @@
     ],
     "extraResources": [
       {
+        "from": "electron/services/playlistCacheWorker.cjs",
+        "to": "playlist-cache/playlistCacheWorker.cjs"
+      },
+      {
         "from": "electron/services/updateWorker.cjs",
         "to": "updater/updateWorker.cjs"
       },

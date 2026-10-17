@@ -90,6 +90,10 @@ function ensureSchema(settings) {
   if (!isPlainObject(normalized.playback)) normalized.playback = cloneDeep(defaultsCache.playback)
   normalized.playback.showTranslation = typeof normalized.playback.showTranslation === 'boolean' ? normalized.playback.showTranslation : true
   normalized.playback.quality = ['128', '320', 'flac', 'high'].includes(normalized.playback.quality) ? normalized.playback.quality : '128'
+  if (!isPlainObject(normalized.download)) normalized.download = cloneDeep(defaultsCache.download)
+  normalized.download.offlinePlaylistCacheEnabled = typeof normalized.download.offlinePlaylistCacheEnabled === 'boolean' ? normalized.download.offlinePlaylistCacheEnabled : true
+  normalized.download.cacheSizeIndex = Number.isInteger(normalized.download.cacheSizeIndex) && normalized.download.cacheSizeIndex >= 0 && normalized.download.cacheSizeIndex <= 5 ? normalized.download.cacheSizeIndex : 0
+  normalized.download.concurrentDownloads = Number.isInteger(normalized.download.concurrentDownloads) ? Math.min(10, Math.max(1, normalized.download.concurrentDownloads)) : 3
   normalized.desktopLyrics = {
     fontSize: ['small', 'medium', 'large'].includes(desktop.fontSize) ? desktop.fontSize : 'medium',
     theme: ['classic', 'gradient', 'minimal'].includes(desktop.theme) ? desktop.theme : 'classic',
@@ -176,6 +180,7 @@ function createDefaults(app) {
       locked: false
     },
     download: {
+      offlinePlaylistCacheEnabled: true,
       downloadPath: path.join(downloadsDir, 'BetterKugou'),
       cachePath: cacheDir,
       cacheSizeIndex: 0,

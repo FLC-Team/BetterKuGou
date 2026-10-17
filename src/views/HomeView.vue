@@ -26,7 +26,7 @@
             <span class="record-disc"><span class="record-label">BK<br /><small>DAILY SOUNDS</small></span></span>
             <span class="record-sleeve">
               <span class="sleeve-pattern"></span>
-              <img v-if="dailyCover && !failedImages[fixImgUrl(dailyCover, 400)]" :src="fixImgUrl(dailyCover, 400)" alt="" @error="markImageFailed(dailyCover, 400)" />
+              <ArtworkCover v-if="dailyCover && !failedImages[fixImgUrl(dailyCover, 400)]" image-only :src="fixImgUrl(dailyCover, 400)" loading="eager" @error="markImageFailed(dailyCover, 400)" />
               <span v-else class="sleeve-lettering"><small>THE DAILY</small><strong>好音乐<br />日常听。</strong><span>SELECTED FOR YOU</span></span>
               <span class="sleeve-caption">DAILY MIX <span>↗</span></span>
             </span>
@@ -71,7 +71,7 @@
             <button class="song-play" type="button" :aria-label="`播放 ${song.songname || song.filename || song.name || '歌曲'}`" @click="handleSongClick(song)">
               <span class="song-cover">
                 <span class="cover-placeholder" aria-hidden="true"><span>♪</span></span>
-                <img v-if="song.imgurl && !failedImages[fixImgUrl(song.imgurl, 400)]" :src="fixImgUrl(song.imgurl, 400)" alt="" loading="lazy" @error="markImageFailed(song.imgurl, 400)" />
+                <ArtworkCover v-if="song.imgurl && !failedImages[fixImgUrl(song.imgurl, 400)]" image-only :src="fixImgUrl(song.imgurl, 400)" loading="lazy" @error="markImageFailed(song.imgurl, 400)" />
                 <span class="play-overlay" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 5 11 7-11 7z" /></svg></span>
               </span>
             </button>
@@ -91,7 +91,7 @@
         <div v-else-if="!rankList.length" class="rank-empty"><span>暂时没有榜单，稍后再来听听。</span><button class="text-action" type="button" @click="loadRankList">重新加载 <span aria-hidden="true">↗</span></button></div>
         <div v-else id="rank-grid" class="rank-grid">
           <button v-for="(rank, index) in visibleRanks" :key="rank.rankid" class="rank-item" type="button" @click="handleRankClick(rank)">
-            <span class="rank-cover"><span aria-hidden="true">{{ String(index + 1).padStart(2, '0') }}</span><img v-if="rank.imgurl && !failedImages[fixImgUrl(rank.imgurl)]" :src="fixImgUrl(rank.imgurl)" alt="" loading="lazy" @error="markImageFailed(rank.imgurl)" /></span>
+            <span class="rank-cover"><span aria-hidden="true">{{ String(index + 1).padStart(2, '0') }}</span><ArtworkCover v-if="rank.imgurl && !failedImages[fixImgUrl(rank.imgurl)]" image-only :src="fixImgUrl(rank.imgurl)" loading="lazy" @error="markImageFailed(rank.imgurl)" /></span>
             <span class="rank-info"><span class="rank-name">{{ rank.rankname }}</span><span class="rank-description">{{ rank.intro || '发现榜单里的热门旋律' }}</span></span>
             <svg class="rank-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
           </button>
@@ -104,6 +104,7 @@
 <script>
 import SongBadges from '../components/common/SongBadges.vue'
 import ArtistLinks from '../components/common/ArtistLinks.vue'
+import ArtworkCover from '../components/common/ArtworkCover.vue'
 import { logger } from '../utils/logger.js'
 
 import { 
@@ -123,7 +124,7 @@ function getAccountIdentity() {
 export default {
   name: 'HomeView',
   emits: ['navigate', 'play', 'search'],
-  components: { SongBadges, ArtistLinks },
+  components: { SongBadges, ArtistLinks, ArtworkCover },
   props: {
     favoritesRevision: { type: Number, default: 0 }
   },

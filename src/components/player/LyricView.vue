@@ -3,11 +3,11 @@
     <!-- 模糊背景 -->
     <div class="lyric-background">
       <Transition name="track-background" @before-leave="retireTrackLayer">
-        <img v-if="coverUrl"
+        <ArtworkCover v-if="coverUrl" image-only loading="eager"
              :key="coverUrl"
              :src="coverUrl"
              alt=""
-             class="background-image">
+             class="background-image" />
       </Transition>
       <div class="background-overlay"></div>
     </div>
@@ -20,12 +20,12 @@
         <div class="album-cover-wrapper">
           <Transition :name="trackTransitionName" @before-leave="retireTrackLayer">
             <div :key="song?.hash || 'empty'" class="track-piece track-cover">
-              <img v-if="coverUrl"
+              <ArtworkCover v-if="coverUrl" image-only loading="eager"
                    :src="coverUrl"
                    :data-track-key="song?.hash"
-                   alt="专辑封面"
+                   label="专辑封面"
                    @error="handleCoverError"
-                   class="album-cover">
+                   class="album-cover" />
               <div v-else class="album-cover-placeholder">
                 <svg viewBox="0 0 1024 1024" width="120" height="120" fill="currentColor">
                   <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64z"/>

@@ -8,6 +8,8 @@ import ContextMenu from '../../components/common/ContextMenu.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import { useSettingsStore } from '../../stores/settingsStore.js'
 import { filterSongs } from '../../utils/songMetadata.js'
+import { callPlaylistCache } from '../../utils/playlistCache.js'
+import { cloneDeep } from '../../utils/objectUtils.js'
 
 // 引入图标
 import nextplayIcon from '../../assets/icons/nextplay.svg'
@@ -29,7 +31,8 @@ export default {
     playlistId: { type: [String, Number], default: null },
     playlistName: { type: String, default: '' },
     userPlaylists: { type: Array, default: null },
-    playlistsLoaded: { type: Boolean, default: true }
+    playlistsLoaded: { type: Boolean, default: true },
+    playlistCacheState: { type: Object, default: null }
   },
   setup() {
     const { settings } = useSettingsStore()
@@ -47,6 +50,11 @@ export default {
       playSongTimer: null,
       menuGeneration: 0,
       errorMessage: '',
+      cacheErrorMessage: '',
+      cacheActionPending: false,
+      cacheSnapshotRead: false,
+      hasOfflineSnapshot: false,
+      cacheWriteFailed: false,
       favoriteList: [],
       searchQuery: '',
       favoritePlaylistId: null, // 收藏歌单的 ID
@@ -85,6 +93,33 @@ export default {
       return filterSongs(this.sortedFavoriteList, this.searchQuery)
     },
     hasSearchQuery() { return this.searchQuery.trim().length > 0 },
+    offlineCacheAvailable() {
+      return typeof window !== 'undefined' && !!window.electronAPI?.playlistCache
+    },
+    offlineCacheEntry() {
+      if (!this.offlineCacheAvailable) return null
+      const entries = this.playlistCacheState?.playlists || []
+      const id = this.favoritePlaylistId ?? this.playlistId
+      return entries.find(item => id != null && String(item.id) === String(id)) ||
+        (!this.isPlaylistView ? entries.find(item => item.isFavorite) : null) || null
+    },
+    offlineCacheBusy() {
+      return ['queued', 'pending', 'downloading', 'caching'].includes(this.offlineCacheEntry?.status)
+    },
+    offlineSongHashes() {
+      return new Set((this.offlineCacheEntry?.hashes || []).map(hash => String(hash).toLowerCase()))
+    },
+    offlineCacheStatusText() {
+      return ({ paused: '已暂停缓存', space: '缓存空间已满', 'waiting-network': '等待网络恢复',
+        failed: '部分歌曲暂未缓存' })[this.offlineCacheEntry?.status] || '播放后保留音频与歌词'
+    },
+    offlineCacheCanRetry() {
+      return !!this.offlineCacheError || ['space', 'waiting-network', 'failed'].includes(this.offlineCacheEntry?.status)
+    },
+    offlineCacheError() {
+      const error = this.offlineCacheEntry?.error
+      return this.cacheErrorMessage || (typeof error === 'string' ? error : error?.message) || ''
+    },
     contextMenuItems() {
       if (!this.currentContextSong) return []
       
@@ -146,7 +181,8 @@ export default {
   },
   activated() {
     this.isActive = true
-    this.loadFavorites()
+    if (this.loaded && !this.loadPromise && this.offlineCacheAvailable) this.touchPlaylistSnapshot()
+    else this.loadFavorites()
   },
   deactivated() {
     this.isActive = false
@@ -197,12 +233,17 @@ export default {
         this.searchQuery = ''
         this.favoritePlaylistId = null
         this.errorMessage = ''
+        this.cacheErrorMessage = ''
+        this.cacheSnapshotRead = false
+        this.hasOfflineSnapshot = false
+        this.cacheWriteFailed = false
         this.closeContextMenu()
       }
       if (!identity.userid || !identity.token) return Promise.resolve()
       if (this.loadPromise) return this.loadPromise
       if (this.loaded && force !== true) return Promise.resolve()
-      if (!this.isPlaylistView && this.userPlaylists !== null && !this.playlistsLoaded) {
+      if (!this.isPlaylistView && this.userPlaylists !== null && !this.playlistsLoaded &&
+          (!this.offlineCacheAvailable || (this.cacheSnapshotRead && this.favoritePlaylistId == null))) {
         this.loading = true
         return Promise.resolve()
       }
@@ -224,8 +265,14 @@ export default {
     /** 曲目先汇总到临时数组，全部分页成功且身份仍有效时才替换可见列表。 */
     async fetchFavorites(generation, scope, force) {
       try {
+        if (this.offlineCacheAvailable && !this.cacheSnapshotRead) {
+          this.cacheSnapshotRead = true
+          await this.restorePlaylistSnapshot(generation, scope)
+          if (!this.isCurrentRequest(generation, scope)) return
+        }
         let playlistId = this.isPlaylistView ? this.playlistId : this.favoritePlaylistId
         if (playlistId == null) {
+          if (this.userPlaylists !== null && !this.playlistsLoaded) return
           let playlists = this.userPlaylists
           if (playlists === null || (force && Array.isArray(playlists) && playlists.length === 0)) {
             const response = await getUserPlaylists(1, 100)
@@ -276,6 +323,7 @@ export default {
         const previousSeeds = this.isPlaylistView ? null : this.readFavoriteSeedSignature(scope)
         this.favoriteList = songs.map((song, index) => ({ ...song, index: index + 1 }))
         this.loaded = true
+        this.persistPlaylistSnapshot(scope)
         if (!this.isPlaylistView) {
           const saved = this.persistFavorites(scope)
           if (saved && previousSeeds !== this.favoriteSeedSignature(this.favoriteList)) {
@@ -291,7 +339,7 @@ export default {
           this.loaded = false
           return
         }
-        if (!this.isPlaylistView && !this.loaded && this.favoriteList.length === 0) this.restoreFavoritesCache(scope)
+        if (!this.isPlaylistView && !this.loaded && !this.hasOfflineSnapshot && this.favoriteList.length === 0) this.restoreFavoritesCache(scope)
       }
     },
 
@@ -300,6 +348,81 @@ export default {
       const songs = response.data.songs || response.data.info || response.data.list
       if (!Array.isArray(songs)) throw new Error(`歌单第 ${page} 页歌曲格式无效`)
       return songs
+    },
+
+    /** 本地完整快照先显示，本次首次打开仍继续在线校验，失败不覆盖已有曲目。 */
+    async restorePlaylistSnapshot(generation, scope) {
+      try {
+        const snapshot = await callPlaylistCache('readPlaylist', this.isPlaylistView ? this.playlistId : null)
+        if (!snapshot || !Array.isArray(snapshot.songs) || !this.isCurrentRequest(generation, scope)) return
+        this.favoritePlaylistId = snapshot.id
+        this.favoriteList = snapshot.songs.map((song, index) => ({ ...song, index: index + 1 }))
+        this.hasOfflineSnapshot = true
+        this.loaded = true
+      } catch (error) {
+        if (this.isCurrentRequest(generation, scope)) {
+          logger.warn('FavoriteView', '读取离线歌单失败', { name: error?.name, message: error?.message })
+        }
+      }
+    },
+
+    /** 只发布完整曲目快照，不下载音频；音频和歌词由实际播放另行触发。 */
+    persistPlaylistSnapshot(scope = this.requestScope) {
+      if (!this.offlineCacheAvailable || !scope || this.isDisposed || !this.hasCurrentScope(scope) || this.favoritePlaylistId == null) return
+      const generation = this.requestGeneration
+      const snapshot = {
+        id: this.favoritePlaylistId,
+        name: this.pageTitle,
+        isFavorite: !this.isPlaylistView || !!this.offlineCacheEntry?.isFavorite,
+        songs: cloneDeep(this.favoriteList)
+      }
+      return callPlaylistCache('putPlaylist', snapshot).then(() => {
+        if (this.isCurrentRequest(generation, scope)) {
+          this.cacheErrorMessage = ''
+          this.cacheWriteFailed = false
+        }
+      }).catch(error => {
+        if (!this.isCurrentRequest(generation, scope)) return
+        logger.error('FavoriteView', '保存离线歌单失败', error)
+        this.cacheErrorMessage = '无法保存离线歌单，稍后可重试。'
+        this.cacheWriteFailed = true
+      })
+    },
+
+    /** 再访只更新磁盘最近访问；已淘汰的快照由当前完整列表重建，不重载页面。 */
+    async touchPlaylistSnapshot() {
+      const scope = this.requestScope
+      const generation = this.requestGeneration
+      if (!scope || this.favoritePlaylistId == null || !this.hasCurrentScope(scope) || this.isDisposed) return
+      try {
+        const snapshot = await callPlaylistCache('readPlaylist', this.favoritePlaylistId)
+        if (!snapshot && this.isCurrentRequest(generation, scope)) this.persistPlaylistSnapshot(scope)
+      } catch (error) {
+        if (this.isCurrentRequest(generation, scope)) logger.warn('FavoriteView', '更新歌单最近访问失败', { name: error?.name })
+      }
+    },
+
+    retryPlaylistSnapshot() {
+      if (this.cacheActionPending || !this.isActive || this.isDisposed) return
+      this.cacheActionPending = true
+      return Promise.resolve(this.persistPlaylistSnapshot()).finally(() => { this.cacheActionPending = false })
+    },
+
+    async controlPlaylistCache(action) {
+      const id = this.offlineCacheEntry?.id
+      if (id == null || this.cacheActionPending || !this.isActive || this.isDisposed || !this.hasCurrentScope(this.requestScope || {})) return
+      const generation = this.requestGeneration
+      const scope = this.requestScope
+      this.cacheActionPending = true
+      try {
+        await callPlaylistCache(action, id)
+        if (this.isCurrentRequest(generation, scope)) this.cacheErrorMessage = ''
+      } catch (error) {
+        if (this.isCurrentRequest(generation, scope)) this.cacheErrorMessage = '缓存操作失败，请重试。'
+        logger.error('FavoriteView', '更新歌单缓存任务失败', { action, error })
+      } finally {
+        this.cacheActionPending = false
+      }
     },
 
     favoriteSeedSignature(songs) {
@@ -355,6 +478,7 @@ export default {
       this.loading = false
       this.loaded = true
       this.persistFavorites()
+      this.persistPlaylistSnapshot()
       this.$emit('favorites-changed', this.favoriteList)
     },
     canEditFavorites() {

@@ -23,6 +23,28 @@ const electronAPI = {
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   writeClipboardText: (text) => ipcRenderer.invoke('clipboard:write-text', text),
 
+  // 私有离线资源只通过固定操作访问，不暴露文件路径或通用下载能力。
+  playlistCache: {
+    setSession: (session) => ipcRenderer.invoke('playlist-cache:set-session', session),
+    getState: () => ipcRenderer.invoke('playlist-cache:get-state'),
+    readPlaylist: (id = null) => ipcRenderer.invoke('playlist-cache:read-playlist', id),
+    putPlaylist: (snapshot) => ipcRenderer.invoke('playlist-cache:put-playlist', snapshot),
+    cacheSong: (request) => ipcRenderer.invoke('playlist-cache:cache-song', request),
+    getSource: (request) => ipcRenderer.invoke('playlist-cache:get-source', request),
+    releaseSource: (leaseId) => ipcRenderer.invoke('playlist-cache:release-source', leaseId),
+    readLyrics: (hash) => ipcRenderer.invoke('playlist-cache:read-lyrics', hash),
+    putLyrics: (request) => ipcRenderer.invoke('playlist-cache:put-lyrics', request),
+    getArtwork: (url) => ipcRenderer.invoke('playlist-cache:get-artwork', url),
+    cacheArtwork: (url) => ipcRenderer.invoke('playlist-cache:cache-artwork', url),
+    pause: (id = null) => ipcRenderer.invoke('playlist-cache:pause', id),
+    resume: (id = null) => ipcRenderer.invoke('playlist-cache:resume', id),
+    retry: (id = null) => ipcRenderer.invoke('playlist-cache:retry', id),
+    retryNetwork: () => ipcRenderer.invoke('playlist-cache:retry-network'),
+    clear: () => ipcRenderer.invoke('playlist-cache:clear'),
+    onState: (callback) => subscribe('playlist-cache:state', callback),
+    onAuthExpired: (callback) => subscribe('playlist-cache:auth-expired', callback)
+  },
+
   // 更新任务只接受已检查出的资产 ID；安装始终经过主窗口确认。
   updates: {
     getState: () => ipcRenderer.invoke('updates:get-state'),

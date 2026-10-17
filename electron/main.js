@@ -1,5 +1,5 @@
 // 引入 Electron 模块
-const { app, BrowserWindow, ipcMain, dialog, globalShortcut, shell, Tray, Menu, nativeImage, clipboard } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, globalShortcut, shell, Tray, Menu, nativeImage, clipboard, protocol } = require('electron')
 const logger = require('./logger')
 // 解决 Windows 控制台中文/emoji 乱码: 尝试切换到 UTF-8 代码页 (仅开发态且是 win32)
 if (process.platform === 'win32' && !process.env.BK_SKIP_CHCP && !app.isPackaged) {
@@ -16,6 +16,7 @@ const path = require('path')
 const { pathToFileURL } = require('url')
 const { createBackendService } = require('./services/backendService')
 const { createUpdateService } = require('./services/updateService')
+const { createPlaylistCacheService } = require('./services/playlistCacheService')
 const {
   initSettingsStore,
   getSettings,
@@ -30,6 +31,11 @@ const {
 
 // 检查是否在开发环境中（手动检测，避免 ESM 依赖问题）
 const isDev = !app.isPackaged
+
+// 音频协议在 ready 前注册，开发页面和打包页面共用受限的流式资源入口。
+protocol?.registerSchemesAsPrivileged([{
+  scheme: 'bk-cache', privileges: { standard: true, secure: true, stream: true, corsEnabled: true }
+}])
 
 // 禁用 GPU 缓存以避免权限错误
 app.commandLine.appendSwitch('disable-http-cache')
@@ -49,6 +55,7 @@ let cleanupComplete = false
 let mainWindowReady = false
 let unsubscribeSettings = null
 let updateService = null
+let playlistCacheService = null
 let installRequest = null
 let installQuitService = null
 let installPreparation = null
@@ -315,6 +322,7 @@ function subscribeToSettingsUpdates() {
     })
     syncDesktopLyricSettings(nextSettings)
     updateService?.configure(nextSettings.software.updates)
+    playlistCacheService?.configure(nextSettings)
   })
 }
 
@@ -336,6 +344,42 @@ function initializeUpdateService() {
     }
   })
   updateService.configure(getSettings().software.updates)
+}
+
+/** 持久化与缓存下载在独立 Worker 执行，初始化不等待外网。 */
+function initializePlaylistCacheService() {
+  playlistCacheService = createPlaylistCacheService({
+    workerPath: app.isPackaged
+      ? path.join(process.resourcesPath, 'playlist-cache', 'playlistCacheWorker.cjs')
+      : path.join(app.getAppPath(), 'electron', 'services', 'playlistCacheWorker.cjs'),
+    cacheRoot: path.join(app.getPath('userData'), 'offline-playlists'),
+    logger,
+    onState: (state) => {
+      if (!isQuitting && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('playlist-cache:state', state)
+    },
+    onAuthExpired: (identity) => {
+      if (!isQuitting && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('playlist-cache:auth-expired', identity)
+    }
+  })
+  playlistCacheService.configure(getSettings())
+  protocol?.handle('bk-cache', request => playlistCacheService.handleRequest(request))
+}
+
+/** 离线资源 IPC 只允许主窗口顶层，不接受调用方指定的文件路径。 */
+function getPlaylistCacheForSender(event) {
+  if (isQuitting || !isMainWindowSender(event)) throw new Error('离线缓存操作只能从应用主窗口发起。')
+  if (!playlistCacheService) throw new Error('离线缓存尚未就绪，请稍后重试。')
+  return playlistCacheService
+}
+
+for (const [channel, method] of Object.entries({
+  'set-session': 'setSession', 'get-state': 'getState', 'read-playlist': 'readPlaylist',
+  'put-playlist': 'putPlaylist', 'cache-song': 'cacheSong', 'get-source': 'getSource',
+  'release-source': 'releaseSource', 'read-lyrics': 'readLyrics', 'put-lyrics': 'putLyrics',
+  'get-artwork': 'getArtwork', 'cache-artwork': 'cacheArtwork', pause: 'pause', resume: 'resume',
+  retry: 'retry', 'retry-network': 'retryNetwork', clear: 'clear'
+})) {
+  ipcMain.handle(`playlist-cache:${channel}`, (event, argument) => getPlaylistCacheForSender(event)[method](argument))
 }
 
 /** 更新桥接仅允许主窗口的顶层页面，路径与下载地址不接收渲染输入。 */
@@ -584,6 +628,12 @@ async function cleanupApplicationResources() {
     releaseInstallPreparation()
 
     try {
+      if (playlistCacheService) await playlistCacheService.stop()
+    } catch (error) {
+      logger.error('playlist-cache', '停止离线缓存任务失败', error)
+    }
+
+    try {
       if (updateService) await updateService.stop()
     } catch (error) {
       logger.error('updates', '停止更新任务失败', error)
@@ -759,6 +809,11 @@ app.whenReady().then(async () => {
   } catch (error) {
     // 更新服务失败不能影响正常启动和播放。
     logger.error('updates', '初始化更新服务失败', error)
+  }
+  try {
+    initializePlaylistCacheService()
+  } catch (error) {
+    logger.error('playlist-cache', '初始化离线缓存失败', error)
   }
 
   // 启动后端服务器

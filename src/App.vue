@@ -9,6 +9,7 @@ import { getUserPlaylists, KUGOU_AUTH_EXPIRED_EVENT } from './api/music.js'
 import { useSettingsStore } from './stores/settingsStore.js'
 import { cloneDeep } from './utils/objectUtils.js'
 import { getSongSearchKeyword } from './utils/songMetadata.js'
+import { initializePlaylistCacheSession, getPlaylistCacheAPI, callPlaylistCache } from './utils/playlistCache.js'
 import ThemeRecovery from './components/common/ThemeRecovery.vue'
 
 /** 非首页界面首次使用时加载，保留原组件名供 KeepAlive 缓存。 */
@@ -199,6 +200,12 @@ const userPlaylists = ref([
 const selectedPlaylistId = ref(null)
 const selectedPlaylistData = ref(null)
 const userPlaylistsLoaded = ref(false)
+const playlistCacheState = ref(null)
+let playlistCacheTask = Promise.resolve(null)
+let unsubscribePlaylistCache = null
+let unsubscribePlaylistCacheAuth = null
+let playlistCacheInitialization = 0
+let playlistCacheReady = false
 const pageSessionVersion = ref(0)
 const favoritesRevision = ref(0)
 const cachedPageNames = ['HomeView', 'FavoriteView', 'RankDetailView', 'AlbumDetailView', 'ArtistView', 'SearchView', 'DailyRecommendView']
@@ -210,6 +217,7 @@ const canGoBack = computed(() => !navigationPending.value && !preparingInstall.v
 let navigationVersion = 0
 let playlistDirectoryRequestId = 0
 let playlistDirectoryTask = null
+let onlineUserPlaylists = []
 
 /** 账户改变后释放私有页面缓存；仅打开登录页面不影响已有页面。 */
 const resetPageSession = () => {
@@ -221,8 +229,79 @@ const resetPageSession = () => {
   playlistDirectoryTask = null
   userPlaylistsLoaded.value = false
   userPlaylists.value = []
+  onlineUserPlaylists = []
   selectedPlaylistId.value = null
   selectedPlaylistData.value = null
+  playlistCacheState.value = null
+  playlistCacheReady = false
+}
+
+/** 保留当前账号最近打开歌单的离线入口，在线目录仍提供最新名称和顺序。 */
+function mergeCachedPlaylistDirectory(lists) {
+  const result = [...lists]
+  const known = new Set(result.map(item => String(item.id)))
+  for (const item of playlistCacheState.value?.playlists || []) {
+    if (item?.id == null || known.has(String(item.id))) continue
+    known.add(String(item.id))
+    result.push({ id: item.id, name: item.name || '歌单', count: item.total || 0 })
+  }
+  return result
+}
+
+/** 缓存广播与页面使用同一账号身份；旧快照不能恢复上一账号的侧栏。 */
+function applyPlaylistCacheState(state) {
+  const userId = localStorage.getItem('kugou_userid')
+  if (!playlistCacheReady || !state || !userLoggedIn.value || !userId || String(state.userId) !== String(userId)) return
+  const previous = playlistCacheState.value
+  if (previous && (Number(state.generation) < Number(previous.generation) ||
+      (state.generation === previous.generation && Number(state.revision) < Number(previous.revision)))) return
+  if (state.authExpired === true || state.error?.code === 'KUGOU_AUTH_EXPIRED') {
+    handleAuthExpired()
+    return
+  }
+  playlistCacheState.value = state
+  userPlaylists.value = mergeCachedPlaylistDirectory(onlineUserPlaylists)
+}
+
+/** 先初始化桌面账号并恢复目录，后续网络请求和播放器共享这次初始化。 */
+function initializeAccountPlaylistCache() {
+  const initialization = ++playlistCacheInitialization
+  playlistCacheReady = false
+  if (!window.electronAPI?.playlistCache) return Promise.resolve(null)
+  const identity = userLoggedIn.value ? {
+    userId: localStorage.getItem('kugou_userid'), token: localStorage.getItem('kugou_token')
+  } : null
+  playlistCacheTask = initializePlaylistCacheSession(identity).then(async state => {
+    if (initialization !== playlistCacheInitialization) return null
+    if (identity && !state) state = await getPlaylistCacheAPI()?.getState?.()
+    if (initialization !== playlistCacheInitialization) return null
+    playlistCacheReady = Boolean(identity)
+    applyPlaylistCacheState(state)
+    return state
+  }).catch(error => {
+    logger.warn('App', '初始化歌单缓存失败', { name: error?.name, message: error?.message })
+    return null
+  })
+  return playlistCacheTask
+}
+
+if (window.electronAPI?.playlistCache?.onState) {
+  unsubscribePlaylistCache = window.electronAPI.playlistCache.onState(applyPlaylistCacheState)
+}
+if (window.electronAPI?.playlistCache?.onAuthExpired) {
+  unsubscribePlaylistCacheAuth = window.electronAPI.playlistCache.onAuthExpired(event => {
+    const state = playlistCacheState.value
+    if (playlistCacheReady && state && String(event?.userId) === String(state.userId) &&
+        event?.generation === state.generation) handleAuthExpired()
+  })
+}
+
+/** 恢复网络只重试网络失败的既有任务；暂停、清理与权限状态由服务保留。 */
+function handlePlaylistCacheOnline() {
+  if (!userLoggedIn.value || isAppUnmounting || !window.electronAPI?.playlistCache) return
+  callPlaylistCache('retryNetwork').catch(error => {
+    logger.warn('App', '恢复离线缓存网络任务失败', { name: error?.name })
+  })
 }
 
 /** 独立滚动容器随页面缓存，并在脱离文档前保存真实滚动位置。 */
@@ -253,10 +332,13 @@ const checkLoginStatus = () => {
       userLoggedIn.value = true
       userInfo.value = loginInfo.userInfo
       logger.trace('App', '已恢复登录状态')
+      initializeAccountPlaylistCache()
       // 登录后获取用户歌单
       fetchUserPlaylists()
+      return
     }
   }
+  initializeAccountPlaylistCache()
 }
 
 // 获取用户歌单
@@ -270,16 +352,19 @@ const fetchUserPlaylists = () => {
   userPlaylistsLoaded.value = false
   const task = Promise.resolve().then(async () => {
     try {
+      if (window.electronAPI?.playlistCache) await playlistCacheTask
+      if (!isCurrentRequest()) return
       const response = await getUserPlaylists(1, 100)
       if (!isCurrentRequest()) return
       if (response.status !== 1 || !response.data) throw new Error('获取用户歌单失败')
       const lists = response.data.info || response.data.lists || response.data.list || []
-      userPlaylists.value = (Array.isArray(lists) ? lists : []).map(item => ({
+      onlineUserPlaylists = (Array.isArray(lists) ? lists : []).map(item => ({
         ...item,
         id: item.global_collection_id ?? item.globalCollectionId ?? item.listid ?? item.list_id ?? item.id,
         name: item.name || '',
         count: item.count || 0
       })).filter(item => item.id != null)
+      userPlaylists.value = mergeCachedPlaylistDirectory(onlineUserPlaylists)
     } catch (error) {
       if (isCurrentRequest()) logger.error('App', '获取用户歌单失败:', error)
     } finally {
@@ -335,6 +420,7 @@ const handleLoginSuccess = (data) => {
     vip_type: data.vip_type || 0
   }
   showLogin.value = false
+  initializeAccountPlaylistCache()
   // 登录后获取用户歌单
   fetchUserPlaylists()
 }
@@ -349,6 +435,7 @@ const handleLogout = () => {
   // 重置状态
   userLoggedIn.value = false
   userInfo.value = null
+  initializeAccountPlaylistCache()
   userPlaylists.value = []
   currentView.value = 'home'
 
@@ -362,6 +449,7 @@ const handleAuthExpired = () => {
   resetPageSession()
   userLoggedIn.value = false
   userInfo.value = null
+  initializeAccountPlaylistCache()
   userPlaylists.value = []
   currentView.value = 'home'
   showLogin.value = true
@@ -954,6 +1042,7 @@ onMounted(() => {
   if (typeof window !== 'undefined') {
     window.addEventListener('beforeunload', handleBeforeUnload)
     window.addEventListener(KUGOU_AUTH_EXPIRED_EVENT, handleAuthExpired)
+    window.addEventListener('online', handlePlaylistCacheOnline)
   }
   startSessionCheckpoint()
 
@@ -972,6 +1061,10 @@ onBeforeUnmount(() => {
   installPreparationRequestId = null
   setInstallPreparation(false)
   unsubscribeInstallPreparation?.()
+  unsubscribePlaylistCache?.()
+  unsubscribePlaylistCacheAuth?.()
+  playlistCacheInitialization++
+  playlistCacheReady = false
   playlistDirectoryRequestId++
   playlistDirectoryTask = null
   shortcutGeneration += 1
@@ -1002,6 +1095,7 @@ onBeforeUnmount(() => {
   if (typeof window !== 'undefined') {
     window.removeEventListener('beforeunload', handleBeforeUnload)
     window.removeEventListener(KUGOU_AUTH_EXPIRED_EVENT, handleAuthExpired)
+    window.removeEventListener('online', handlePlaylistCacheOnline)
   }
 })
 
@@ -1350,6 +1444,7 @@ function performMemoryCleanup() {
                 :playlist-id="currentView === 'playlist' ? selectedPlaylistId : null"
                 :playlist-name="selectedPlaylistData?.name || '歌单'"
                 :user-playlists="userPlaylists" :playlists-loaded="userPlaylistsLoaded"
+                :playlist-cache-state="playlistCacheState"
                 @favorites-changed="handleFavoritesChanged"
                 @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll"
                 @play-next="handlePlayNext" @remove-from-playlist="handleRemoveFromPlaylist" @search="handleSearch"

@@ -3,6 +3,7 @@ import { logger } from '../../utils/logger.js'
 import { useSettingsStore } from '../../stores/settingsStore.js'
 import ContextMenu from '../common/ContextMenu.vue'
 import ArtistLinks from '../common/ArtistLinks.vue'
+import ArtworkCover from '../common/ArtworkCover.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import repeatAllIcon from '../../assets/icons/repeat_all.svg'
 import repeatOneIcon from '../../assets/icons/repeat_one.svg'
@@ -10,7 +11,7 @@ import shuffleIcon from '../../assets/icons/shuffle.svg'
 
 export default {
   name: 'LyricView',
-  components: { ContextMenu, ArtistLinks },
+  components: { ContextMenu, ArtistLinks, ArtworkCover },
   props: {
     visible: {
       type: Boolean,
@@ -640,7 +641,7 @@ export default {
     handleCoverError(event) {
       if (event.target.isConnected === false || event.target.closest?.('.track-cover')?.inert) return
       if (event.target.dataset.trackKey === this.song?.hash &&
-          event.target.getAttribute('src') === this.coverUrl) this.coverFailed = true
+          (event.target.getAttribute('data-artwork-original') || event.target.getAttribute('src')) === this.coverUrl) this.coverFailed = true
     },
 
     /** 按歌词代次持有行引用，旧层退场的 ref 清理不能删除新层引用。 */

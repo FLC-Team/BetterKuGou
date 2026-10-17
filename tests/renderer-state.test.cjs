@@ -177,6 +177,16 @@ function loadApp(electronAPI = {}, overrides = {}) {
   const settings = vue.reactive({ shortcuts: { enableGlobal: true, keys: {} }, software: {}, playback: {}, ...overrides.settings })
   const mounted = []
   const unmounted = []
+  const windowListeners = new Map()
+  const appWindow = { electronAPI,
+    addEventListener(name, callback) {
+      if (!windowListeners.has(name)) windowListeners.set(name, new Set())
+      windowListeners.get(name).add(callback)
+    },
+    removeEventListener(name, callback) { windowListeners.get(name)?.delete(callback) }
+  }
+  const cacheHelpers = loadModule('src/utils/playlistCache.js', { window: appWindow },
+    ['initializePlaylistCacheSession', 'getPlaylistCacheAPI', 'callPlaylistCache'])
   const sandbox = vm.createContext({
     ...vue,
     ...loadUtils(),
@@ -184,7 +194,8 @@ function loadApp(electronAPI = {}, overrides = {}) {
     logger: quietLogger,
     process: { env: { NODE_ENV: 'production' } },
     ...loadModule('src/utils/songMetadata.js', {}, ['getSongSearchKeyword', 'getSongArtists']),
-    window: { electronAPI, addEventListener() {}, removeEventListener() {} },
+    window: appWindow,
+    ...cacheHelpers,
     document: { addEventListener() {}, removeEventListener() {}, querySelectorAll: () => [] },
     localStorage: overrides.localStorage || { getItem: () => null },
     getUserPlaylists: overrides.getUserPlaylists || (async () => ({ status: 1, data: { info: [] } })),
@@ -192,8 +203,8 @@ function loadApp(electronAPI = {}, overrides = {}) {
     clearTimeout: overrides.clearTimeout || clearTimeout,
     onMounted: callback => mounted.push(callback),
     onBeforeUnmount: callback => unmounted.push(callback),
-    isLoggedIn: () => false,
-    getLoginInfo: () => null,
+    isLoggedIn: overrides.isLoggedIn || (() => false),
+    getLoginInfo: overrides.getLoginInfo || (() => null),
     clearLoginInfo() {},
     KUGOU_AUTH_EXPIRED_EVENT: 'expired',
     useSettingsStore: () => ({
@@ -220,10 +231,12 @@ function loadApp(electronAPI = {}, overrides = {}) {
     handleSearch, handleSearchRequest, searchQuery, searchDraft,
     handleGoBack, handleBackToMain, handleShowSettings, handleCloseSettings,
     navigationHistory, navigationPending, canGoBack, artistData, albumData, rankData,
-    selectedPlaylistData, getPageKey, rememberPageScroll, restorePageScroll, setInstallPreparation
+    selectedPlaylistData, getPageKey, rememberPageScroll, restorePageScroll, setInstallPreparation,
+    playlistCacheState, cacheTask: () => playlistCacheTask
   })`, sandbox))
   return {
     ...app,
+    dispatchWindowEvent: name => [...(windowListeners.get(name) || [])].forEach(callback => callback()),
     mount: () => mounted.forEach(callback => callback()),
     async dispose() {
       scope.stop()
@@ -1288,6 +1301,99 @@ test('playlist directory requests are shared and late account results cannot rep
   assert.equal(app.userPlaylists.value[0].id, 'b-list')
   assert.equal(app.userPlaylistsLoaded.value, true)
   await app.dispose()
+})
+
+test('startup restores cached playlist entries before online directory validation and retains offline-only entries', async () => {
+  const initialization = deferred()
+  const online = deferred()
+  const calls = []
+  let publishState
+  const app = loadApp({ playlistCache: {
+    setSession(identity) { calls.push(['session', identity?.userId]); return initialization.promise },
+    onState: callback => { publishState = callback; return () => {} }
+  } }, {
+    localStorage: { getItem: name => ({ kugou_userid: 'A', kugou_token: 'example-a' })[name] ?? null },
+    isLoggedIn: () => true,
+    getLoginInfo: () => ({ userInfo: { userid: 'A' } }),
+    getUserPlaylists() { calls.push(['directory']); return online.promise }
+  })
+  assert.equal(app.userLoggedIn.value, true)
+  await vue.nextTick()
+  assert.equal(calls.some(([name]) => name === 'directory'), false)
+  initialization.resolve({ userId: 'A', generation: 1, revision: 1, playlists: [
+    { id: 'shared', name: '缓存旧名称', total: 2 }, { id: 'offline-only', name: '离线歌单', total: 1 }
+  ] })
+  await app.cacheTask()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(app.userPlaylists.value.length, 2)
+  assert.equal(app.userPlaylistsLoaded.value, false)
+  online.resolve({ status: 1, data: { info: [{ id: 'shared', name: '云端新名称' }] } })
+  await app.fetchUserPlaylists()
+  assert.equal(app.userPlaylists.value.map(item => item.id).join(','), 'shared,offline-only')
+  assert.equal(app.userPlaylists.value[0].name, '云端新名称')
+  assert.equal(app.userPlaylistsLoaded.value, true)
+  publishState({ userId: 'A', generation: 1, revision: 2, playlists: [] })
+  assert.equal(app.userPlaylists.value.map(item => item.id).join(','), 'shared', 'clearing snapshots removes only offline-only directory entries')
+  await app.dispose()
+})
+
+test('playlist cache expiration rejects previous account generations and unsubscribes on unmount', async () => {
+  let generation = 0
+  let onAuth
+  let onState
+  let unsubscribed = 0
+  const values = new Map([['kugou_userid', 'A'], ['kugou_token', 'example-a']])
+  const app = loadApp({ playlistCache: {
+    setSession: async identity => ({ userId: identity?.userId ?? null, generation: ++generation, revision: generation, playlists: [] }),
+    onState: callback => { onState = callback; return () => { unsubscribed++ } },
+    onAuthExpired: callback => { onAuth = callback; return () => { unsubscribed++ } }
+  } }, { localStorage: { getItem: key => values.get(key) ?? null } })
+  await app.cacheTask()
+  app.handleLoginSuccess({ userid: 'A' })
+  await app.cacheTask()
+  const oldGeneration = app.playlistCacheState.value.generation
+  values.set('kugou_token', 'example-refreshed-a')
+  app.handleLoginSuccess({ userid: 'A' })
+  await app.cacheTask()
+  const currentGeneration = app.playlistCacheState.value.generation
+  assert.notEqual(currentGeneration, oldGeneration)
+  onAuth({ userId: 'A', generation: oldGeneration })
+  onState({ userId: 'A', generation: oldGeneration, revision: 999, authExpired: true })
+  assert.equal(app.userLoggedIn.value, true)
+  onAuth({ userId: 'other', generation: currentGeneration })
+  assert.equal(app.userLoggedIn.value, true)
+  onAuth({ userId: 'A', generation: currentGeneration })
+  assert.equal(app.userLoggedIn.value, false)
+  assert.equal(app.playlistCacheState.value, null)
+  await app.dispose()
+  assert.equal(unsubscribed, 2)
+})
+
+test('network restoration waits for the cache account and only requests bounded network retries', async () => {
+  const initialization = deferred()
+  const calls = []
+  const app = loadApp({ playlistCache: {
+    setSession: () => initialization.promise,
+    retryNetwork: async () => { calls.push('network') },
+    resume: async () => { calls.push('resume') },
+    retry: async () => { calls.push('retry') }
+  } }, {
+    localStorage: { getItem: name => ({ kugou_userid: 'A', kugou_token: 'example-a' })[name] ?? null },
+    isLoggedIn: () => true,
+    getLoginInfo: () => ({ userInfo: { userid: 'A' } })
+  })
+  app.mount()
+  app.dispatchWindowEvent('online')
+  await vue.nextTick()
+  assert.deepEqual(calls, [])
+  initialization.resolve({ userId: 'A', generation: 1, revision: 1, playlists: [] })
+  await app.cacheTask()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(calls, ['network'])
+  await app.dispose()
+  app.dispatchWindowEvent('online')
+  await vue.nextTick()
+  assert.deepEqual(calls, ['network'], 'unmount detaches the network listener')
 })
 
 test('opening login preserves cached page identity while actual login and logout invalidate it', async () => {

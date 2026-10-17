@@ -28,6 +28,7 @@ function desktopFixture() {
     require(name) {
       if (name === 'electron') return { app, BrowserWindow: Window, ipcMain: ipc }
       if (name === './logger') return silent
+      if (name === './services/playlistCacheService') return { createPlaylistCacheService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/backendService') return { createBackendService: () => ({}) }
       if (name === './settingsStore') return {
         getSettings() { if (!initialized) throw new Error('Settings store not initialized'); return snapshot },
@@ -77,7 +78,7 @@ test('translation preferences immediately update an already mounted lyric view',
   const source = fs.readFileSync(path.resolve(__dirname, '../src/components/player/LyricView.js'), 'utf8')
     .replace(/^import\b[\s\S]*?from\s+['"][^'"]+['"]\s*;?\s*$/gm, '')
     .replace('export default', 'module.exports =')
-  const sandbox = { module: { exports: {} }, ContextMenu: {}, ArtistLinks: {} }
+  const sandbox = { module: { exports: {} }, ContextMenu: {}, ArtistLinks: {}, ArtworkCover: {} }
   vm.runInNewContext(source, sandbox)
   let measured = 0
   const lyric = { showTranslation: true, styleCache: new Map([['line', 'cached']]), handleLongLyric() { measured++ } }

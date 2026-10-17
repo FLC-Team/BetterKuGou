@@ -2,7 +2,7 @@
 
 ## 职责与目录
 
-负责应用窗口、托盘、系统快捷键、设置持久化、本地 API 及应用更新服务生命周期。Vue 渲染进程通过 preload 白名单调用系统能力。
+负责应用窗口、托盘、系统快捷键、设置持久化、本地 API、离线缓存及应用更新服务生命周期。Vue 渲染进程通过 preload 白名单调用系统能力。
 
 - `services/`：具有独立生命周期的主进程服务。
 
@@ -25,6 +25,7 @@
 4. 初始化设置后创建更新服务，传入 `app.getVersion()`、平台架构和 `userData/updates/`；更新服务自行延迟调度，主窗口和本地 API 启动不等待网络任务。开发 Worker 位于 `electron/services/updateWorker.cjs`，打包通过 extraResources 加载 `resources/updater/updateWorker.cjs`。
 5. `performApplicationCleanup()` 复用一个清理 Promise；释放窗口定时器、设置订阅、更新 Worker、快捷键、附属窗口、后端和托盘后，才允许正式退出。
 6. Windows 打包版非阻塞启动每 PID 安装退出管道。安装器明确请求后，向就绪主窗口发送带随机 requestId 的保存准备通知；仅原顶层 frame 的当前回执可被接收。保存成功并发送管道确认后正常退出，重载、崩溃、断开或超时取消请求，清理时关闭管道，不改变正常多实例启动行为。
+7. 初始化独立离线缓存服务，固定使用 `userData/offline-playlists/`；开发 Worker 位于 services，打包 Worker 从 `resources/playlist-cache/playlistCacheWorker.cjs` 加载。设置成功广播后 configure，退出等待 stop；后台缓存故障不阻断窗口与在线播放。
 
 ## 设置保障
 
@@ -37,11 +38,13 @@
 - 主题包可选 `desktopCss` 由主进程经共享目录校验和编译，再沿原显示偏好通道发送 `appearance`（视觉令牌与窗口限定 CSS）。独立 HTML 整份替换令牌/style；普通偏好消息缺少该字段时保持外观，切回无桌面 CSS 的主题发送 null 清除。异步解析按窗口身份与设置代次拒绝旧结果，保留经典/渐变/简约模式和现有隔离设置。
 - `playback.quality` 沿既有设置事务持久化，默认字符串 128，Schema 与渲染侧一致只接收 128/320/flac/high，旧配置补全、非法值回退；不持久化或伪造当前歌曲的有效音质。
 - `software.updates` 仅保存 `autoCheck`、`autoDownload` 和 `channel`，默认 true、false、stable，渠道限定 stable/beta；旧配置与非法导入值按同一规则补全。成功提交的设置广播才调用更新服务 `configure()`，不保存下载进度、文件路径或安装开关。
+- `download.offlinePlaylistCacheEnabled` 默认 true，`cacheSizeIndex` 限定 0–5（2048/4096/6144/8192/10240MB/无限制），`concurrentDownloads` 为 1–10，默认 3；原预留下载目录与缓存路径保持兼容，不作为离线服务目录来源。
 - 桌面歌词替换数组时重置行索引与逐字缓存，首个时间更新不被节流丢弃，保证暂停中重开及新曲第一行正确显示；锁定可从设置页恢复。
 
 ## 窗口与兼容保障
 
 - 所有窗口禁用 Node 集成并启用上下文隔离；HTML 不直接使用 `require('electron')`。
+- `playlist-cache:*` IPC 仅允许主窗口顶层，通过固定桥接操作绑定账号、读写快照、缓存已播放歌曲、保存歌词、加载封面及管理任务。主进程不接收任意文件路径，媒体地址仅包含不可猜租约；协议在 ready 前注册 standard/secure/stream，支持 GET/HEAD/单段 Range，不绕过 CSP。退出账号保留已授播放租约，后续源必须按当前账号重新申请。
 - electronAPI.writeClipboardText(text) 仅桥接 clipboard:write-text；主进程复用主窗口顶层发送方检查，只接受最多 1 MiB UTF-8 字符串并写纯文本，不提供读取、任意格式或通用 IPC 能力，不记录复制内容。
 - `updates:*` IPC 仅接受主窗口 webContents 及其顶层 frame；检查、下载、取消和定位均由主进程服务负责，下载参数只接受服务提供的资产 ID，渲染侧不能注入下载 URL 或本机路径。状态只向主窗口广播展示字段。
 - `electronAPI.updates.onPrepareForInstall()` 订阅准备/取消通知并返回解绑函数；`completePrepareForInstall(requestId, result)` 只反馈当前准备结果，不直接授权安装或退出。保存中屏蔽托盘播放操作，过期回执无效。

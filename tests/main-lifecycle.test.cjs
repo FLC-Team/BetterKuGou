@@ -64,6 +64,7 @@ function loadMain({ uninitialized = false } = {}) {
     require(name) {
       if (name === 'electron') return electron
       if (name === './logger') return silent
+      if (name === './services/playlistCacheService') return { createPlaylistCacheService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/updateService') return { createUpdateService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/backendService') return { createBackendService: () => ({
         start() { startCalls += 1 }, waitUntilReady: () => backendGate,

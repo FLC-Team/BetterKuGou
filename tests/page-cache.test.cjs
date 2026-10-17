@@ -117,6 +117,7 @@ function createHome(t, songs = []) {
   }
   const sandbox = {
     SongBadges: {},
+    ArtworkCover: {},
     ArtistLinks: {},
     logger: { trace() {}, error() {} },
     Date: class { toDateString() { return currentDay } },

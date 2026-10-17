@@ -39,7 +39,7 @@ function loadComponent(filename, overrides = {}) {
   const sandbox = {
     console: quietLogger, logger: quietLogger,
     process: { env: { NODE_ENV: 'test' } }, performance,
-    setTimeout, clearTimeout, setInterval, clearInterval,
+    setTimeout, clearTimeout, setInterval, clearInterval, structuredClone,
     requestAnimationFrame: () => 1, cancelAnimationFrame: () => {},
     computed: () => null,
     navigator: { mediaSession: { setActionHandler: (name, callback) => actions.set(name, callback) } },
@@ -49,6 +49,9 @@ function loadComponent(filename, overrides = {}) {
     getSongDetail: async () => ({ status: 1, data: [] }),
     getSongUrl: async hash => ({ status: 1, url: `https://example.test/${hash}.mp3` }),
     getLyric: async hash => ({ status: 1, decodeContent: `[00:00.00]${hash}` }),
+    getPlaylistCacheAPI: () => sandbox.window.electronAPI?.playlistCache || null,
+    waitForPlaylistCacheSession: async () => sandbox.window.electronAPI?.playlistCache || null,
+    getPlaylistCacheSessionVersion: () => 0,
     PlaylistDrawer: {}, ContextMenu: {}, LyricView: {}, ArtworkCover: {}, TransitionGroup: {}, SongBadges: {}, ArtistLinks: {},
     contextMenuManager: menuManager,
     useSettingsStore: () => ({ settings: { playback: { quality: '128' }, custom: {} }, async updateSettings() {} }),
@@ -60,6 +63,9 @@ function loadComponent(filename, overrides = {}) {
   if (filename.endsWith('.vue')) source = source.split('<script>')[1].split('</script>')[0]
   source = source.replace(/^import[^\n]*\n/gm, '').replace('export default {', 'globalThis.component = {')
   vm.createContext(sandbox)
+  const objectSource = fs.readFileSync(path.join(playerDirectory, '..', '..', 'utils', 'objectUtils.js'), 'utf8')
+    .replace(/^import[^\n]*\n/gm, '').replace(/\bexport (?=(?:function|const))/g, '')
+  vm.runInContext(objectSource, sandbox)
   const qualitySource = fs.readFileSync(path.join(playerDirectory, '..', '..', 'utils', 'playbackQuality.js'), 'utf8')
     .replace(/\bexport (?=(?:function|const))/g, '')
   vm.runInContext(qualitySource, sandbox)
@@ -2611,4 +2617,387 @@ test('temporary quality sources cannot reset displayed, desktop lyric or system 
   assert.equal(player.currentTime, 64)
   assert.equal(desktopTimes.at(-1), 64000)
   assert.equal(mediaTimes.at(-1), 64)
+})
+
+function cachedSource(hash, quality = '128') {
+  return { status: 1, url: `bk-cache://media/${hash}-${quality}`, leaseId: `${hash}-${quality}`,
+    requestedQuality: quality, extname: 'mp3', bitrate: Number(quality) * 1000,
+    detail: { hash, album_audio_id: 72, singerinfo: [{ id: 9, name: '缓存歌手' }] } }
+}
+
+test('a cached source skips online detail and URL requests and preserves cached lyrics and translations', async t => {
+  const releases = []
+  const queued = []
+  const lyric = { status: 1, decodeContent: '[00:00.00]离线原文', language: 'translation-payload' }
+  let online = 0
+  let lyricWrites = 0
+  const { player, audio, sandbox } = createPlayer(t, {
+    getSongDetail: async () => { online++; throw new Error('must remain offline') },
+    getSongUrl: async () => { online++; throw new Error('must remain offline') },
+    getLyric: async () => { online++; throw new Error('must remain offline') }
+  })
+  sandbox.window.electronAPI = { playlistCache: {
+    getSource: async request => { assert.equal(request.allowFallback, false); assert.equal(queued.length, 0); return cachedSource(request.hash) },
+    releaseSource: async leaseId => releases.push(leaseId),
+    readLyrics: async () => lyric,
+    putLyrics: async () => { lyricWrites++ },
+    cacheSong: async entry => queued.push(entry)
+  } }
+  const desktop = []
+  player.sendLyricsToDesktop = (text, data) => desktop.push({ text, data })
+  await player.requestSong({ hash: 'A', name: '离线曲目' })
+  await flush()
+  assert.equal(online, 0)
+  assert.equal(audio.src, 'bk-cache://media/A-128')
+  assert.equal(player.currentQuality.label, '128 kbps')
+  assert.equal(player.currentLyricData, lyric)
+  assert.equal(desktop.at(-1).data.language, 'translation-payload')
+  assert.equal(lyricWrites, 0)
+  assert.equal(queued.length, 1)
+  assert.equal(queued[0].song.album_audio_id, 72)
+  assert.equal(queued[0].song.singerinfo[0].id, 9)
+  assert.equal(releases.length, 0)
+  player.stopPlayback()
+  await flush()
+  assert.deepEqual(releases, ['A-128'])
+})
+
+test('paused startup does not cache audio or lyrics until actual playback and never prefetches the queue', async t => {
+  const queued = []
+  const lyrics = []
+  const { player, audio, sandbox } = createPlayer(t)
+  qualityAudio(audio, player)
+  sandbox.window.electronAPI = { playlistCache: {
+    getSource: async () => null,
+    readLyrics: async () => null,
+    cacheSong: async entry => queued.push(entry),
+    putLyrics: async entry => lyrics.push(entry)
+  } }
+  player.playlist = [song('A'), song('B')]
+  await player.requestSong(player.playlist[0], 'select', {
+    restoreState: { songHash: 'A', currentTime: 42, isPlaying: false }
+  })
+  await flush()
+  assert.equal(audio.currentTime, 42)
+  assert.equal(audio.paused, true)
+  assert.equal(queued.length, 0)
+  assert.equal(lyrics.length, 0)
+  await audio.play()
+  await flush()
+  assert.deepEqual(queued.map(entry => entry.song.hash), ['A'])
+  assert.deepEqual(lyrics.map(entry => entry.hash), ['A'])
+  audio.pause()
+  await audio.play()
+  await flush()
+  assert.equal(queued.length, 2)
+  assert.equal(lyrics.length, 2)
+})
+
+test('only network failures may use a different cached quality and the actual quality stays truthful', async t => {
+  const queries = []
+  const { player, audio, sandbox } = createPlayer(t, {
+    getSongUrl: async () => { const error = new Error('offline'); error.code = 'ERR_NETWORK'; throw error }
+  })
+  sandbox.window.electronAPI = { playlistCache: {
+    getSource: async request => { queries.push(request); return request.allowFallback ? cachedSource(request.hash) : null },
+    releaseSource: async () => {}, readLyrics: async () => null
+  } }
+  assert.equal(await player.requestSong(song('A'), 'select', { quality: 'flac' }), true)
+  assert.deepEqual(queries.map(query => query.allowFallback), [false, true])
+  assert.equal(player.currentQuality.label, '128 kbps')
+  assert.equal(player.loadedQualityPreference, '128')
+  assert.equal(audio.src, 'bk-cache://media/A-128')
+  for (const error of [Object.assign(new Error('permission denied'), { response: { status: 502, data: { error_code: 20010 } } }),
+    Object.assign(new Error('expired'), { code: 'KUGOU_AUTH_EXPIRED' })]) {
+    assert.equal(player.isPlaybackNetworkFailure(error), false)
+  }
+})
+
+test('cached candidate failure restores the old lease and successful replacement releases it only after confirmation', async t => {
+  const releases = []
+  const { player, audio, sandbox } = createPlayer(t)
+  sandbox.window.electronAPI = { playlistCache: {
+    getSource: async request => cachedSource(request.hash),
+    releaseSource: async leaseId => releases.push(leaseId),
+    readLyrics: async () => null
+  } }
+  await player.requestSong(song('A'))
+  audio.currentTime = 37
+  const originalPlay = audio.play.bind(audio)
+  const candidate = deferred()
+  audio.play = () => audio.src.includes('/B-') ? candidate.promise : originalPlay()
+  const selecting = player.requestSong(song('B'))
+  await flush()
+  assert.equal(audio.src, 'bk-cache://media/B-128')
+  assert.equal(releases.length, 0)
+  candidate.reject(new Error('decode failed'))
+  assert.equal(await selecting, false)
+  await flush()
+  assert.equal(audio.src, 'bk-cache://media/A-128')
+  assert.equal(audio.currentTime, 37)
+  assert.equal(player.cacheSourceLeaseId, 'A-128')
+  assert.deepEqual(releases, ['B-128'])
+  assert.equal(await player.requestSong(song('C')), true)
+  await flush()
+  assert.deepEqual(releases, ['B-128', 'A-128'])
+  assert.equal(player.cacheSourceLeaseId, 'C-128')
+})
+
+test('stop, unmount and account changes return late cache leases without playing or caching them', async t => {
+  for (const action of ['stop', 'unmount', 'account']) {
+    let version = 0
+    const pending = deferred()
+    const releases = []
+    const queued = []
+    const { player, audio, sandbox, component } = createPlayer(t, {
+      getPlaylistCacheSessionVersion: () => version
+    })
+    sandbox.window.electronAPI = { playlistCache: {
+      getSource: async () => pending.promise,
+      releaseSource: async leaseId => releases.push(leaseId),
+      cacheSong: async entry => queued.push(entry)
+    } }
+    const selected = player.requestSong(song('A'))
+    await flush()
+    if (action === 'stop') player.stopPlayback()
+    else if (action === 'unmount') component.beforeUnmount.call(player)
+    else { version++; player.stopPlayback() }
+    await selected
+    pending.resolve(cachedSource('A'))
+    await flush()
+    assert.deepEqual(releases, ['A-128'])
+    assert.equal(audio.src, '')
+    assert.equal(queued.length, 0)
+    assert.equal(player.cacheSourceLeases.size, 0)
+  }
+})
+
+test('cache failures cannot block successful online playback or the existing lyric display', async t => {
+  const { player, audio, sandbox } = createPlayer(t)
+  const fail = async () => { throw new Error('local disk unavailable') }
+  sandbox.window.electronAPI = { playlistCache: {
+    getSource: fail, readLyrics: fail, cacheSong: fail, putLyrics: fail
+  } }
+  assert.equal(await player.requestSong(song('A')), true)
+  await flush()
+  assert.equal(audio.src, 'https://example.test/A.mp3')
+  assert.equal(player.currentLyrics, '[00:00.00]A')
+  assert.equal(player.isLyricPlaceholder, false)
+  assert.equal(player.queuedCacheSongs.size, 0)
+})
+
+test('a failed or superseded playback does not queue its audio or late lyrics for offline use', async t => {
+  const queued = []
+  const savedLyrics = []
+  const failedPlay = deferred()
+  const lyricA = deferred()
+  const { player, audio, sandbox } = createPlayer(t, {
+    getLyric: hash => hash === 'A' ? lyricA.promise : Promise.resolve({ status: 1, decodeContent: `[00:00.00]${hash}` })
+  })
+  sandbox.window.electronAPI = { playlistCache: {
+    getSource: async () => null, readLyrics: async () => null,
+    cacheSong: async entry => queued.push(entry.song.hash),
+    putLyrics: async entry => savedLyrics.push(entry.hash)
+  } }
+  const originalPlay = audio.play.bind(audio)
+  audio.play = () => audio.src.endsWith('/A.mp3') ? failedPlay.promise : originalPlay()
+  const selecting = player.requestSong(song('A'))
+  await flush()
+  player.requestSong(song('B'))
+  failedPlay.resolve()
+  await selecting
+  lyricA.resolve({ status: 1, decodeContent: '[00:00.00]A' })
+  await flush()
+  assert.deepEqual(queued, ['B'])
+  assert.deepEqual(savedLyrics, ['B'])
+  assert.equal(player.currentSong.hash, 'B')
+})
+
+test('a CDN play network rejection falls back locally while abort and decoder failures keep their original failure', async t => {
+  for (const code of ['ERR_NETWORK', 'AbortError', 'NotSupportedError']) {
+    const queries = []
+    const { player, audio, sandbox } = createPlayer(t)
+    sandbox.window.electronAPI = { playlistCache: {
+      getSource: async request => { queries.push(request.allowFallback); return request.allowFallback ? cachedSource('A') : null },
+      releaseSource: async () => {}, readLyrics: async () => null
+    } }
+    const originalPlay = audio.play.bind(audio)
+    audio.play = async () => {
+      if (audio.src.startsWith('https:')) {
+        const error = new Error('CDN playback failed')
+        if (code === 'ERR_NETWORK') error.code = code
+        else error.name = code
+        throw error
+      }
+      return originalPlay()
+    }
+    assert.equal(await player.requestSong(song('A')), code === 'ERR_NETWORK')
+    assert.deepEqual(queries, code === 'ERR_NETWORK' ? [false, true] : [false])
+    assert.equal(audio.src, code === 'ERR_NETWORK' ? 'bk-cache://media/A-128' : '')
+  }
+})
+
+test('a media network error during an unsettled play releases listeners and confirms the cached replacement', async t => {
+  const pending = deferred()
+  const { player, audio, sandbox } = createPlayer(t)
+  const listeners = qualityAudio(audio, player)
+  sandbox.window.electronAPI = { playlistCache: {
+    getSource: async request => request.allowFallback ? cachedSource('A') : null,
+    releaseSource: async () => {}, readLyrics: async () => null
+  } }
+  const originalPlay = audio.play.bind(audio)
+  audio.play = () => audio.src.startsWith('https:') ? pending.promise : originalPlay()
+  const selected = player.requestSong(song('A'))
+  await flush()
+  audio.error = { code: 2 }
+  audio.emit('error')
+  assert.equal(await selected, true)
+  assert.equal(audio.src, 'bk-cache://media/A-128')
+  assert.equal(player.currentSong.hash, 'A')
+  assert.equal(listeners.get('error').size, 0)
+  pending.resolve()
+  await flush()
+  assert.equal(audio.src, 'bk-cache://media/A-128')
+})
+
+test('a confirmed online track handles a later CDN network error at the same position without refetching its URL', async t => {
+  let onlineRequests = 0
+  const queries = []
+  const { player, audio, sandbox } = createPlayer(t, {
+    getSongUrl: async () => { onlineRequests++; return { status: 1, url: 'https://example.test/A.mp3', extname: 'mp3', bitrate: 128000 } }
+  })
+  qualityAudio(audio, player)
+  sandbox.window.electronAPI = { playlistCache: {
+    getSource: async request => { queries.push(request.allowFallback); return request.allowFallback ? cachedSource('A') : null },
+    releaseSource: async () => {}, readLyrics: async () => null
+  } }
+  await player.requestSong(song('A'), 'next')
+  await flush()
+  const lyric = player.currentLyrics
+  audio.currentTime = 49
+  audio.error = { code: 3 }
+  player.handleAudioError()
+  assert.equal(player.isLoadingSong, false)
+  audio.error = { code: 2 }
+  player.handleAudioError()
+  await flush()
+  assert.equal(onlineRequests, 1)
+  assert.deepEqual(queries, [false, true])
+  assert.equal(audio.src, 'bk-cache://media/A-128')
+  assert.equal(audio.currentTime, 49)
+  assert.equal(audio.paused, false)
+  assert.equal(player.currentLyrics, lyric)
+  assert.equal(player.trackTransition, 'next')
+})
+
+test('a superseded cache lookup cannot replace or release the newer committed lease', async t => {
+  const pending = deferred()
+  const releases = []
+  const { player, audio, sandbox } = createPlayer(t)
+  sandbox.window.electronAPI = { playlistCache: {
+    getSource: async request => request.hash === 'B' ? pending.promise : cachedSource(request.hash),
+    releaseSource: async leaseId => releases.push(leaseId), readLyrics: async () => null
+  } }
+  await player.requestSong(song('A'))
+  const selectedB = player.requestSong(song('B'))
+  await flush()
+  player.requestSong(song('C'))
+  await selectedB
+  await flush()
+  assert.equal(audio.src, 'bk-cache://media/C-128')
+  assert.equal(player.cacheSourceLeaseId, 'C-128')
+  pending.resolve(cachedSource('B'))
+  await flush()
+  assert.deepEqual(releases, ['A-128', 'B-128'])
+  assert.equal(player.cacheSourceLeases.size, 1)
+  assert.equal(player.cacheSourceLeases.has('C-128'), true)
+})
+
+test('late lyrics for an actually played previous track are never stored as the current track lyrics', async t => {
+  const pending = deferred()
+  const writes = []
+  const { player, sandbox } = createPlayer(t, {
+    getLyric: hash => hash === 'A' ? pending.promise : Promise.resolve({ status: 1, decodeContent: '[00:00.00]B', language: 'B-translation' })
+  })
+  sandbox.window.electronAPI = { playlistCache: {
+    getSource: async () => null, readLyrics: async () => null,
+    cacheSong: async () => {}, putLyrics: async entry => writes.push(entry)
+  } }
+  await player.requestSong(song('A'))
+  await flush()
+  await player.requestSong(song('B'))
+  await flush()
+  pending.resolve({ status: 1, decodeContent: '[00:00.00]A', language: 'A-translation' })
+  await flush()
+  assert.deepEqual(writes.map(entry => entry.hash), ['B'])
+  assert.equal(writes[0].data.language, 'B-translation')
+  assert.equal(player.currentLyricData.language, 'B-translation')
+})
+
+test('enabling caching or clearing it allows the same loaded song and lyrics to accumulate on the next real play', async t => {
+  let enabled = false
+  const audioRequests = [], lyricRequests = [], storedSongs = new Set(), storedLyrics = new Set()
+  const { player, audio, sandbox } = createPlayer(t)
+  sandbox.window.electronAPI = { playlistCache: {
+    getSource: async () => null, readLyrics: async () => null,
+    cacheSong: async entry => { audioRequests.push(entry.song.hash); if (enabled) storedSongs.add(entry.song.hash); return { enabled } },
+    putLyrics: async entry => { lyricRequests.push(entry.hash); if (enabled) storedLyrics.add(entry.hash); return enabled ? entry.data : null }
+  } }
+  await player.requestSong(song('A'))
+  await flush()
+  assert.equal(storedSongs.size, 0)
+  assert.equal(storedLyrics.size, 0)
+  enabled = true
+  audio.pause()
+  await audio.play()
+  await flush()
+  assert.deepEqual([...storedSongs], ['A'])
+  assert.deepEqual([...storedLyrics], ['A'])
+  storedSongs.clear(); storedLyrics.clear()
+  audio.pause()
+  await audio.play()
+  await flush()
+  assert.deepEqual([...storedSongs], ['A'])
+  assert.deepEqual([...storedLyrics], ['A'])
+  assert.deepEqual(audioRequests, ['A', 'A', 'A'])
+  assert.deepEqual(lyricRequests, ['A', 'A', 'A'])
+})
+
+test('resuming a track originally loaded offline can repopulate its retained lyrics after clear', async t => {
+  const data = { status: 1, decodeContent: '[00:00.00]Cached lyrics', language: 'retained-translation' }
+  const writes = []
+  const { player, audio, sandbox } = createPlayer(t)
+  sandbox.window.electronAPI = { playlistCache: {
+    getSource: async () => cachedSource('A'), releaseSource: async () => {},
+    readLyrics: async () => data, cacheSong: async () => ({}), putLyrics: async entry => writes.push(entry)
+  } }
+  await player.requestSong(song('A'))
+  await flush()
+  assert.equal(writes.length, 0)
+  assert.equal(player.currentLyricsFromCache, true)
+  audio.pause()
+  await audio.play()
+  await flush()
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].hash, 'A')
+  assert.equal(writes[0].data.language, 'retained-translation')
+})
+
+test('song and lyric bridge payloads remove nested Vue proxies before Electron structured cloning', async t => {
+  const track = reactive({ ...song('A'), singerinfo: [{ id: 3, name: 'Reactive artist' }], albuminfo: { name: 'Reactive album' } })
+  const lyric = reactive({ status: 1, decodeContent: '[00:00.00]Reactive lyrics', translationData: { lines: ['Translated line'] } })
+  const songs = [], lyrics = []
+  const { player, sandbox } = createPlayer(t, { getLyric: async () => lyric })
+  sandbox.window.electronAPI = { playlistCache: {
+    getSource: async () => null, readLyrics: async () => null,
+    cacheSong: async payload => songs.push(structuredClone(payload)),
+    putLyrics: async payload => lyrics.push(structuredClone(payload))
+  } }
+  await player.requestSong(track)
+  await flush()
+  assert.equal(songs.length, 1)
+  assert.equal(lyrics.length, 1)
+  assert.equal(songs[0].song.singerinfo[0].name, 'Reactive artist')
+  assert.equal(songs[0].song.albuminfo.name, 'Reactive album')
+  assert.equal(lyrics[0].data.translationData.lines[0], 'Translated line')
 })

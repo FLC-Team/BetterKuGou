@@ -68,6 +68,25 @@ test('desktop lyric preferences supplement old settings and reject invalid displ
   assert.equal(fixture.store.getSettings().playback.showTranslation, true)
 })
 
+test('offline cache defaults and imported controls are normalized without changing reserved paths', async () => {
+  const { store, app } = createStore()
+  await store.initSettingsStore(app)
+  assert.equal(store.getSettings().download.offlinePlaylistCacheEnabled, true)
+  assert.equal(store.getSettings().download.cacheSizeIndex, 0)
+  assert.equal(store.getSettings().download.concurrentDownloads, 3)
+  await store.setSettings({ download: { offlinePlaylistCacheEnabled: false, cacheSizeIndex: 5, concurrentDownloads: 10, cachePath: '/saved-reserved-cache' } })
+  assert.equal(store.getSettings().download.offlinePlaylistCacheEnabled, false)
+  assert.equal(store.getSettings().download.cacheSizeIndex, 5)
+  assert.equal(store.getSettings().download.concurrentDownloads, 10)
+  await store.setSettings({ download: { offlinePlaylistCacheEnabled: 'false', cacheSizeIndex: 100, concurrentDownloads: 20 } })
+  assert.equal(store.getSettings().download.offlinePlaylistCacheEnabled, true)
+  assert.equal(store.getSettings().download.cacheSizeIndex, 0)
+  assert.equal(store.getSettings().download.concurrentDownloads, 10)
+  assert.equal(store.getSettings().download.cachePath, '/saved-reserved-cache')
+  await store.setSettings({ download: null })
+  assert.equal(store.getSettings().download.concurrentDownloads, 3)
+})
+
 test('failed settings writes preserve the committed cache and later transactions still work', async () => {
   const fixture = createStore()
   const { store } = fixture

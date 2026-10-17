@@ -50,6 +50,7 @@ function loadMain({ platform = 'win32', packaged = true, startFails = false } = 
         dialog: {}, shell: {}, nativeImage: {}, Menu: {}, Tray: class {}
       }
       if (name === './logger') return logger
+      if (name === './services/playlistCacheService') return { createPlaylistCacheService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/backendService') return { createBackendService: () => ({ stop: async () => {} }) }
       if (name === './services/updateService') return { createUpdateService() {} }
       if (name === './services/installQuitService') return { createInstallQuitService(value) { options = value; return service } }

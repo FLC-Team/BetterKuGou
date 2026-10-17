@@ -59,9 +59,9 @@
         </section>
 
         <section class="settings-section" id="download-section" :ref="sectionRefs.download" data-section="download" aria-labelledby="download-heading">
-          <header class="section-header"><span class="section-number">05</span><div><h2 id="download-heading">下载与缓存</h2><p>下载服务尚未接入，这些预留设置暂不生效。</p></div></header>
-          <div class="settings-notice">目前支持在线聆听。下载路径、缓存限额与并发控制将在下载功能可用后开放。</div>
-          <fieldset disabled class="unavailable-settings" aria-label="尚未开放的下载设置"><div class="setting-item"><div class="setting-info"><label class="setting-label" for="download-path">下载目录</label><p class="setting-desc">保留已保存的目录偏好。</p></div><input id="download-path" class="path-input" type="text" :value="localSettings.download.downloadPath || '尚未设置'" readonly></div><div class="setting-item"><div class="setting-info"><label class="setting-label" for="cache-path">缓存目录</label></div><input id="cache-path" class="path-input" type="text" :value="localSettings.download.cachePath || '尚未设置'" readonly></div><div class="setting-item"><div class="setting-info"><label class="setting-label" for="cache-size">缓存上限</label></div><select id="cache-size" class="setting-select" v-model.number="localSettings.download.cacheSizeIndex"><option v-for="(option, index) in cacheSizeOptions" :key="option.value" :value="index">{{ option.label }}</option></select></div><div class="setting-item"><div class="setting-info"><label class="setting-label" for="download-concurrency">同时下载数量</label></div><input id="download-concurrency" class="number-input" type="number" min="1" max="10" v-model.number="localSettings.download.concurrentDownloads"></div></fieldset>
+          <header class="section-header"><span class="section-number">05</span><div><h2 id="download-heading">下载与缓存</h2><p>听过的音乐，下次也能离线聆听。</p></div></header>
+          <PlaylistCacheSettings v-model="localSettings.download" :before-action="flushEditableSettings" />
+          <div class="setting-group"><h3>歌曲下载</h3><p class="setting-desc">导出音乐文件的下载服务尚未开放。</p><fieldset disabled class="unavailable-settings" aria-label="尚未开放的下载设置"><div class="setting-item"><div class="setting-info"><label class="setting-label" for="download-path">下载目录</label><p class="setting-desc">保留已保存的目录偏好。</p></div><input id="download-path" class="path-input" type="text" :value="localSettings.download.downloadPath || '尚未设置'" readonly></div></fieldset></div>
         </section>
         <footer class="settings-footer">BetterKuGou · 给每一首喜欢的音乐，一个舒服的位置。</footer>
       </main>
@@ -78,6 +78,7 @@ import { cloneDeep, mergeDeep, replaceReactive } from '../utils/objectUtils.js'
 import ThemePackages from '../components/common/ThemePackages.vue'
 import ThemeAdjustments from '../components/common/ThemeAdjustments.vue'
 import AppUpdates from '../components/common/AppUpdates.vue'
+import PlaylistCacheSettings from '../components/common/PlaylistCacheSettings.vue'
 import packageInfo from '../../package.json'
 import { applyTheme } from '../utils/themeManager.js'
 
@@ -136,15 +137,6 @@ const shortcutList = ref([
 const editingShortcut = ref(null)
 const shortcutErrors = ref({})
 
-const cacheSizeOptions = [
-  { value: 2048, label: '2048 MB' },
-  { value: 4096, label: '4096 MB' },
-  { value: 6144, label: '6144 MB' },
-  { value: 8192, label: '8192 MB' },
-  { value: 10240, label: '10240 MB' },
-  { value: -1, label: '无限制' }
-]
-
 const {
   settings,
   ready,
@@ -187,11 +179,6 @@ const saveState = ref('saved')
 let saveTask = null
 let recoveringAppearance = false
 const saveStatusText = computed(() => ({ saved: '所有更改已保存', pending: '等待保存…', saving: '正在保存…', error: '更改尚未保存' })[saveState.value])
-
-const currentCacheSizeLabel = computed(() => {
-  const index = localSettings?.download?.cacheSizeIndex ?? 0
-  return cacheSizeOptions[index]?.label || '无限制'
-})
 
 // 只提交用户实际编辑的字段，保留同一分区中的外部更新。
 function collectSettingsPatch(current, baseline) {

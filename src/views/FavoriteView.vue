@@ -10,6 +10,15 @@
           <div class="collection-meta"><span>{{ favoriteList.length }} 首歌曲</span><span>{{ isPlaylistView ? '我的歌单' : '我喜欢' }}</span></div>
           <div class="collection-actions"><button type="button" class="play-all-btn" :disabled="favoriteList.length === 0" @click="playAll"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>播放全部</button>
             <button type="button" class="action-btn" :disabled="loading" @click="loadFavorites(true)">{{ loading ? '刷新中…' : '刷新歌单' }}</button></div>
+          <div v-if="offlineCacheAvailable" class="playlist-cache" aria-live="polite">
+            <span>{{ playlistCacheState?.enabled === false ? '离线缓存已关闭' : `已听缓存 ${offlineCacheEntry?.cached || 0} / ${favoriteList.length} 首` }}</span>
+            <span class="playlist-cache-hint">{{ offlineCacheStatusText }}</span>
+            <button v-if="playlistCacheState?.enabled !== false && offlineCacheEntry?.status === 'paused'" type="button" class="cache-action" :disabled="cacheActionPending" @click="controlPlaylistCache('resume')">继续缓存</button>
+            <button v-else-if="offlineCacheBusy" type="button" class="cache-action" :disabled="cacheActionPending" @click="controlPlaylistCache('pause')">暂停缓存</button>
+            <button v-if="cacheWriteFailed" type="button" class="cache-action" :disabled="cacheActionPending" @click="retryPlaylistSnapshot">重试保存</button>
+            <button v-else-if="offlineCacheCanRetry" type="button" class="cache-action" :disabled="cacheActionPending" @click="controlPlaylistCache('retry')">重试缓存</button>
+          </div>
+          <p v-if="offlineCacheError" class="playlist-cache-error" role="alert">{{ offlineCacheError }}</p>
         </div>
       </header>
 
@@ -98,6 +107,7 @@
                   <span v-if="song.relate_goods && song.relate_goods.some(g => g.level >= 5)" class="quality-badge">SQ</span>
                 </button>
                 <SongBadges :song="song" />
+                <span v-if="offlineSongHashes.has(String(song.hash || '').toLowerCase())" class="offline-song-badge" title="已保留音频，可离线播放">已缓存</span>
               </div>
               <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />
             </div>

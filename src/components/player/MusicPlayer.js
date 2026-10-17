@@ -10,6 +10,8 @@ import LyricView from './LyricView.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import { useSettingsStore } from '../../stores/settingsStore.js'
 import { PLAYBACK_QUALITY_OPTIONS, normalizePlaybackQuality, readPlaybackQuality } from '../../utils/playbackQuality.js'
+import { getPlaylistCacheAPI, waitForPlaylistCacheSession, getPlaylistCacheSessionVersion } from '../../utils/playlistCache.js'
+import { cloneDeep } from '../../utils/objectUtils.js'
 
 // 动态导入 SVG 图标
 import playlistIcon from '../../assets/icons/playlist.svg'
@@ -117,6 +119,14 @@ export default {
       qualityOptions: PLAYBACK_QUALITY_OPTIONS,
       currentQuality: null,
       loadedQualityPreference: null,
+      cacheSourceLeaseId: null,
+      cacheSourceLeases: new Set(),
+      loadedSongDetail: null,
+      loadedCacheSessionVersion: null,
+      playedCacheSongs: new Set(),
+      queuedCacheSongs: new Set(),
+      cachedLyricData: null,
+      currentLyricsFromCache: false,
       qualityMessage: '',
       qualitySaveMessage: '',
       qualityRequestVersion: 0,
@@ -389,6 +399,7 @@ export default {
       this.$refs.audioPlayer.removeAttribute('src')
       this.$refs.audioPlayer.load()
     }
+    this.releaseAllCacheSources()
     
     // 清理定时器
     if (this.switchSongDebounceTimer) {
@@ -405,6 +416,120 @@ export default {
     contextMenuManager.unregisterMenu(this.closePlayModeMenu)
   },
   methods: {
+    /** 租约独立于账号会话释放；旧音源在成功换源或停止之前始终保持可读。 */
+    releaseCacheSource(leaseId) {
+      if (!leaseId || !this.cacheSourceLeases.delete(leaseId)) return
+      try {
+        Promise.resolve(getPlaylistCacheAPI()?.releaseSource?.(leaseId)).catch(error => {
+          logger.warn('MusicPlayer', '释放本地音源失败', { name: error?.name, code: error?.code })
+        })
+      } catch (error) {
+        logger.warn('MusicPlayer', '释放本地音源失败', { name: error?.name, code: error?.code })
+      }
+    },
+
+    releaseAllCacheSources() {
+      this.cacheSourceLeaseId = null
+      for (const leaseId of this.cacheSourceLeases) this.releaseCacheSource(leaseId)
+    },
+
+    /** 迟到、取消或换账号的查询必须归还租约，不能把候选文件留成正在播放。 */
+    async readCachedSource(song, quality, allowFallback, isCurrent, onLease) {
+      try {
+        const api = await waitForPlaylistCacheSession()
+        if (!api?.getSource || !isCurrent()) return null
+        const source = await api.getSource({ hash: song.hash, quality, allowFallback })
+        if (source?.leaseId) this.cacheSourceLeases.add(source.leaseId)
+        if (!isCurrent() || source?.status !== 1 || typeof source.url !== 'string' || !source.url) {
+          this.releaseCacheSource(source?.leaseId)
+          return null
+        }
+        onLease(source.leaseId || null)
+        return source
+      } catch (error) {
+        logger.warn('MusicPlayer', '读取本地音源失败', { name: error?.name, code: error?.code })
+        return null
+      }
+    },
+
+    isPlaybackNetworkFailure(error) {
+      if (error?.code === 'KUGOU_AUTH_EXPIRED') return false
+      const data = error?.response?.data
+      if (data?.priv_status === 0 || data?.error_code || data?.data?.error_code) return false
+      return ['ERR_NETWORK', 'ECONNABORTED', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNREFUSED', 'ECONNRESET', 'EAI_AGAIN'].includes(error?.code) ||
+        [502, 503, 504].includes(error?.response?.status)
+    },
+
+    createPlaybackMediaError(audio, message) {
+      const error = new Error(message)
+      if (audio?.error?.code === 2) error.code = 'ERR_NETWORK'
+      return error
+    },
+
+    /** 已提交在线音源发生明确网络错误时，以原进度和播放意图换成本地源。 */
+    handleAudioError() {
+      const audio = this.$refs.audioPlayer
+      if (this.isDisposed || this.isLoadingSong || this.pendingSong || !audio || audio.error?.code !== 2 ||
+          this.cacheSourceLeaseId || this.loadedSongHash !== this.currentSong?.hash ||
+          !getPlaylistCacheAPI()?.getSource) return
+      this.requestSong(this.currentSong, this.trackTransition, {
+        quality: this.loadedQualityPreference || this.qualityPreference,
+        qualityChange: true,
+        cachedNetworkFallback: true,
+        restoreState: { songHash: this.currentSong.hash, currentTime: audio.currentTime, isPlaying: this.isPlaying }
+      })
+    },
+
+    /** 只在已确认音源实际播放后入队；暂停恢复和待选歌曲都不能触发下载。 */
+    cachePlayedSong(recacheLyrics = false) {
+      const audio = this.$refs.audioPlayer
+      if (this.isDisposed || !audio || audio.paused || !this.currentSong?.hash ||
+          this.loadedSongHash !== this.currentSong.hash || this.isLoadingSong ||
+          this.loadedCacheSessionVersion !== getPlaylistCacheSessionVersion()) return
+      const song = this.loadedSongDetail || this.currentSong
+      const version = this.loadedCacheSessionVersion
+      const quality = this.loadedQualityPreference || this.qualityPreference
+      const songKey = `${version}:${song.hash}`
+      this.playedCacheSongs.add(songKey)
+      const key = `${songKey}:${quality}`
+      if (!this.queuedCacheSongs.has(key)) {
+        this.queuedCacheSongs.add(key)
+        Promise.resolve().then(async () => {
+          const api = await waitForPlaylistCacheSession()
+          if (this.isDisposed || version !== getPlaylistCacheSessionVersion() || !api?.cacheSong) {
+            this.queuedCacheSongs.delete(key)
+            return
+          }
+          await api.cacheSong({ song: cloneDeep(song), quality })
+        }).catch(error => {
+          logger.warn('MusicPlayer', '保存已播放歌曲缓存失败', { name: error?.name, code: error?.code })
+        }).finally(() => this.queuedCacheSongs.delete(key))
+      }
+      if (recacheLyrics) this.currentLyricsFromCache = false
+      this.cachePlayedLyrics()
+    },
+
+    /** 原歌词响应包含翻译；仅持久化当前已播放歌曲的真实歌词。 */
+    cachePlayedLyrics() {
+      const data = this.currentLyricData
+      const hash = this.currentSong?.hash
+      const version = this.loadedCacheSessionVersion
+      if (!hash || !data || this.isLyricPlaceholder || this.currentLyricsFromCache || this.cachedLyricData === data ||
+          this.loadedSongHash !== hash || version !== getPlaylistCacheSessionVersion() ||
+          !this.playedCacheSongs.has(`${version}:${hash}`)) return
+      this.cachedLyricData = data
+      Promise.resolve().then(async () => {
+        const api = await waitForPlaylistCacheSession()
+        if (this.isDisposed || version !== getPlaylistCacheSessionVersion() || !api?.putLyrics) {
+          if (this.cachedLyricData === data) this.cachedLyricData = null
+          return
+        }
+        await api.putLyrics({ hash, data: cloneDeep(data) })
+      }).catch(error => {
+        logger.warn('MusicPlayer', '保存已播放歌词缓存失败', { name: error?.name, code: error?.code })
+      }).finally(() => { if (this.cachedLyricData === data) this.cachedLyricData = null })
+    },
+
     /** 仅采集已确认歌曲；替换音源期间沿用替换前的状态，避免临时零值污染会话。 */
     getPlaybackSnapshot() {
       const audio = this.$refs.audioPlayer
@@ -482,6 +607,25 @@ export default {
       let committed = false
       let playAttempted = false
       let failed = false
+      let candidateLease = null
+      let cacheLookupActive = true
+      const cacheSessionVersion = getPlaylistCacheSessionVersion()
+      const canUseCache = () => cacheLookupActive && this.isCurrentSongRequest(requestId) &&
+        cacheSessionVersion === getPlaylistCacheSessionVersion()
+      const readCache = async allowFallback => {
+        let lookupActive = true
+        try {
+          return await this.waitForSongOperation(this.readCachedSource(
+            song, requestedQuality, allowFallback, () => lookupActive && canUseCache(),
+            leaseId => { candidateLease = leaseId }
+          ))
+        } catch (error) {
+          if (this.isCurrentSongRequest(requestId)) logger.warn('MusicPlayer', '本地音源查询未完成，继续在线加载', { name: error?.name, code: error?.code })
+          return null
+        } finally {
+          lookupActive = false
+        }
+      }
 
       try {
         if (restoreState) {
@@ -516,26 +660,43 @@ export default {
 
         if (!qualityChange) this.lyricRequestId++
         let audioDetail = song
-        if (!song.album_audio_id) {
-          const detailResponse = await this.waitForSongOperation(getSongDetail(song.hash))
-          if (!this.isCurrentSongRequest(requestId)) return false
-          if (detailResponse?.status === 1 && detailResponse.data?.length > 0) {
-            audioDetail = { ...song, ...detailResponse.data[0] }
+        let urlResponse = getPlaylistCacheAPI()?.getSource ? await readCache(Boolean(options.cachedNetworkFallback)) : null
+        if (!this.isCurrentSongRequest(requestId)) return false
+        if (!urlResponse && options.cachedNetworkFallback) throw new Error('在线音源连接中断，尚无可用离线缓存')
+        if (!urlResponse) {
+          try {
+            if (!song.album_audio_id) {
+              const detailResponse = await this.waitForSongOperation(getSongDetail(song.hash))
+              if (!this.isCurrentSongRequest(requestId)) return false
+              if (detailResponse?.status === 1 && detailResponse.data?.length > 0) {
+                audioDetail = { ...song, ...detailResponse.data[0] }
+              }
+            }
+            urlResponse = await this.waitForSongOperation(getSongUrl(
+              audioDetail.hash, audioDetail.album_id || 0, audioDetail.album_audio_id || 0, requestedQuality
+            ))
+          } catch (error) {
+            if (!this.isCurrentSongRequest(requestId)) return false
+            if (!this.isPlaybackNetworkFailure(error)) throw error
+            urlResponse = await readCache(true)
+            if (!urlResponse) throw error
           }
         }
-
-        const urlResponse = await this.waitForSongOperation(getSongUrl(
-          audioDetail.hash, audioDetail.album_id || 0, audioDetail.album_audio_id || 0, requestedQuality
-        ))
         if (!this.isCurrentSongRequest(requestId)) return false
+        if (urlResponse?.detail) audioDetail = { ...song, ...urlResponse.detail, hash: song.hash }
         if (urlResponse?.status !== 1) throw new Error(this.getPlayErrorMessage(urlResponse))
-        let playUrl = Array.isArray(urlResponse.url) ? urlResponse.url[0] : urlResponse.url
-        if (typeof playUrl !== 'string' || !playUrl) throw new Error(this.getPlayErrorMessage(urlResponse))
-        if (playUrl.startsWith('http://')) playUrl = playUrl.replace('http://', 'https://')
+        const readPlayUrl = response => {
+          let url = Array.isArray(response.url) ? response.url[0] : response.url
+          if (typeof url !== 'string' || !url) throw new Error(this.getPlayErrorMessage(response))
+          if (url.startsWith('http://')) url = url.replace('http://', 'https://')
+          return url
+        }
+        let playUrl = readPlayUrl(urlResponse)
 
         // 地址请求期间旧歌仍会播放，在替换前保存其最新位置和播放状态。
         previousPlayback = {
           source: this.loadedSongHash === this.currentSong?.hash ? audioEl.getAttribute('src') : null,
+          leaseId: this.cacheSourceLeaseId,
           hash: this.loadedSongHash,
           time: audioEl.currentTime,
           duration: this.duration,
@@ -544,28 +705,48 @@ export default {
         this.replacingPlaybackSnapshot = previousPlayback
         this.isReplacingQualitySource = qualityChange
         if (qualityChange) this.currentTime = previousPlayback.time
-        sourceVersion = ++this.audioSourceVersion
-        audioEl.src = playUrl
-        if (qualityChange || restoreState) {
-          audioEl.pause()
-          const ready = await this.waitForAudioReady(audioEl, () => this.isCurrentSongRequest(requestId) && ownsSource())
-          if (!ready || !this.isCurrentSongRequest(requestId) || !ownsSource()) return false
-          const duration = Number.isFinite(audioEl.duration) && audioEl.duration > 0 ? audioEl.duration : 0
-          const time = restoreState ? restoreState.currentTime : previousPlayback.time
-          const targetTime = Number.isFinite(time) ? Math.max(0, time) : 0
-          audioEl.currentTime = duration > 0 ? Math.min(targetTime, duration) : targetTime
-        }
         const shouldPlay = restoreState ? restoreState.isPlaying === true : !qualityChange || previousPlayback.playing
-        if (shouldPlay) {
-          playAttempted = true
-          await this.waitForSongOperation(audioEl.play(), audioEl)
+        const installSource = async () => {
+          sourceVersion = ++this.audioSourceVersion
+          this.cacheSourceLeaseId = candidateLease
+          audioEl.src = playUrl
+          if (qualityChange || restoreState) {
+            audioEl.pause()
+            const ready = await this.waitForAudioReady(audioEl, () => this.isCurrentSongRequest(requestId) && ownsSource())
+            if (!ready || !this.isCurrentSongRequest(requestId) || !ownsSource()) return false
+            const duration = Number.isFinite(audioEl.duration) && audioEl.duration > 0 ? audioEl.duration : 0
+            const time = restoreState ? restoreState.currentTime : previousPlayback.time
+            const targetTime = Number.isFinite(time) ? Math.max(0, time) : 0
+            audioEl.currentTime = duration > 0 ? Math.min(targetTime, duration) : targetTime
+          }
+          if (shouldPlay) {
+            playAttempted = true
+            await this.waitForSongOperation(audioEl.play(), audioEl)
+          }
+          return true
+        }
+        try {
+          if (!await installSource()) return false
+        } catch (error) {
+          if (candidateLease || !this.isCurrentSongRequest(requestId) || !ownsSource() ||
+              !this.isPlaybackNetworkFailure(error)) throw error
+          const fallback = await readCache(true)
+          if (!fallback) throw error
+          if (!this.isCurrentSongRequest(requestId) || !ownsSource()) return false
+          urlResponse = fallback
+          audioDetail = { ...audioDetail, ...fallback.detail, hash: song.hash }
+          playUrl = readPlayUrl(fallback)
+          if (!await installSource()) return false
         }
         if (!this.isCurrentSongRequest(requestId) || !ownsSource()) return false
 
         committed = true
         this.loadedSongHash = song.hash
-        this.loadedQualityPreference = requestedQuality
+        this.loadedQualityPreference = candidateLease ? normalizePlaybackQuality(urlResponse.requestedQuality || requestedQuality) : requestedQuality
+        this.loadedSongDetail = audioDetail
+        this.loadedCacheSessionVersion = cacheSessionVersion
         this.currentQuality = readPlaybackQuality(urlResponse)
+        if (previousPlayback.leaseId !== candidateLease) this.releaseCacheSource(previousPlayback.leaseId)
         this.qualityMessage = ''
         if (qualityChange) {
           this.currentTime = audioEl.currentTime
@@ -581,6 +762,8 @@ export default {
         this.currentLyrics = ''
         this.isLyricPlaceholder = true
         this.currentLyricData = null
+        this.cachedLyricData = null
+        this.currentLyricsFromCache = false
         this.currentTime = audioEl.currentTime
         this.updateMediaSession(audioDetail)
         this.checkFavoriteStatus()
@@ -599,11 +782,13 @@ export default {
         else this.showError(`加载歌曲失败: ${message}`)
         return false
       } finally {
+        cacheLookupActive = false
         // 请求代次只决定是否提交；音源代次保证停止/卸载后旧任务不能恢复播放。
         if (!committed && previousPlayback && ownsSource()) {
           audioEl.pause()
           sourceVersion = ++this.audioSourceVersion
           if (previousPlayback.source) {
+            this.cacheSourceLeaseId = previousPlayback.leaseId
             audioEl.src = previousPlayback.source
             this.loadedSongHash = previousPlayback.hash
             this.currentTime = previousPlayback.time
@@ -619,6 +804,7 @@ export default {
               }
             }
           } else {
+            this.cacheSourceLeaseId = null
             audioEl.removeAttribute('src')
             this.loadedSongHash = null
             audioEl.load()
@@ -626,6 +812,7 @@ export default {
             this.duration = 0
           }
         }
+        if (!committed) this.releaseCacheSource(candidateLease)
         if (playAttempted && !ownsSource() && !audioEl.getAttribute('src')) audioEl.pause()
         // App 用 song 同时传递选歌与保存会话，最终失败后回写实际保留的歌曲。
         if (failed && !committed && this.isCurrentSongRequest(requestId) && !this.pendingSong &&
@@ -652,6 +839,7 @@ export default {
         }
         this.loadingSongHash = null
         this.loadingSongTarget = null
+        if ((committed || replaying && !failed) && this.isCurrentSongRequest(requestId) && ownsSource()) this.cachePlayedSong()
         if (failed && options.navigation && this.isCurrentSongRequest(requestId) && !this.pendingSong &&
             options.navigation.stopVersion === this.playbackStopVersion) {
           const index = this.playlist.findIndex(item => item?.hash === this.currentSong?.hash)
@@ -682,13 +870,16 @@ export default {
           clearTimeout(timer)
           this.pendingTimers.delete(timer)
           if (this.songWaitCancel === cancel) this.songWaitCancel = null
+          audioEl?.removeEventListener?.('error', onMediaError)
           if (error) reject(error)
           else resolve(value)
         }
         const cancel = () => finish(undefined, new Error('歌曲加载已取消'))
-        const timer = setTimeout(() => finish(undefined, new Error('歌曲加载超时，请重试或选择其他歌曲')), 15000)
+        const onMediaError = () => finish(undefined, this.createPlaybackMediaError(audioEl, '音频无法加载，请重试或选择其他歌曲'))
+        const timer = setTimeout(() => finish(undefined, this.createPlaybackMediaError(audioEl, '歌曲加载超时，请重试或选择其他歌曲')), 15000)
         this.pendingTimers.set(timer, cancel)
         if (cancelOnSelection) this.songWaitCancel = cancel
+        audioEl?.addEventListener?.('error', onMediaError)
         Promise.resolve(operation).then(value => {
           // 已取消的 play 可能迟到；清空音源后不得重新进入播放状态。
           if (audioEl && (this.isDisposed || this.audioSourceVersion !== sourceVersion) && !audioEl.getAttribute('src')) {
@@ -741,7 +932,7 @@ export default {
           else resolve(ready && isCurrent())
         }
         const onReady = () => finish(true)
-        const onError = () => finish(false, new Error('该音质音频无法加载，可能不受支持或没有播放权限'))
+        const onError = () => finish(false, this.createPlaybackMediaError(audioEl, '该音质音频无法加载，可能不受支持或没有播放权限'))
         const cancel = () => finish(false)
         const timer = setTimeout(() => finish(false, new Error('音质加载超时')), 15000)
         this.pendingTimers.set(timer, cancel)
@@ -798,17 +989,22 @@ export default {
         audioEl.removeAttribute('src')
         audioEl.load()
       }
+      this.releaseAllCacheSources()
       this.isPlaying = false
       this.currentSong = null
       this.loadedSongHash = null
       this.currentQuality = null
       this.loadedQualityPreference = null
+      this.loadedSongDetail = null
+      this.loadedCacheSessionVersion = null
       this.qualityMessage = ''
       this.currentTime = 0
       this.duration = 0
       this.currentLyrics = ''
       this.isLyricPlaceholder = true
       this.currentLyricData = null
+      this.cachedLyricData = null
+      this.currentLyricsFromCache = false
       this.playNextQueue = []
       this.playedHistory = []
       this.shuffledPlaylist = []
@@ -854,6 +1050,28 @@ export default {
       const requestId = ++this.lyricRequestId
       const isCurrentRequest = () => !this.isDisposed && requestId === this.lyricRequestId &&
         this.currentSong?.hash === song.hash
+      const sessionVersion = getPlaylistCacheSessionVersion()
+      let lyricsFromCache = false
+      const fetchLyrics = async () => {
+        if (!getPlaylistCacheAPI()?.readLyrics) return getLyric(song.hash, song.album_audio_id || 0)
+        try {
+          const api = await waitForPlaylistCacheSession()
+          if (!isCurrentRequest()) return null
+          if (api?.readLyrics && sessionVersion === getPlaylistCacheSessionVersion()) {
+            const cached = await api.readLyrics(song.hash)
+            if (!isCurrentRequest() || sessionVersion !== getPlaylistCacheSessionVersion()) return null
+            if (cached && [1, 200].includes(cached.status) &&
+                [cached.decodeContent, cached.content, cached.data?.content].some(value => typeof value === 'string' && value.trim())) {
+              lyricsFromCache = true
+              return cached
+            }
+          }
+        } catch (error) {
+          logger.warn('MusicPlayer', '读取本地歌词失败，继续在线加载', { name: error?.name, code: error?.code })
+        }
+        if (!isCurrentRequest() || sessionVersion !== getPlaylistCacheSessionVersion()) return null
+        return getLyric(song.hash, song.album_audio_id || 0)
+      }
       let timeoutId = null
       try {
         if (process.env.NODE_ENV === 'development') {
@@ -865,13 +1083,15 @@ export default {
         
         // 设置超时和重试机制
         const lyricResponse = await Promise.race([
-          getLyric(song.hash, song.album_audio_id || 0),
+          fetchLyrics(),
           new Promise((_, reject) => {
             timeoutId = setTimeout(() => reject(new Error('歌词加载超时')), 10000)
             this.pendingTimers.set(timeoutId, null)
           })
         ])
         if (!isCurrentRequest()) return
+        if (sessionVersion !== getPlaylistCacheSessionVersion()) return
+        this.currentLyricsFromCache = lyricsFromCache
         
         if (process.env.NODE_ENV === 'development') {
           logger.trace('MusicPlayer', '歌词API响应:', lyricResponse)
@@ -942,6 +1162,7 @@ export default {
             }
             this.setDefaultLyrics(song)
           }
+          this.cachePlayedLyrics()
         } else {
           if (process.env.NODE_ENV === 'development') {
             logger.trace('MusicPlayer', '完整响应:', JSON.stringify(lyricResponse, null, 2))
@@ -1747,6 +1968,7 @@ export default {
     handlePlay() {
       if (this.isDisposed) return
       this.isPlaying = true
+      this.cachePlayedSong(true)
       // 更新 MediaSession 播放状态
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'playing'

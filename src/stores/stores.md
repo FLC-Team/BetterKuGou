@@ -19,6 +19,7 @@
 - `desktopLyrics` 默认 fontSize=medium、theme=classic、locked=false；双端补全旧配置，只接收 small/medium/large、classic/gradient/minimal 与布尔锁定。歌词翻译 showTranslation 默认 true，非布尔导入值回退默认，合法 false 保留。
 - `playback.quality` 默认字符串 128；双端仅接收 128/320/flac/high，补全旧配置，非法导入值回退 128。它表示所选音质偏好，当前音源的真实格式和码率由播放器独立维护。
 - `software.updates` 默认 `{ autoCheck: true, autoDownload: false, channel: 'stable' }`；双端补全旧配置，布尔开关严格校验、渠道限定 stable/beta，移除未知字段及任何自动安装开关。更新服务只消费保存成功的设置，检查结果、进度和本机安装包路径不进入本 store。
+- 离线缓存复用 download 分组：offlinePlaylistCacheEnabled 默认 true；cacheSizeIndex 默认 0，限定 0–5；concurrentDownloads 默认 3，限定 1–10。双端按同一规则补全与校验，不将缓存资源、凭证或进度存入设置。
 - `updateSettings()` 默认合并，`overwriteSettings()` 替换，均保留响应式对象引用。
 - `saveSessionSnapshot()` 合并队列、当前歌曲、索引及播放时间、音量和模式。
 - `flushPendingSettings()` 等待已有串行写入及其间新增的事务，传播持久化失败；供安装前保存确认使用，不能把队列用于恢复的 catch 当作保存成功。
@@ -48,7 +49,8 @@
 | shortcuts.enableGlobal / keys | App 与主进程快捷键；设置“快捷键”，注册探测只检查可用性。 |
 | software.autoLaunch / minimizeToTray / restorePlaylist / restorePlaybackState / defaultPage | 系统启动、关闭、会话恢复和启动页；设置“启动与应用”。 |
 | software.updates.autoCheck / autoDownload / channel | 主进程更新服务的自动检查、自动下载及正式/测试渠道；设置“启动与应用 → 应用更新”，保存成功后生效。 |
-| download.* | 保留旧配置及目录初始化；音乐下载、缓存限额与并发控制未接入，界面只读/禁用。 |
+| download.offlinePlaylistCacheEnabled / cacheSizeIndex / concurrentDownloads | 独立离线缓存服务消费已提交偏好；设置“下载与缓存”，默认启用、2GB 和 3 并发。 |
+| download.downloadPath / cachePath | 保留旧配置兼容，普通文件下载与缓存目录迁移未开放；离线缓存使用固定用户数据子目录。 |
 | session.* | 播放器实时队列、进度、音量和模式；由播放会话维护，不在偏好设置重复编辑。 |
 
 ## 运行
