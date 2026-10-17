@@ -5,6 +5,7 @@ import { getSongUrl, getLyric, getSongDetail } from '../../api/music.js'
 import PlaylistDrawer from './PlaylistDrawer.vue'
 import ContextMenu from '../common/ContextMenu.vue'
 import ArtworkCover from '../common/ArtworkCover.vue'
+import ArtistLinks from '../common/ArtistLinks.vue'
 import LyricView from './LyricView.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import { useSettingsStore } from '../../stores/settingsStore.js'
@@ -26,6 +27,7 @@ export default {
     PlaylistDrawer,
     ContextMenu,
     ArtworkCover,
+    ArtistLinks,
     LyricView
   },
   props: {
@@ -1912,6 +1914,14 @@ export default {
       this.closeLyrics()
       this.showPlaylist = false
       this.$emit('search', song)
+    },
+
+    /** 歌手导航只收起覆盖层，不切换歌曲或修改播放会话。 */
+    openArtist(artist) {
+      if (this.isDisposed || !artist?.name) return
+      this.closeLyrics()
+      this.showPlaylist = false
+      this.$emit('navigate', 'artist', artist)
     },
 
     /** 退场标题不再参与键盘和辅助技术导航，避免动画期间点击旧歌曲。 */

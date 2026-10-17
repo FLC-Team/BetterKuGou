@@ -17,6 +17,7 @@
 - `music.js` 为需要登录的请求附加已保存的酷狗认证信息。
 - `getLyric()` 先搜索候选歌词，再按 ID 与 accesskey 请求内容。
 - `getSongUrl(hash, album_id, album_audio_id, quality)` 提供播放器使用的旧版播放地址封装，普通音质限于字符串 128/320/flac/high，缺省或非法值回退 128；不请求试听，不将魔法音乐或蝰蛇音效作为普通音质。
+- `findArtistByName(name)` 只查询被选中的单个姓名，按 Unicode、空白和大小写规范化后精确匹配搜索结果，并要求有效歌手 ID；无匹配返回 null，请求或响应格式失败继续拒绝 Promise，由歌手页面显示重试入口。
 
 ## 关键保障
 

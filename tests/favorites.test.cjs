@@ -39,6 +39,8 @@ function loadFavorites({ props = {}, api = {}, cache = {} } = {}) {
     ContextMenu: {},
     ArtworkCover: {},
     SongBadges: {},
+    ArtistLinks: {},
+    getSongArtists: metadata.getSongArtists,
     filterSongs: metadata.filterSongs,
     nextplayIcon: 'nextplay.svg',
     contextMenuManager: menuManager,

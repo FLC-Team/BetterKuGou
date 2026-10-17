@@ -99,14 +99,12 @@
                 </button>
                 <SongBadges :song="song" />
               </div>
-              <button type="button" class="artist-link mobile-artist" @click.stop="goArtist(song)" @dblclick.stop>{{ getSingerNames(song.singerinfo, song) || song.singername || song.author_name || (song.name?.includes(' - ') ? song.name.split(' - ')[0] : '未知歌手') }}</button>
+              <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />
             </div>
           </div>
 
           <div class="col-artist">
-            <button type="button" class="artist-link" @click.stop="goArtist(song)" @dblclick.stop>
-              {{ getSingerNames(song.singerinfo, song) || song.singername || song.author_name || (song.name && song.name.includes(' - ') ? song.name.split(' - ')[0] : '-') }}
-            </button>
+            <ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" />
           </div>
     <div class="col-album"><button type="button" class="album-link" @click.stop="goAlbum(song)" @dblclick.stop>{{ song.albuminfo?.name || song.remark || '-' }}</button></div>
           <div class="col-duration">{{ formatDuration(song.timelen) }}</div>

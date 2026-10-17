@@ -38,7 +38,7 @@
           </button>
           <button type="button" class="fm-song-title" :title="song.songname || song.filename" @click.stop="$emit('search', song)" @dblclick.stop>{{ song.songname || song.filename }}</button>
           <SongBadges :song="song" />
-          <button type="button" class="artist-link" @click="goArtist(song)">{{ song.singername || song.author_name || '未知歌手' }}</button>
+          <ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" />
         </article>
       </div>
     </div>
@@ -48,13 +48,14 @@
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
 import SongBadges from '../components/common/SongBadges.vue'
+import ArtistLinks from '../components/common/ArtistLinks.vue'
 import { logger } from '../utils/logger.js'
 
 import { getPersonalFM } from '../api/music.js'
 import { useSettingsStore } from '../stores/settingsStore.js'
 
 export default {
-  components: { ArtworkCover, SongBadges },
+  components: { ArtworkCover, SongBadges, ArtistLinks },
   name: 'PersonalFMView',
   emits: ['navigate', 'play', 'search'],
   props: {
@@ -97,12 +98,6 @@ export default {
         this.loading = false
       }
     },
-    goArtist(song) {
-      const id = song.SingerId || song.singerid || song.AuthorId || song.author_id || null
-      const name = song.singername || song.author_name || null
-      if (id || name) this.$emit('navigate', 'artist', { id, name })
-    },
-    
     handleBack() {
       this.$emit('navigate', 'home')
     },

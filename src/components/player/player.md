@@ -33,6 +33,7 @@
 - playPrevious 在稳定且无待播请求时，用已确认音源实际剩余 0–10 秒判断原地重播，复用 loadSong 的同首路径及取消保护；暂停时主动播放，不重取音源或改变顺序/动效，原生 seeked 与最终状态通知保持会话同步。短曲沿用此规则，未知时长及忙时导航保持原行为。
 - handleEnded 只处理真实 ended 且不在 seeking 中的音频，防止重播或跳转后迟到的旧事件触发续播；加载新目标期间继续保留已请求的选歌意图。
 - 播放栏、歌词和抽屉发出 search(song)，MusicPlayer 收起覆盖层后向 App 转发；歌曲标题退场层禁用交互，队列序号/播放指示区提供原生播放按钮。
+- 三处歌手均复用 ArtistLinks，逐人发出选中信息；MusicPlayer 的 openArtist 取消待打开歌词、收起歌词与队列后发出 navigate('artist', { id, name })，不更换音源或队列。底栏固定高度区域横向滚动，歌手退场层沿用标题的 inert/aria-hidden 保护。
 - 删除或新增队列发出 playlist-updated，由 App 替换父级播放列表。
 - 歌词通过播放器传给 LyricView，也经 preload 发送到桌面歌词窗口。
 - MusicPlayer 的 isLyricPlaceholder 标记加载/服务提示与默认歌词，真实响应才允许 LyricView 的 lyricsInteractive；解析失败的“暂无歌词”同样不可操作。

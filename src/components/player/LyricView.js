@@ -2,6 +2,7 @@
 import { logger } from '../../utils/logger.js'
 import { useSettingsStore } from '../../stores/settingsStore.js'
 import ContextMenu from '../common/ContextMenu.vue'
+import ArtistLinks from '../common/ArtistLinks.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import repeatAllIcon from '../../assets/icons/repeat_all.svg'
 import repeatOneIcon from '../../assets/icons/repeat_one.svg'
@@ -9,7 +10,7 @@ import shuffleIcon from '../../assets/icons/shuffle.svg'
 
 export default {
   name: 'LyricView',
-  components: { ContextMenu },
+  components: { ContextMenu, ArtistLinks },
   props: {
     visible: {
       type: Boolean,

@@ -2,6 +2,7 @@
   <div class="artist-view list-page">
     <div class="list-content">
       <template v-if="artist">
+        <div v-if="errorMessage" class="refresh-error" role="alert"><span>{{ errorMessage }}</span><button type="button" :disabled="initialLoading" @click="loadInitial">重试</button></div>
         <header class="collection-hero">
           <ArtworkCover :src="getAvatar(artist)" class="collection-art" mark="♪" />
           <div class="collection-copy">
@@ -45,13 +46,11 @@
                   </button>
                   <SongBadges :song="song" />
                 </div>
-                <button type="button" class="artist-link mobile-artist" @click.stop="goArtist(song)" @dblclick.stop>{{ getSingerNames(song.singerinfo, song) || artist.author_name || '未知歌手' }}</button>
+                <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />
               </div>
             </div>
             <div class="col-artist">
-              <button type="button" class="artist-link" @click.stop="goArtist(song)" @dblclick.stop>
-                {{ getSingerNames(song.singerinfo, song) || artist.author_name || '-' }}
-              </button>
+              <ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" />
             </div>
             <div class="col-album">
               <button type="button" class="album-link" @click.stop="goAlbum(song)" @dblclick.stop>{{ song.albuminfo?.name || song.remark || '-' }}</button>
@@ -93,13 +92,11 @@
                   </button>
                   <SongBadges :song="song" />
                 </div>
-                <button type="button" class="artist-link mobile-artist" @click.stop="goArtist(song)" @dblclick.stop>{{ getSingerNames(song.singerinfo, song) || artist.author_name || '未知歌手' }}</button>
+                <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />
               </div>
             </div>
             <div class="col-artist">
-              <button type="button" class="artist-link" @click.stop="goArtist(song)" @dblclick.stop>
-                {{ getSingerNames(song.singerinfo, song) || artist.author_name || '-' }}
-              </button>
+              <ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" />
             </div>
             <div class="col-album">
               <button type="button" class="album-link" @click.stop="goAlbum(song)" @dblclick.stop>{{ song.albuminfo?.name || song.remark || '-' }}</button>
@@ -138,7 +135,8 @@
       </template>
       <div v-else-if="initialLoadComplete" class="error" role="alert">
       <p class="empty-text">暂时无法打开歌手资料</p>
-      <button type="button" class="retry-btn" @click="$emit('navigate', 'home')">返回发现</button>
+      <p>{{ errorMessage }}</p>
+      <button type="button" class="retry-btn" :disabled="initialLoading" @click="loadInitial">{{ initialLoading ? '正在重试…' : '重试' }}</button>
     </div>
       <div v-else class="loading-container">
       <span class="loading-spinner" role="status" aria-label="加载中"></span>

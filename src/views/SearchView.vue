@@ -64,12 +64,12 @@
                 </button>
                 <SongBadges :song="song" />
               </div>
-              <button type="button" class="artist-link mobile-artist" @click.stop="goArtist(song)" @dblclick.stop>{{ getSingerNames(song) }}</button>
+              <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />
             </div>
           </div>
 
           <div class="col-artist">
-            <button type="button" class="artist-link" @click.stop="goArtist(song)" @dblclick.stop>{{ getSingerNames(song) }}</button>
+            <ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" />
           </div>
     <div class="col-album"><button type="button" class="album-link" @click.stop="goAlbum(song)" @dblclick.stop>{{ song.AlbumName || song.album_name || '-' }}</button></div>
           <div class="col-duration">{{ formatDuration(song.Duration || song.duration) }}</div>
@@ -102,6 +102,8 @@
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
 import SongBadges from '../components/common/SongBadges.vue'
+import ArtistLinks from '../components/common/ArtistLinks.vue'
+import { getSongArtists } from '../utils/songMetadata.js'
 import { logger } from '../utils/logger.js'
 
 import { searchMusic } from '../api/music.js'
@@ -113,6 +115,7 @@ export default {
   components: {
     ArtworkCover,
     SongBadges,
+    ArtistLinks,
     ContextMenu
   },
   emits: ['play', 'play-all', 'play-next', 'navigate', 'search'],
@@ -241,13 +244,6 @@ export default {
       if (id || name) this.$emit('navigate', 'album', { id, name })
     },
 
-    // 进入歌手页面
-    goArtist(song) {
-      const id = song.SingerId || song.singerid || song.AuthorId || song.author_id || null
-      const name = song.SingerName || song.singername || song.author_name || this.getSingerNames(song)
-      this.$emit('navigate', 'artist', { id, name })
-    },
-    
     isCurrentlyPlaying(song) {
       const songHash = song.FileHash || song.hash || song.Audioid
       const isPlaying = this.currentPlayingHash == songHash
@@ -274,7 +270,7 @@ export default {
         name: songName,
         filename: songName,
         singername: song.SingerName || song.singername,
-        singerinfo: song.SingerName ? [{ singer_name: song.SingerName }] : [],
+        singerinfo: getSongArtists(song),
         albuminfo: song.AlbumName ? { name: song.AlbumName } : null,
         timelen: song.Duration || song.duration || 0,
         cover: this.getCoverUrl(song.Image || song.img),
@@ -297,7 +293,7 @@ export default {
         name: songName,
         filename: songName,
         singername: song.SingerName || song.singername,
-        singerinfo: song.SingerName ? [{ singer_name: song.SingerName }] : [],
+        singerinfo: getSongArtists(song),
         albuminfo: song.AlbumName ? { name: song.AlbumName } : null,
         timelen: song.Duration || song.duration || 0,
         cover: this.getCoverUrl(song.Image || song.img),
@@ -348,17 +344,6 @@ export default {
       }
       
       return name
-    },
-
-    getSingerNames(song) {
-      // 如果传入的是字符串（向后兼容）
-      if (typeof song === 'string') {
-        return song || '-'
-      }
-      
-      // 如果传入的是歌曲对象，使用 SingerName 字段
-      const singerName = song.SingerName || song.singername || song.singer_name
-      return singerName || '-'
     },
 
     formatDuration(duration) {

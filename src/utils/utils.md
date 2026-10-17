@@ -13,6 +13,7 @@
 - `playbackQuality.js`：普通音质选项、偏好规范化及仅依响应格式/码率确认当前音源信息；不以偏好推断实际无损。
 - `songMetadata.js`：读取歌曲 VIP 徽标，兼容既有 `privilege` 的 8/10 数值与字符串、大小写字段和明确 VIP 标志；按歌曲、歌手、专辑的历史字段过滤歌曲，保留原数组与行对象。
 - `songMetadata.js` 的 getSongSearchKeyword 优先读取明确曲名，再兼容 name/filename/FileName；识别已知单人或多人歌手前缀，保留标题中的连字符和版本后缀，文件名去除音频扩展名，空或非文本名称不生成关键词。
+- `songMetadata.js` 的 getSongArtists 将可用歌手数组规范为独立 `{ id, name }`，兼容历史歌手/作者字段并去重；空数组不遮蔽其他数组，结构化姓名保持原样，缺失数组时仅按顿号和带空格斜线拆分合唱文本，单个歌曲级歌手 ID 不分配给多个人。
 
 ## 核心流程
 

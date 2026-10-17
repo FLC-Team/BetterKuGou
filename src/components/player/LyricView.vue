@@ -44,7 +44,7 @@
           </div>
           <div class="track-text-stage">
             <Transition :name="trackTransitionName" @before-leave="retireTrackLayer">
-              <p :key="song?.hash || 'empty'" class="song-artist track-piece track-artist">{{ getSingerNames(song) }}</p>
+              <div :key="song?.hash || 'empty'" class="song-artist track-piece track-artist"><ArtistLinks :song="song" @select="$emit('artist', $event)" /></div>
             </Transition>
           </div>
         </div>

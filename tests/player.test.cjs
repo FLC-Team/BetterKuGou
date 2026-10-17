@@ -49,7 +49,7 @@ function loadComponent(filename, overrides = {}) {
     getSongDetail: async () => ({ status: 1, data: [] }),
     getSongUrl: async hash => ({ status: 1, url: `https://example.test/${hash}.mp3` }),
     getLyric: async hash => ({ status: 1, decodeContent: `[00:00.00]${hash}` }),
-    PlaylistDrawer: {}, ContextMenu: {}, LyricView: {}, ArtworkCover: {}, TransitionGroup: {}, SongBadges: {},
+    PlaylistDrawer: {}, ContextMenu: {}, LyricView: {}, ArtworkCover: {}, TransitionGroup: {}, SongBadges: {}, ArtistLinks: {},
     contextMenuManager: menuManager,
     useSettingsStore: () => ({ settings: { playback: { quality: '128' }, custom: {} }, async updateSettings() {} }),
     ...Object.fromEntries(['playlistIcon', 'repeatAllIcon', 'repeatOneIcon', 'shuffleIcon',
@@ -1366,6 +1366,38 @@ test('player song search closes overlays and emits the original song without cha
   assert.equal(audio.paused, false)
   assert.equal(emitted.find(event => event.name === 'search').value, player.playlist[1])
 })
+
+for (const paused of [false, true]) {
+  test(`artist navigation closes overlays and preserves ${paused ? 'paused' : 'playing'} audio and queue`, async t => {
+    const { player, audio } = createPlayer(t)
+    player.playlist = ['A', 'B'].map(song)
+    await player.requestSong(player.playlist[0])
+    if (paused) audio.pause()
+    player.showLyricView = true
+    player.pendingLyricView = true
+    player.showPlaylist = true
+    audio.currentTime = 45
+    const queue = player.playlist
+    const source = audio.src
+    const count = audio.playCount
+    const target = { id: 22, name: 'Second artist' }
+    const navigations = []
+    player.$emit = (...args) => navigations.push(args)
+    const requestId = player.lyricViewRequestId
+    player.openArtist(target)
+    assert.equal(player.showLyricView, false)
+    assert.equal(player.pendingLyricView, false)
+    assert.equal(player.showPlaylist, false)
+    assert.ok(player.lyricViewRequestId > requestId)
+    assert.equal(player.currentSong.hash, 'A')
+    assert.equal(player.playlist, queue)
+    assert.equal(audio.src, source)
+    assert.equal(audio.currentTime, 45)
+    assert.equal(audio.paused, paused)
+    assert.equal(audio.playCount, count)
+    assert.deepEqual(navigations, [['navigate', 'artist', target]])
+  })
+}
 
 test('only a successful real lyric response makes lyrics interactive and stale responses cannot replace defaults', async t => {
   const waiting = deferred()

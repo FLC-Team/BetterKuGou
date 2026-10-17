@@ -44,7 +44,7 @@
               <button type="button" class="song-name" :title="getSongName(song)" @click.stop="$emit('search', song)" @dblclick.stop>{{ getSongName(song) }}</button>
               <SongBadges :song="song" />
             </div>
-            <div class="song-artist">{{ getSingerNames(song) }}</div>
+            <div class="song-artist"><ArtistLinks :song="song" @select="$emit('artist', $event)" /></div>
           </div>
 
           <!-- 歌曲时长 -->
@@ -111,14 +111,16 @@ import { logger } from '../../utils/logger.js'
 import { TransitionGroup } from 'vue'
 import ContextMenu from '../common/ContextMenu.vue'
 import SongBadges from '../common/SongBadges.vue'
+import ArtistLinks from '../common/ArtistLinks.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 
 export default {
   name: 'PlaylistDrawer',
-  emits: ['open', 'close', 'play', 'remove', 'clear', 'search'],
+  emits: ['open', 'close', 'play', 'remove', 'clear', 'search', 'artist'],
   components: {
     ContextMenu,
     SongBadges,
+    ArtistLinks,
     TransitionGroup
   },
   props: {
@@ -406,41 +408,6 @@ export default {
       return '未知歌曲'
     },
     
-    // 获取歌手名称
-    getSingerNames(song) {
-      if (!song) return '未知歌手'
-      
-      // 尝试从 singerinfo 数组获取
-      if (song.singerinfo && Array.isArray(song.singerinfo) && song.singerinfo.length > 0) {
-        const names = song.singerinfo.map(s => {
-          if (typeof s === 'object' && s !== null) {
-            return s.name || s.singer_name || s.singername || s.author_name
-          }
-          return String(s)
-        }).filter(name => name && name.trim() && name !== '[object Object]')
-        
-        if (names.length > 0) {
-          return names.join('、')
-        }
-      }
-      
-      // 备用字段
-      if (song.singername) {
-        return song.singername
-      }
-      
-      if (song.author) {
-        return song.author
-      }
-      
-      // 从 name 字段提取(格式: "歌手 - 歌名")
-      if (song.name && song.name.includes(' - ')) {
-        return song.name.split(' - ')[0]
-      }
-      
-      return '未知歌手'
-    },
-    
     // 格式化时长
     formatDuration(duration) {
       if (!duration || duration <= 0) {
@@ -642,9 +609,6 @@ export default {
 .song-artist {
   font-size: var(--font-size-xs);
   color: var(--color-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .song-duration {

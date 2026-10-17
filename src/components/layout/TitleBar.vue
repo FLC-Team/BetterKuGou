@@ -2,6 +2,9 @@
   <div class="title-bar" :class="{ 'lyric-mode': isLyricViewVisible }">
     <!-- Logo区域 -->
     <div class="logo-container">
+      <button v-if="!isLyricViewVisible" type="button" class="navigation-back" aria-label="返回上一页" title="返回上一页" :disabled="!canGoBack" @click="$emit('back')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m14 6-6 6 6 6" /></svg>
+      </button>
       <img src="/logo.png" alt="Logo" class="logo-icon" />
       <span class="app-name">BETTERKUGOU</span>
     </div>
@@ -96,7 +99,12 @@ export default {
   components: {
     UserMenu
   },
+  emits: ['update:modelValue', 'back', 'show-login', 'edit-profile', 'open-settings', 'logout', 'search'],
   props: {
+    canGoBack: {
+      type: Boolean,
+      default: false
+    },
     modelValue: {
       type: String,
       default: ''
@@ -288,6 +296,22 @@ export default {
   object-fit: contain;
   transition: transform 0.3s ease;
 }
+
+.navigation-back {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  -webkit-app-region: no-drag;
+}
+
+.navigation-back svg { width: 20px; height: 20px; }
+.navigation-back:hover:not(:disabled) { color: var(--color-primary); background: var(--color-background-light); }
+.navigation-back:disabled { opacity: .3; cursor: default; }
+.navigation-back:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 
 .logo-icon:hover {
   transform: scale(1.05);

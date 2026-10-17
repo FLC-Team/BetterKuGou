@@ -4,6 +4,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const vm = require('node:vm')
 const vue = require('vue')
+const { parse, compileTemplate } = require('@vue/compiler-sfc')
 
 const root = path.join(__dirname, '..')
 const quietLogger = Object.fromEntries(['trace', 'info', 'warn', 'error'].map(level => [level, () => {}]))
@@ -182,7 +183,7 @@ function loadApp(electronAPI = {}, overrides = {}) {
     console: quietConsole,
     logger: quietLogger,
     process: { env: { NODE_ENV: 'production' } },
-    ...loadModule('src/utils/songMetadata.js', {}, ['getSongSearchKeyword']),
+    ...loadModule('src/utils/songMetadata.js', {}, ['getSongSearchKeyword', 'getSongArtists']),
     window: { electronAPI, addEventListener() {}, removeEventListener() {} },
     document: { addEventListener() {}, removeEventListener() {}, querySelectorAll: () => [] },
     localStorage: overrides.localStorage || { getItem: () => null },
@@ -216,7 +217,10 @@ function loadApp(electronAPI = {}, overrides = {}) {
     performMemoryCleanup, createLazyView, cachedPageNames, drain: () => shortcutUpdateQueue,
     handleInstallPreparation, preparingInstall, settingsViewRef, sameInstallSession,
     collectSessionSnapshot, queueSessionPersist, restoredPlaybackState, handleSongChanged,
-    handleSearch, handleSearchRequest, searchQuery, searchDraft
+    handleSearch, handleSearchRequest, searchQuery, searchDraft,
+    handleGoBack, handleBackToMain, handleShowSettings, handleCloseSettings,
+    navigationHistory, navigationPending, canGoBack, artistData, albumData, rankData,
+    selectedPlaylistData, getPageKey, rememberPageScroll, restorePageScroll, setInstallPreparation
   })`, sandbox))
   return {
     ...app,
@@ -272,6 +276,314 @@ test('search drafts do not navigate until submitted and empty queries leave navi
   assert.equal(app.searchDraft.value, 'Manual query')
   assert.equal(app.searchQuery.value, 'Manual query')
   assert.equal(app.currentView.value, 'search')
+})
+
+test('page history unwinds artist and album browsing to the original search draft without touching playback', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  const playing = { hash: 'playing', name: 'Playing song' }
+  app.currentSong.value = playing
+  app.playlist.value = [playing]
+  const queue = app.playlist.value
+  app.handleSearchRequest('original query')
+  app.searchDraft.value = 'unsubmitted search edits'
+  const artist = { id: 10, name: 'Artist A' }
+  app.handleNavigate('artist', artist)
+  artist.name = 'caller changed this object'
+  app.handleNavigate('album', { id: 20, name: 'Album B' })
+  app.handleNavigate('artist', { id: 30, name: 'Artist C' })
+  assert.equal(app.navigationHistory.value.length, 4)
+  assert.equal(app.handleGoBack(), true)
+  assert.equal(app.currentView.value, 'album')
+  assert.equal(app.albumData.value.id, 20)
+  app.handleGoBack()
+  assert.equal(app.artistData.value.id, 10)
+  assert.equal(app.artistData.value.name, 'Artist A', 'route parameters are copied from the caller')
+  app.handleGoBack()
+  assert.equal(app.currentView.value, 'search')
+  assert.equal(app.searchQuery.value, 'original query')
+  assert.equal(app.searchDraft.value, 'unsubmitted search edits')
+  app.handleGoBack()
+  assert.equal(app.currentView.value, 'home')
+  assert.equal(app.canGoBack.value, false)
+  assert.equal(app.handleGoBack(), false)
+  assert.equal(app.playlist.value, queue)
+  assert.equal(app.currentSong.value.hash, 'playing')
+})
+
+test('history restores the selected playlist and rank parameters after traversing other resources', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  app.handleLoginSuccess({ userid: 'example-account' })
+  app.handleNavigate('playlist', { id: 'one', name: 'First playlist' })
+  app.handleNavigate('artist', { id: 10, name: 'Artist' })
+  app.handleNavigate('playlist', { id: 'two', name: 'Second playlist' })
+  app.handleNavigate('rank', { rankid: 40, rankname: 'Chart' })
+  app.handleGoBack()
+  assert.equal(app.selectedPlaylistId.value, 'two')
+  assert.equal(app.selectedPlaylistData.value.name, 'Second playlist')
+  app.handleGoBack()
+  assert.equal(app.currentView.value, 'artist')
+  app.handleGoBack()
+  assert.equal(app.currentView.value, 'playlist')
+  assert.equal(app.selectedPlaylistId.value, 'one')
+  assert.equal(app.selectedPlaylistData.value.name, 'First playlist')
+  app.handleNavigate('rank', { rankid: 40, rankname: 'Chart' })
+  app.handleNavigate('album', { id: 50, name: 'Album' })
+  app.handleGoBack()
+  assert.equal(app.currentView.value, 'rank')
+  assert.equal(app.rankData.value.rankid, 40)
+})
+
+test('history and cache keys deduplicate only consecutive identical resources and submitted queries', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  app.handleNavigate('artist', { id: 10, name: 'Artist' })
+  app.handleNavigate('artist', { id: '10', name: 'Updated artist label' })
+  assert.equal(app.navigationHistory.value.length, 1)
+  assert.equal(app.getPageKey('artist', { id: 0, name: 'First name' }), app.getPageKey('artist', { id: '', name: 'First name' }))
+  assert.notEqual(app.getPageKey('artist', { id: null, name: 'First name' }), app.getPageKey('artist', { id: null, name: 'Second name' }))
+  app.handleNavigate('album', { id: 20, name: 'Album' })
+  app.handleNavigate('artist', { id: 10, name: 'Artist' })
+  assert.equal(app.navigationHistory.value.length, 3, 'A to B to A remains a real browsing path')
+  app.handleSearchRequest('query')
+  const count = app.navigationHistory.value.length
+  app.searchDraft.value = 'edited draft'
+  app.handleSearchRequest(' query ')
+  assert.equal(app.navigationHistory.value.length, count)
+  assert.equal(app.searchDraft.value, 'query')
+  for (const [view, data] of [['missing'], ['artist'], ['album'], ['rank'], ['playlist']]) {
+    assert.equal(app.handleNavigate(view, data), false)
+  }
+  assert.equal(app.navigationHistory.value.length, count)
+})
+
+test('login back closes only its overlay while account changes discard content history', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  app.handleNavigate('artist', { id: 10, name: 'Artist' })
+  app.handleShowLogin()
+  assert.equal(app.navigationHistory.value.length, 1)
+  app.handleGoBack()
+  assert.equal(app.showLogin.value, false)
+  assert.equal(app.currentView.value, 'artist')
+  assert.equal(app.navigationHistory.value.length, 1)
+  app.handleShowLogin()
+  app.handleBackToMain()
+  assert.equal(app.navigationHistory.value.length, 1)
+  app.handleLoginSuccess({ userid: 'example-account' })
+  assert.equal(app.navigationHistory.value.length, 0)
+  assert.equal(app.canGoBack.value, false)
+  app.handleNavigate('album', { id: 20, name: 'Album' })
+  app.handleLogout()
+  assert.equal(app.navigationHistory.value.length, 0)
+  assert.equal(app.canGoBack.value, true, 'the login overlay can still close without history')
+  app.handleGoBack()
+  assert.equal(app.canGoBack.value, false)
+  assert.equal(app.currentView.value, 'home')
+  app.handleNavigate('artist', { id: 10, name: 'Artist' })
+  app.handleAuthExpired()
+  assert.equal(app.navigationHistory.value.length, 0)
+  assert.equal(app.currentView.value, 'home')
+})
+
+const settingsExits = [
+  ['back', app => app.handleGoBack(), 'home'],
+  ['sidebar', app => app.handleNavigate('home'), 'home'],
+  ['search', app => app.handleSearchRequest('next query'), 'search'],
+  ['login', app => app.handleShowLogin(), 'settings'],
+  ['close', app => app.handleCloseSettings(), 'home']
+]
+
+for (const [name, leave, target] of settingsExits) {
+  test(`leaving settings through ${name} waits for saving, ignores repeated actions and retains failed drafts`, async t => {
+    const app = loadApp()
+    t.after(() => app.dispose())
+    app.handleShowSettings()
+    let saved = deferred()
+    let saves = 0
+    let closes = 0
+    app.settingsViewRef.value = { flushEditableSettings: () => { saves++; return saved.promise } }
+    app.musicPlayerRef.value = { closeLyrics() { closes++ }, showPlaylist: true }
+    const first = leave(app)
+    assert.equal(app.navigationPending.value, true)
+    assert.equal(app.canGoBack.value, false)
+    assert.equal(leave(app), false)
+    assert.equal(app.handleNavigate('artist', { id: 10, name: 'Artist' }), false)
+    await vue.nextTick()
+    assert.equal(saves, 1)
+    assert.equal(app.currentView.value, 'settings')
+    assert.equal(app.navigationHistory.value.length, 1)
+    saved.resolve(false)
+    assert.equal(await first, false)
+    assert.equal(app.currentView.value, 'settings')
+    assert.equal(app.navigationHistory.value.length, 1)
+    assert.equal(app.showLogin.value, false)
+    assert.equal(app.musicPlayerRef.value.showPlaylist, true)
+    assert.equal(closes, 0, 'a failed save does not close playback overlays')
+
+    saved = deferred()
+    const second = leave(app)
+    await vue.nextTick()
+    saved.resolve(true)
+    assert.equal(await second, true)
+    assert.equal(app.currentView.value, target)
+    assert.equal(app.navigationPending.value, false)
+    assert.equal(app.showLogin.value, name === 'login')
+    if (name === 'search') {
+      assert.equal(app.searchQuery.value, 'next query')
+      assert.equal(app.searchDraft.value, 'next query')
+      assert.equal(app.musicPlayerRef.value.showPlaylist, false)
+      assert.equal(closes, 1)
+    }
+  })
+}
+
+test('unexpected setting-save rejections leave both the page and navigation history intact', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  app.handleShowSettings()
+  app.settingsViewRef.value = { flushEditableSettings: async () => { throw new Error('storage unavailable') } }
+  assert.equal(await app.handleGoBack(), false)
+  assert.equal(app.currentView.value, 'settings')
+  assert.equal(app.navigationHistory.value.length, 1)
+  assert.equal(app.navigationPending.value, false)
+})
+
+test('navigation captures the latest search draft after a settings save finishes', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  app.handleShowSettings()
+  const saving = deferred()
+  app.settingsViewRef.value = { flushEditableSettings: () => saving.promise }
+  const navigation = app.handleNavigate('artist', { id: 10, name: 'Artist' })
+  app.searchDraft.value = 'edited while waiting'
+  await vue.nextTick()
+  saving.resolve(true)
+  assert.equal(await navigation, true)
+  assert.equal(app.searchDraft.value, 'edited while waiting')
+  app.handleGoBack()
+  assert.equal(app.currentView.value, 'settings')
+  assert.equal(app.searchDraft.value, 'edited while waiting')
+})
+
+test('starting and canceling installation invalidates an earlier pending navigation', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  app.handleShowSettings()
+  const saving = deferred()
+  app.settingsViewRef.value = { flushEditableSettings: () => saving.promise }
+  const navigation = app.handleSearchRequest('stale destination')
+  await vue.nextTick()
+  app.setInstallPreparation(true)
+  assert.equal(app.canGoBack.value, false)
+  assert.equal(app.handleNavigate('home'), false)
+  app.setInstallPreparation(false)
+  saving.resolve(true)
+  assert.equal(await navigation, false)
+  assert.equal(app.currentView.value, 'settings')
+  assert.equal(app.navigationHistory.value.length, 1)
+})
+
+for (const action of ['login', 'logout', 'expired', 'unmount']) {
+  test(`${action} invalidates a navigation waiting for settings to save`, async () => {
+    const app = loadApp()
+    app.handleShowSettings()
+    const saving = deferred()
+    app.settingsViewRef.value = { flushEditableSettings: () => saving.promise }
+    const navigation = app.handleSearchRequest('stale destination')
+    await vue.nextTick()
+    if (action === 'login') app.handleLoginSuccess({ userid: 'new-account' })
+    if (action === 'logout') app.handleLogout()
+    if (action === 'expired') app.handleAuthExpired()
+    if (action === 'unmount') await app.dispose()
+    saving.resolve(true)
+    assert.equal(await navigation, false)
+    assert.notEqual(app.currentView.value, 'search')
+    assert.notEqual(app.searchDraft.value, 'stale destination')
+    if (action !== 'unmount') {
+      assert.equal(app.navigationHistory.value.length, 0)
+      await app.dispose()
+    }
+  })
+}
+
+test('cached page scroll restoration remains independent from navigation snapshots', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  const element = { scrollTop: 480, inert: false, isConnected: true }
+  app.rememberPageScroll(element)
+  assert.equal(element.inert, true)
+  element.scrollTop = 0
+  app.restorePageScroll(element)
+  await vue.nextTick()
+  assert.equal(element.inert, false)
+  assert.equal(element.scrollTop, 480)
+  const uncached = { scrollTop: 0, inert: true, isConnected: true }
+  app.restorePageScroll(uncached)
+  await vue.nextTick()
+  assert.equal(uncached.scrollTop, 0)
+  app.handleNavigate('artist', { id: 1, name: 'Artist 1' })
+  for (let id = 2; id <= 15; id++) app.handleNavigate('artist', { id, name: `Artist ${id}` })
+  for (let id = 14; id >= 1; id--) {
+    app.handleGoBack()
+    assert.equal(app.artistData.value.id, id, 'history still addresses resources beyond the cache capacity')
+  }
+})
+
+test('titlebar renders an accessible back button that follows history availability and hides behind lyrics', t => {
+  const filename = path.join(root, 'src/components/layout/TitleBar.vue')
+  const { descriptor } = parse(fs.readFileSync(filename, 'utf8'), { filename })
+  const sandbox = vm.createContext({
+    logger: quietLogger, window: {}, module: { exports: {} },
+    minimizeIcon: '', maximizeIcon: '', restoreIcon: '', closeIcon: '',
+    UserMenu: { render: () => null }
+  })
+  vm.runInContext(stripImports(descriptor.script.content).replace('export default', 'module.exports ='), sandbox)
+  const compiled = compileTemplate({
+    source: descriptor.template.content, filename, id: 'titlebar-navigation',
+    compilerOptions: { mode: 'function', hoistStatic: false }
+  })
+  assert.deepEqual(compiled.errors, [])
+  const render = new Function('Vue', compiled.code)({ ...vue, vModelText: {} })
+  const makeNode = (type, text = '') => ({ type, text, props: {}, children: [], parent: null })
+  const renderer = vue.createRenderer({
+    createElement: makeNode,
+    createText: text => makeNode('text', text), createComment: text => makeNode('comment', text),
+    setText: (node, text) => { node.text = text }, setElementText: (node, text) => { node.text = text },
+    patchProp: (node, key, _previous, value) => { node.props[key] = value },
+    insert(node, parent, anchor) {
+      if (node.parent) node.parent.children.splice(node.parent.children.indexOf(node), 1)
+      node.parent = parent
+      const index = anchor ? parent.children.indexOf(anchor) : -1
+      parent.children.splice(index < 0 ? parent.children.length : index, 0, node)
+    },
+    remove(node) { if (node.parent) node.parent.children.splice(node.parent.children.indexOf(node), 1) },
+    parentNode: node => node.parent,
+    nextSibling: node => node.parent?.children[node.parent.children.indexOf(node) + 1] || null
+  })
+  let backs = 0
+  const canGoBack = vue.ref(false)
+  const lyrics = vue.ref(false)
+  const component = { ...sandbox.module.exports, render }
+  const ui = renderer.createApp({ render: () => vue.h(component, {
+    canGoBack: canGoBack.value, isLyricViewVisible: lyrics.value, onBack: () => backs++
+  }) })
+  const container = makeNode('root')
+  ui.mount(container)
+  t.after(() => ui.unmount())
+  const findBack = node => node.props['aria-label'] === '返回上一页' ? node : node.children.map(findBack).find(Boolean)
+  assert.equal(findBack(container).props.disabled, true)
+  assert.equal(findBack(container).props.type, 'button')
+  canGoBack.value = true
+  return vue.nextTick().then(() => {
+    const back = findBack(container)
+    assert.equal(back.props.disabled, false)
+    back.props.onClick()
+    assert.equal(backs, 1)
+    lyrics.value = true
+    return vue.nextTick()
+  }).then(() => { assert.equal(findBack(container), undefined) })
 })
 
 test('settings initialization writes once and leaves browser paths unset', async () => {
@@ -453,7 +765,8 @@ test('artist pagination failures are diagnosed and release the loading guard', a
     .replace('export default', 'module.exports =')
   const diagnostics = []
   const sandbox = vm.createContext({
-    module: { exports: {} }, ContextMenu: {}, ArtworkCover: {}, SongBadges: {}, nextplayIcon: '',
+    module: { exports: {} }, ContextMenu: {}, ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, nextplayIcon: '',
+    ...loadModule('src/utils/songMetadata.js', {}, ['getSongArtists']),
     logger: { error: (...args) => diagnostics.push(args) },
     getArtistAudios: async () => { throw new Error('Network unavailable') }
   })
@@ -831,6 +1144,8 @@ test('out-of-order search responses and errors cannot replace newer results', as
     ContextMenu: {},
     ArtworkCover: {},
     SongBadges: {},
+    ArtistLinks: {},
+    ...loadModule('src/utils/songMetadata.js', {}, ['getSongArtists']),
     nextplayIcon: '',
     searchMusic: () => {
       const request = deferred()

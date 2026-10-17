@@ -44,8 +44,9 @@
 .list-page button.song-name:hover { color: var(--color-primary); }
 .list-page .quality-badge { display: inline; margin-left: 6px; padding: 0 3px; border: 1px solid color-mix(in srgb, var(--color-primary) 50%, transparent); border-radius: 3px; font-size: 8px; font-weight: 500; color: var(--color-primary); vertical-align: 1px; }
 .list-page .col-artist, .list-page .col-album { min-width: 0; overflow: hidden; color: var(--color-text-secondary); font-size: calc(var(--font-size-xs) - 1px); text-overflow: ellipsis; white-space: nowrap; }
-.list-page .artist-link, .list-page .album-link { display: block; max-width: 100%; color: inherit; font-size: inherit; line-height: 1.8; text-align: left; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; border-radius: 3px; }
-.list-page .artist-link:hover, .list-page .album-link:hover { color: var(--color-primary); }
+.list-page .artist-links { display: flex; color: inherit; font-size: inherit; line-height: 1.8; }
+.list-page .album-link { display: block; max-width: 100%; color: inherit; font-size: inherit; line-height: 1.8; text-align: left; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; border-radius: 3px; }
+.list-page .album-link:hover { color: var(--color-primary); }
 .list-page .mobile-artist { display: none; }
 .list-page .col-duration { display: flex; align-items: center; justify-content: flex-end; gap: 12px; min-width: 0; color: var(--color-text-secondary); font-size: calc(var(--font-size-xs) - 2px); font-variant-numeric: tabular-nums; }
 .list-page .action-buttons { display: flex; justify-content: flex-end; align-items: center; min-width: 0; gap: 2px; opacity: 0; transition: opacity var(--transition-fast); }
@@ -82,7 +83,7 @@
   .list-page .primary-btn, .list-page .play-all-btn, .list-page .action-btn { padding: 8px 15px; min-height: 35px; }
   .list-page .song-list > .list-header, .list-page .song-list > .song-item, .album-detail-view .song-list > .list-header, .album-detail-view .song-list > .song-item { grid-template-columns: 25px minmax(0, 1fr) 44px 56px; gap: 11px; padding-inline: 8px; }
   .list-page .col-artist { display: none; }
-  .list-page .mobile-artist { display: block; color: var(--color-text-secondary); font-size: calc(var(--font-size-xs) - 2px); margin-top: 2px; }
+  .list-page .mobile-artist { display: flex; color: var(--color-text-secondary); font-size: calc(var(--font-size-xs) - 2px); margin-top: 2px; }
   .list-page .song-cover { width: 42px; height: 42px; flex-basis: 42px; }
   .list-page .song-item { min-height: 74px; }
   .list-page .action-buttons { opacity: 1; }

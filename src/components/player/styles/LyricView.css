@@ -59,7 +59,7 @@
   overflow: hidden;
   overflow-wrap: anywhere;
 }
-.song-artist { margin-top: 8px; font-size: 14px; color: var(--lyric-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.song-artist { margin-top: 8px; font-size: 14px; color: var(--lyric-text-secondary); }
 .song-title-search { color: inherit; font: inherit; text-align: inherit; border-radius: 3px; }
 .song-title-search:hover { text-decoration: underline; text-underline-offset: 4px; }
 .song-title-search:focus-visible { outline: 2px solid var(--lyric-text); outline-offset: -2px; }

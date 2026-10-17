@@ -36,6 +36,81 @@ function names(value) {
   return text(value)
 }
 
+const ARTIST_NAME_FIELDS = ['name', 'Name', 'singer_name', 'singername', 'SingerName', 'singerName', 'author_name', 'AuthorName', 'authorName']
+const ARTIST_ID_FIELDS = ['id', 'ID', 'Id', 'singer_id', 'singerid', 'SingerId', 'SingerID', 'singerId',
+  'author_id', 'authorid', 'AuthorId', 'AuthorID', 'authorId']
+const SONG_ARTIST_ID_FIELDS = ARTIST_ID_FIELDS.filter(key => !['id', 'ID', 'Id'].includes(key))
+
+function artistName(value) {
+  if (typeof value !== 'string') return ''
+  const name = value.trim()
+  return name === '未知歌手' || name === '-' ? '' : name
+}
+
+function artistId(source, fields) {
+  for (const field of fields) {
+    const value = source[field]
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value
+    if (typeof value === 'string' && value.trim()) {
+      const normalized = value.trim()
+      if (!Number.isFinite(Number(normalized)) || Number(normalized) > 0) return normalized
+    }
+  }
+  return null
+}
+
+/**
+ * Keep each structured artist's identity, preferring usable arrays over joined text.
+ * Joined legacy names only split on a Chinese list comma or a spaced slash; a
+ * single song-level artist ID never identifies every member of a collaboration.
+ */
+export function getSongArtists(song) {
+  if (!song || typeof song !== 'object' || Array.isArray(song)) return []
+  const artists = []
+  const append = (name, id = null) => {
+    if (!name) return
+    const sameId = id == null ? null : artists.find(artist => artist.id != null && String(artist.id) === String(id))
+    if (sameId) return
+    const sameName = artists.find(artist => artist.name === name && (artist.id == null || id == null))
+    if (sameName) {
+      if (sameName.id == null && id != null) sameName.id = id
+      return
+    }
+    artists.push({ id, name })
+  }
+  const arrayFields = ['singerinfo', 'SingerInfo', 'singers', 'Singers', 'authors', 'Authors']
+  for (const field of arrayFields) {
+    if (!Array.isArray(song[field])) continue
+    for (const value of song[field]) {
+      if (typeof value === 'string') append(artistName(value))
+      else if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const name = ARTIST_NAME_FIELDS.map(key => artistName(value[key])).find(Boolean)
+        append(name, artistId(value, ARTIST_ID_FIELDS))
+      }
+    }
+  }
+
+  const scalarFields = ['singername', 'SingerName', 'singer_name', 'singerName', 'author_name', 'AuthorName', 'authorName', 'author', ...arrayFields]
+  let joinedName = scalarFields.map(key => artistName(song[key])).find(Boolean) || ''
+  if (!joinedName && !artists.length) {
+    for (const field of ['name', 'filename', 'FileName']) {
+      const match = artistName(song[field]).match(/^(.+?)\s+[-—–]\s+\S/)
+      if (match) { joinedName = match[1].trim(); break }
+    }
+  }
+  const legacyNames = joinedName.split(/\s*、\s*|\s+[\/／]\s+/).map(artistName).filter(Boolean)
+  const legacyId = legacyNames.length === 1 ? artistId(song, SONG_ARTIST_ID_FIELDS) : null
+  if (artists.length) {
+    if (legacyNames.length === 1 && legacyId != null && !artists.some(artist => artist.id != null && String(artist.id) === String(legacyId))) {
+      const matching = artists.find(artist => artist.name === legacyNames[0] && artist.id == null)
+      if (matching) matching.id = legacyId
+    }
+    return artists
+  }
+  for (const name of legacyNames) append(name, legacyId)
+  return artists
+}
+
 /** Build a title-only query while preserving version suffixes and hyphens inside the title. */
 export function getSongSearchKeyword(song) {
   if (!song || typeof song !== 'object') return ''

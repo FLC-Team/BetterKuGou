@@ -356,18 +356,27 @@ export const unfollowArtist = (id) => {
   })
 }
 
-/**
- * 根据名称查找歌手（用于从搜索结果或缺少ID时兜底）
- */
+/** 按单个歌手姓名精确匹配，避免将合唱者或无关搜索首项当作所选歌手。 */
 export const findArtistByName = async (name) => {
-  if (!name) return null
+  if (typeof name !== 'string' || !name.trim()) return null
+  const normalizeName = value => typeof value === 'string'
+    ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase()
+    : ''
+  const targetName = normalizeName(name)
+  const hasId = value => (typeof value === 'string' || typeof value === 'number') &&
+    String(value).trim() !== '' && Number.isFinite(Number(value)) && Number(value) > 0
   try {
-    const res = await apiClient.get('/search', { params: { keywords: name, type: 'author', pagesize: 5 } })
-    const list = res?.data?.lists || []
-    return list[0] || null
+    const res = await apiClient.get('/search', { params: { keywords: name.trim(), type: 'author', pagesize: 5 } })
+    if (res?.status !== undefined && Number(res.status) !== 1) throw new Error('查询歌手失败，请重试')
+    const list = res?.data?.lists
+    if (!Array.isArray(list)) throw new Error('歌手搜索结果格式无效，请重试')
+    return list.find(artist => artist &&
+      [artist.AuthorId, artist.author_id, artist.SingerId, artist.singerid, artist.singer_id, artist.ID, artist.id].some(hasId) &&
+      [artist.AuthorName, artist.author_name, artist.SingerName, artist.singer_name, artist.singername, artist.name]
+        .some(value => normalizeName(value) === targetName)) || null
   } catch (e) {
     logger.error('music-api', 'findArtistByName失败', e)
-    return null
+    throw e
   }
 }
 

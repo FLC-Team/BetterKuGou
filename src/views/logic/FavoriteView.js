@@ -3,6 +3,7 @@ import { logger } from '../../utils/logger.js'
 import { getUserPlaylists, getPlaylistTracks } from '../../api/music.js'
 import ArtworkCover from '../../components/common/ArtworkCover.vue'
 import SongBadges from '../../components/common/SongBadges.vue'
+import ArtistLinks from '../../components/common/ArtistLinks.vue'
 import ContextMenu from '../../components/common/ContextMenu.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import { useSettingsStore } from '../../stores/settingsStore.js'
@@ -17,6 +18,7 @@ export default {
   components: {
     ArtworkCover,
     SongBadges,
+    ArtistLinks,
     ContextMenu
   },
   props: {
@@ -367,31 +369,6 @@ export default {
       return `${mins}:${secs.toString().padStart(2, '0')}`
     },
     
-    // 获取歌手名称
-    getSingerNames(singerinfo) {
-      // 如果是数组格式 (标准的 singerinfo)
-      if (Array.isArray(singerinfo) && singerinfo.length > 0) {
-        const names = singerinfo.map(s => {
-          // 处理对象格式的歌手信息
-          if (typeof s === 'object' && s !== null) {
-            return s.name || s.singer_name || s.singername || s.author_name
-          }
-          // 处理字符串格式
-          return String(s)
-        }).filter(name => name && name.trim() && name !== '[object Object]')
-        
-        // 如果过滤后有有效的名字,返回拼接结果
-        if (names.length > 0) {
-          return names.join('、')
-        }
-      }
-      // 如果是字符串格式
-      if (typeof singerinfo === 'string' && singerinfo.trim()) {
-        return singerinfo
-      }
-      return null // 返回 null 让模板使用备选方案
-    },
-    
     // 提取歌曲名称（去掉"歌手 - "前缀）
     getSongName(fullName) {
       if (!fullName) return '未知歌曲'
@@ -566,12 +543,6 @@ export default {
       this.$emit('navigate', 'home')
     },
 
-    // 进入歌手页面
-    goArtist(song) {
-      const id = this.getPrimaryArtistId(song)
-      const name = this.getPrimaryArtistName(song)
-      this.$emit('navigate', 'artist', { id, name })
-    },
     // 进入专辑页面
     goAlbum(song) {
       const id =
@@ -586,32 +557,6 @@ export default {
       if (id || name) this.$emit('navigate', 'album', { id, name })
     },
 
-    // 提取首个歌手ID
-    getPrimaryArtistId(song) {
-      const s = song || {}
-      if (s.SingerId || s.singerid || s.AuthorId || s.author_id) return s.SingerId || s.singerid || s.AuthorId || s.author_id
-      if (Array.isArray(s.singerinfo) && s.singerinfo.length) {
-        const first = s.singerinfo[0]
-        return first?.id || first?.singerid || first?.author_id || null
-      }
-      return null
-    },
-
-    // 提取首个歌手名
-    getPrimaryArtistName(song) {
-      const s = song || {}
-      if (s.SingerName || s.singername || s.author_name) return s.SingerName || s.singername || s.author_name
-      if (Array.isArray(s.singerinfo) && s.singerinfo.length) {
-        const first = s.singerinfo[0]
-        return first?.name || first?.singer_name || first?.singername || first?.author_name || null
-      }
-      // 从 "歌手 - 歌名" 中分离
-      if (typeof s.name === 'string' && s.name.includes(' - ')) {
-        return s.name.split(' - ')[0]
-      }
-      return null
-    },
-    
     // 切换排序顺序
     toggleSortOrder() {
       if (this.sortOrder === 'none') {

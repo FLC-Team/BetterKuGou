@@ -8,7 +8,7 @@
           <p class="eyebrow">THE ALBUM / 专辑</p>
           <h1 class="page-title">{{ album?.album_name || album?.name || albumName || '专辑' }}</h1>
           <p class="collection-description">一张专辑，一段完整的音乐叙事。</p>
-          <div class="collection-meta"><span>{{ album?.author_name || album?.singername || '未知歌手' }}</span><span v-if="album?.publish_date || album?.pub_time">{{ album.publish_date || album.pub_time }}</span><span>{{ songs.length }} 首歌曲</span></div>
+          <div class="collection-meta"><span><ArtistLinks :song="album" @select="$emit('navigate', 'artist', $event)" /></span><span v-if="album?.publish_date || album?.pub_time">{{ album.publish_date || album.pub_time }}</span><span>{{ songs.length }} 首歌曲</span></div>
 
         </div>
       </header>
@@ -30,10 +30,10 @@
                 <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="getSongName(song.name)">{{ getSongName(song.name) }}</button>
                 <SongBadges :song="song" />
               </div>
-              <span class="mobile-artist">{{ getSingerNames(song.singerinfo, song) || '未知歌手' }}</span>
+              <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />
             </div>
           </div>
-          <div class="col-artist">{{ getSingerNames(song.singerinfo, song) }}</div>
+          <div class="col-artist"><ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" /></div>
           <div class="col-duration">{{ formatDuration(song.timelen) }}</div>
         </div>
       </div>
@@ -50,12 +50,14 @@
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
 import SongBadges from '../components/common/SongBadges.vue'
+import ArtistLinks from '../components/common/ArtistLinks.vue'
+import { getSongArtists } from '../utils/songMetadata.js'
 import { logger } from '../utils/logger.js'
 
 import { getAlbumDetail, getAlbumSongs, getImagesByHash } from '../api/music.js'
 
 export default {
-  components: { ArtworkCover, SongBadges },
+  components: { ArtworkCover, SongBadges, ArtistLinks },
   name: 'AlbumDetailView',
   props: {
     albumId: { type: [String, Number], required: false },
@@ -135,10 +137,7 @@ export default {
       return list.map(it => {
         const hash = it.hash || it.Hash || it.filehash || it.FileHash || it.audio_hash
         const cover = it.sizable_cover || it.cover || it.img || it.Image || ''
-        const authors = it.authors || it.singerinfo || []
-        const singerArray = Array.isArray(authors)
-          ? authors.map(a => ({ id: a.id || a.author_id || a.singerid, name: a.name || a.author_name || a.singer_name || a.singername })).filter(a => a.name)
-          : []
+        const singerArray = getSongArtists(it)
         const singername = singerArray.map(a => a.name).join('、') || it.singername || it.SingerName || it.author_name
         const rawName = it.audio_name || it.song_name || it.name || it.filename || it.remark
         const name = rawName || (typeof it.filename === 'string' ? it.filename.split(' - ').slice(1).join(' - ') : '未知歌曲')
@@ -167,13 +166,6 @@ export default {
     getCover(album) {
       const url = album?.sizable_cover || album?.cover || ''
       return typeof url === 'string' ? url.replace('{size}', '400') : ''
-    },
-    getSingerNames(singerinfo, song) {
-      if (Array.isArray(singerinfo) && singerinfo.length) {
-        return singerinfo.map(s => s.name || s.singer_name || s.singername || s.author_name).filter(Boolean).join('、')
-      }
-      if (typeof singerinfo === 'string' && singerinfo.trim()) return singerinfo
-      return song?.singername || song?.author_name || ''
     },
     getSongName(fullName) {
       if (!fullName) return '未知歌曲'

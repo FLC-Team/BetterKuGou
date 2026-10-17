@@ -11,11 +11,26 @@ const pages = ['HomeView', 'PersonalFMView', 'FavoriteView', 'SearchView', 'Arti
 const song = {
   hash: 'example-hash', FileHash: 'example-hash', name: '示例歌手 - 示例歌曲 (Live)',
   songname: '示例歌曲 (Live)', filename: '示例歌手 - 示例歌曲 (Live)',
-  SongName: '示例歌曲 (Live)', singername: '示例歌手', timelen: 180000, duration: 180
+  SongName: '示例歌曲 (Live)', singername: '示例歌手、合作歌手', timelen: 180000, duration: 180,
+  singerinfo: [{ id: 101, name: '示例歌手' }, { id: 202, name: '合作歌手' }]
 }
 const logger = { trace() {}, info() {}, warn() {}, error() {} }
 const leaf = { render: () => vue.h('span') }
 const transitionGroup = { render() { return vue.h('div', this.$slots.default?.()) } }
+const metadata = vm.createContext({})
+vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/utils/songMetadata.js'), 'utf8').replace(/^export /gm, ''), metadata)
+
+/** Use the actual child component so navigation tests exercise the buttons users click. */
+function loadArtistLinks() {
+  const filename = path.join(__dirname, '../src/components/common/ArtistLinks.vue')
+  const { descriptor } = parse(fs.readFileSync(filename, 'utf8'), { filename })
+  const sandbox = vm.createContext({ module: { exports: {} }, getSongArtists: metadata.getSongArtists })
+  vm.runInContext(descriptor.script.content.replace(/^import[^\n]*\n/gm, '').replace('export default', 'module.exports ='), sandbox)
+  const template = compileTemplate({ source: descriptor.template.content, filename, id: 'ArtistLinks',
+    compilerOptions: { mode: 'function', hoistStatic: false } })
+  assert.deepEqual(template.errors, [])
+  return { ...sandbox.module.exports, render: new Function('Vue', template.code)(vue) }
+}
 
 /** Compile the real template, retain production event methods, and isolate unrelated loaders. */
 function mountPage(t, name, overrides = {}) {
@@ -27,7 +42,8 @@ function mountPage(t, name, overrides = {}) {
     : descriptor.script.content
   const timers = []
   const sandbox = vm.createContext({
-    logger, ArtworkCover: leaf, SongBadges: leaf, ContextMenu: leaf, nextplayIcon: '',
+    logger, ArtworkCover: leaf, SongBadges: leaf, ContextMenu: leaf, ArtistLinks: loadArtistLinks(),
+    getSongArtists: metadata.getSongArtists, nextplayIcon: '',
     TransitionGroup: transitionGroup,
     localStorage: { getItem: () => null },
     filterSongs: songs => songs,
@@ -166,3 +182,44 @@ test('FavoriteView: its existing context-menu search emits the same original son
   assert.deepEqual(emitted.map(([event]) => event), ['search'])
   assert.equal(vue.toRaw(emitted[0][1]), song)
 })
+
+for (const name of pages) {
+  test(`${name}: every artist opens its own page without triggering the row`, t => {
+    const { root, emitted, timers } = mountPage(t, name)
+    for (const artist of song.singerinfo) {
+      const button = find(root, item => item.props['aria-label'] === '查看歌手 ' + artist.name)
+      assert.ok(button, `entry exists for ${artist.name}`)
+      assert.equal(button.type, 'button')
+      assert.equal(dispatch(button, 'onClick', 0), true)
+      assert.equal(dispatch(button, 'onDblclick', 2), true)
+      for (let parent = button.parent; parent; parent = parent.parent) assert.notEqual(parent.type, 'button')
+    }
+    for (const callback of timers) callback()
+    const expected = song.singerinfo.map(artist => name === 'PlaylistDrawer'
+      ? ['artist', artist] : ['navigate', 'artist', artist])
+    assert.deepEqual(JSON.parse(JSON.stringify(emitted)), expected)
+  })
+}
+
+test('ArtistView: all-song tab preserves each collaborator entry', t => {
+  const { root, emitted } = mountPage(t, 'ArtistView', { activeTab: 'songs' })
+  dispatch(find(root, item => item.props['aria-label'] === '查看歌手 合作歌手'), 'onClick', 0)
+  assert.deepEqual(JSON.parse(JSON.stringify(emitted)), [['navigate', 'artist', song.singerinfo[1]]])
+})
+
+test('AlbumDetailView: album header exposes individual artists', t => {
+  const { root, emitted } = mountPage(t, 'AlbumDetailView', { album: { authors: song.singerinfo } })
+  const header = find(root, item => hasClass(item, 'collection-hero'))
+  dispatch(find(header, item => item.props['aria-label'] === '查看歌手 合作歌手'), 'onClick', 0)
+  assert.deepEqual(JSON.parse(JSON.stringify(emitted)), [['navigate', 'artist', song.singerinfo[1]]])
+})
+
+for (const method of ['playSong', 'playNext']) {
+  test(`SearchView: ${method} keeps each artist identity in the emitted song`, t => {
+    const { instance, emitted } = mountPage(t, 'SearchView')
+    instance[method](song)
+    const result = emitted.find(item => item[0] === (method === 'playSong' ? 'play' : 'play-next'))
+    assert.ok(result)
+    assert.deepEqual(JSON.parse(JSON.stringify(metadata.getSongArtists(result[1]))), song.singerinfo)
+  })
+}

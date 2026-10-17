@@ -67,7 +67,7 @@ function environment(options = {}) {
   const document = { body: { style: { overflow: 'auto' } }, activeElement: null }
   const sandbox = {
     window, document, navigator: options.browser ? { clipboard: { writeText: async text => clipboard.push(text) } } : {},
-    process: { env: { NODE_ENV: 'test' } }, performance, ContextMenu: { render: () => null }, contextMenuManager: menuManager,
+    process: { env: { NODE_ENV: 'test' } }, performance, ContextMenu: { render: () => null }, ArtistLinks: { render: () => null }, contextMenuManager: menuManager,
     useSettingsStore: () => settingsStore, repeatAllIcon: '', repeatOneIcon: '', shuffleIcon: '',
     logger: Object.fromEntries(['trace', 'debug', 'info', 'error', 'warn'].map(level => [level, (...args) => {
       if (level === 'warn') warnings.push(args)

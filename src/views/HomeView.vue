@@ -77,7 +77,7 @@
             </button>
             <button class="song-name" type="button" :title="song.songname || song.filename || song.name" @click.stop="$emit('search', song)" @dblclick.stop>{{ song.songname || song.filename || song.name || '未知歌曲' }}</button>
             <SongBadges :song="song" />
-            <button class="artist-link" type="button" :title="song.singername || song.author_name" :disabled="!song.singername && !song.author_name" @click.stop="goArtistFromAISong(song)">{{ song.singername || song.author_name || '未知歌手' }}</button>
+            <ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" />
           </article>
         </div>
       </section>
@@ -103,6 +103,7 @@
 </template>
 <script>
 import SongBadges from '../components/common/SongBadges.vue'
+import ArtistLinks from '../components/common/ArtistLinks.vue'
 import { logger } from '../utils/logger.js'
 
 import { 
@@ -122,7 +123,7 @@ function getAccountIdentity() {
 export default {
   name: 'HomeView',
   emits: ['navigate', 'play', 'search'],
-  components: { SongBadges },
+  components: { SongBadges, ArtistLinks },
   props: {
     favoritesRevision: { type: Number, default: 0 }
   },
@@ -408,12 +409,6 @@ export default {
         timelen: song.duration || song.time_length || song.timelen
       }
       this.$emit('play', normalizedSong)
-    }
-    ,
-    goArtistFromAISong(song) {
-      const id = song.SingerId || song.singerid || song.AuthorId || song.author_id || null
-      const name = song.singername || song.author_name || null
-      if (id || name) this.$emit('navigate', 'artist', { id, name })
     }
   }
 }

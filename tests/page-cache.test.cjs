@@ -13,6 +13,7 @@ function createArtist(t, hotRequest = () => Promise.reject(new Error('temporary 
   const sandbox = {
     ArtworkCover: {},
     SongBadges: {},
+    ArtistLinks: {},
     process: { env: { NODE_ENV: 'test' } },
     logger: {
       trace() {},
@@ -38,6 +39,7 @@ function createArtist(t, hotRequest = () => Promise.reject(new Error('temporary 
     .replace(/^import[^\n]*\n/gm, '')
     .replace('export default', 'globalThis.component =')
   vm.createContext(sandbox)
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/utils/songMetadata.js'), 'utf8').replace(/^export /gm, ''), sandbox)
   vm.runInContext(source, sandbox)
   const { component } = sandbox
   const artist = {
@@ -115,6 +117,7 @@ function createHome(t, songs = []) {
   }
   const sandbox = {
     SongBadges: {},
+    ArtistLinks: {},
     logger: { trace() {}, error() {} },
     Date: class { toDateString() { return currentDay } },
     localStorage: { getItem: key => memory.get(key) ?? null },
@@ -128,6 +131,7 @@ function createHome(t, songs = []) {
     .replace(/^import\b[\s\S]*?from\s+['"][^'"]+['"]\s*;?\s*$/gm, '')
     .replace('export default', 'globalThis.component =')
   vm.createContext(sandbox)
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/utils/songMetadata.js'), 'utf8').replace(/^export /gm, ''), sandbox)
   vm.runInContext(source, sandbox)
   const { component } = sandbox
   const home = { favoritesRevision: 0, ...component.data() }

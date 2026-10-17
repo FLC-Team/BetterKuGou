@@ -41,8 +41,8 @@
             </Transition>
           </div>
           <div class="song-text-viewport song-artist-viewport">
-            <Transition name="song-meta">
-              <div :key="currentSong.hash" class="song-artist">{{ getSingerNames(currentSong.singerinfo) || currentSong.singername || (currentSong.name && currentSong.name.includes(' - ') ? currentSong.name.split(' - ')[0] : '未知歌手') }}</div>
+            <Transition name="song-meta" @before-enter="setSongTitleInteractivity($event, true)" @before-leave="setSongTitleInteractivity($event, false)">
+              <div :key="currentSong.hash" class="song-artist"><ArtistLinks :song="currentSong" compact @select="openArtist" /></div>
             </Transition>
           </div>
         </div>
@@ -222,6 +222,7 @@
         @remove="handleRemoveSong"
         @clear="handleClearPlaylist"
         @search="searchSong"
+        @artist="openArtist"
       />
 
       <!-- 播放模式右键菜单 -->
@@ -261,6 +262,7 @@
           @toggle-favorite="toggleFavorite"
           @seek="handleSeek"
           @search="searchSong"
+          @artist="openArtist"
           @change-quality="changeQuality"
           @retry-quality="retryQualityChange"
         />
