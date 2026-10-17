@@ -57,9 +57,9 @@
       <div class="active-indicator-slider" :style="indicatorStyle" aria-hidden="true"></div>
     </nav>
 
-    <button v-if="isHidden" ref="restoreButton" type="button" class="sidebar-restore" aria-label="展开侧边栏" aria-controls="sidebar-navigation" aria-expanded="false" title="展开侧边栏" @click="handleRestore">
+    <Transition name="ui-pop" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><button v-if="isHidden" ref="restoreButton" type="button" class="sidebar-restore" aria-label="展开侧边栏" aria-controls="sidebar-navigation" aria-expanded="false" title="展开侧边栏" @click="handleRestore">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
-    </button>
+    </button></Transition>
 
     <UserMenu
       ref="userMenu"

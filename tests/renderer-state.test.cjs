@@ -4,6 +4,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const vm = require('node:vm')
 const vue = require('vue')
+const { parse, compileTemplate } = require('@vue/compiler-sfc')
 
 const root = path.join(__dirname, '..')
 const quietLogger = Object.fromEntries(['trace', 'info', 'warn', 'error'].map(level => [level, () => {}]))
@@ -176,13 +177,26 @@ function loadApp(electronAPI = {}, overrides = {}) {
   const settings = vue.reactive({ shortcuts: { enableGlobal: true, keys: {} }, software: {}, playback: {}, ...overrides.settings })
   const mounted = []
   const unmounted = []
+  const windowListeners = new Map()
+  const appWindow = { electronAPI,
+    addEventListener(name, callback) {
+      if (!windowListeners.has(name)) windowListeners.set(name, new Set())
+      windowListeners.get(name).add(callback)
+    },
+    removeEventListener(name, callback) { windowListeners.get(name)?.delete(callback) }
+  }
+  const cacheHelpers = loadModule('src/utils/playlistCache.js', { window: appWindow },
+    ['initializePlaylistCacheSession', 'getPlaylistCacheAPI', 'callPlaylistCache'])
   const sandbox = vm.createContext({
+    PageLoadingView: { name: 'PageLoadingView', render: () => vue.h('div', 'loading') },
     ...vue,
     ...loadUtils(),
     console: quietConsole,
     logger: quietLogger,
     process: { env: { NODE_ENV: 'production' } },
-    window: { electronAPI, addEventListener() {}, removeEventListener() {} },
+    ...loadModule('src/utils/songMetadata.js', {}, ['getSongSearchKeyword', 'getSongArtists']),
+    window: appWindow,
+    ...cacheHelpers,
     document: { addEventListener() {}, removeEventListener() {}, querySelectorAll: () => [] },
     localStorage: overrides.localStorage || { getItem: () => null },
     getUserPlaylists: overrides.getUserPlaylists || (async () => ({ status: 1, data: { info: [] } })),
@@ -190,8 +204,8 @@ function loadApp(electronAPI = {}, overrides = {}) {
     clearTimeout: overrides.clearTimeout || clearTimeout,
     onMounted: callback => mounted.push(callback),
     onBeforeUnmount: callback => unmounted.push(callback),
-    isLoggedIn: () => false,
-    getLoginInfo: () => null,
+    isLoggedIn: overrides.isLoggedIn || (() => false),
+    getLoginInfo: overrides.getLoginInfo || (() => null),
     clearLoginInfo() {},
     KUGOU_AUTH_EXPIRED_EVENT: 'expired',
     useSettingsStore: () => ({
@@ -214,10 +228,16 @@ function loadApp(electronAPI = {}, overrides = {}) {
     pageSessionKey, pageSessionVersion, selectedPlaylistId, showLogin, currentView,
     performMemoryCleanup, createLazyView, cachedPageNames, drain: () => shortcutUpdateQueue,
     handleInstallPreparation, preparingInstall, settingsViewRef, sameInstallSession,
-    collectSessionSnapshot, queueSessionPersist, restoredPlaybackState, handleSongChanged
+    collectSessionSnapshot, queueSessionPersist, restoredPlaybackState, handleSongChanged,
+    handleSearch, handleSearchRequest, searchQuery, searchDraft,
+    handleGoBack, handleBackToMain, handleShowSettings, handleCloseSettings,
+    navigationHistory, navigationPending, canGoBack, artistData, albumData, rankData,
+    selectedPlaylistData, getPageKey, rememberPageScroll, restorePageScroll, setInstallPreparation,
+    playlistCacheState, cacheTask: () => playlistCacheTask
   })`, sandbox))
   return {
     ...app,
+    dispatchWindowEvent: name => [...(windowListeners.get(name) || [])].forEach(callback => callback()),
     mount: () => mounted.forEach(callback => callback()),
     async dispose() {
       scope.stop()
@@ -226,6 +246,359 @@ function loadApp(electronAPI = {}, overrides = {}) {
     }
   }
 }
+
+test('song searches expose results and refill even an identical submitted query without changing playback', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  const playing = { hash: 'playing', name: 'Current Song' }
+  app.currentSong.value = playing
+  app.playlist.value = [playing, { hash: 'queued', name: 'Queued Song' }]
+  app.playlistIndex.value = 0
+  const queue = app.playlist.value
+  let closed = 0
+  app.musicPlayerRef.value = { closeLyrics() { closed++ }, showPlaylist: true }
+  app.showLogin.value = true
+  app.handleSearch({ FileName: 'Singer - New Song.mp3', SingerName: 'Singer' })
+  assert.equal(app.searchQuery.value, 'New Song')
+  assert.equal(app.searchDraft.value, 'New Song')
+  assert.equal(app.currentView.value, 'search')
+  assert.equal(app.showLogin.value, false)
+  assert.equal(app.musicPlayerRef.value.showPlaylist, false)
+  assert.equal(closed, 1)
+  app.searchDraft.value = 'Unsubmitted edits'
+  app.currentView.value = 'home'
+  app.handleSearch({ OriSongName: 'New Song', SingerName: 'Different Singer' })
+  assert.equal(app.searchDraft.value, 'New Song')
+  assert.equal(app.searchQuery.value, 'New Song')
+  assert.equal(app.currentSong.value.hash, 'playing')
+  assert.equal(app.playlist.value, queue)
+  assert.equal(app.playlistIndex.value, 0)
+})
+
+test('search drafts do not navigate until submitted and empty queries leave navigation unchanged', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  const initialView = app.currentView.value
+  app.searchDraft.value = 'draft'
+  assert.equal(app.currentView.value, initialView)
+  assert.equal(app.searchQuery.value, '')
+  for (const song of [null, {}, { singername: 'Artist' }]) app.handleSearch(song)
+  for (const keyword of ['', '  ', null, {}]) app.handleSearchRequest(keyword)
+  assert.equal(app.currentView.value, initialView)
+  assert.equal(app.searchDraft.value, 'draft')
+  app.handleSearchRequest('  Manual query  ')
+  assert.equal(app.searchDraft.value, 'Manual query')
+  assert.equal(app.searchQuery.value, 'Manual query')
+  assert.equal(app.currentView.value, 'search')
+})
+
+test('page history unwinds artist and album browsing to the original search draft without touching playback', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  const playing = { hash: 'playing', name: 'Playing song' }
+  app.currentSong.value = playing
+  app.playlist.value = [playing]
+  const queue = app.playlist.value
+  app.handleSearchRequest('original query')
+  app.searchDraft.value = 'unsubmitted search edits'
+  const artist = { id: 10, name: 'Artist A' }
+  app.handleNavigate('artist', artist)
+  artist.name = 'caller changed this object'
+  app.handleNavigate('album', { id: 20, name: 'Album B' })
+  app.handleNavigate('artist', { id: 30, name: 'Artist C' })
+  assert.equal(app.navigationHistory.value.length, 4)
+  assert.equal(app.handleGoBack(), true)
+  assert.equal(app.currentView.value, 'album')
+  assert.equal(app.albumData.value.id, 20)
+  app.handleGoBack()
+  assert.equal(app.artistData.value.id, 10)
+  assert.equal(app.artistData.value.name, 'Artist A', 'route parameters are copied from the caller')
+  app.handleGoBack()
+  assert.equal(app.currentView.value, 'search')
+  assert.equal(app.searchQuery.value, 'original query')
+  assert.equal(app.searchDraft.value, 'unsubmitted search edits')
+  app.handleGoBack()
+  assert.equal(app.currentView.value, 'home')
+  assert.equal(app.canGoBack.value, false)
+  assert.equal(app.handleGoBack(), false)
+  assert.equal(app.playlist.value, queue)
+  assert.equal(app.currentSong.value.hash, 'playing')
+})
+
+test('history restores the selected playlist and rank parameters after traversing other resources', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  app.handleLoginSuccess({ userid: 'example-account' })
+  app.handleNavigate('playlist', { id: 'one', name: 'First playlist' })
+  app.handleNavigate('artist', { id: 10, name: 'Artist' })
+  app.handleNavigate('playlist', { id: 'two', name: 'Second playlist' })
+  app.handleNavigate('rank', { rankid: 40, rankname: 'Chart' })
+  app.handleGoBack()
+  assert.equal(app.selectedPlaylistId.value, 'two')
+  assert.equal(app.selectedPlaylistData.value.name, 'Second playlist')
+  app.handleGoBack()
+  assert.equal(app.currentView.value, 'artist')
+  app.handleGoBack()
+  assert.equal(app.currentView.value, 'playlist')
+  assert.equal(app.selectedPlaylistId.value, 'one')
+  assert.equal(app.selectedPlaylistData.value.name, 'First playlist')
+  app.handleNavigate('rank', { rankid: 40, rankname: 'Chart' })
+  app.handleNavigate('album', { id: 50, name: 'Album' })
+  app.handleGoBack()
+  assert.equal(app.currentView.value, 'rank')
+  assert.equal(app.rankData.value.rankid, 40)
+})
+
+test('history and cache keys deduplicate only consecutive identical resources and submitted queries', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  app.handleNavigate('artist', { id: 10, name: 'Artist' })
+  app.handleNavigate('artist', { id: '10', name: 'Updated artist label' })
+  assert.equal(app.navigationHistory.value.length, 1)
+  assert.equal(app.getPageKey('artist', { id: 0, name: 'First name' }), app.getPageKey('artist', { id: '', name: 'First name' }))
+  assert.notEqual(app.getPageKey('artist', { id: null, name: 'First name' }), app.getPageKey('artist', { id: null, name: 'Second name' }))
+  app.handleNavigate('album', { id: 20, name: 'Album' })
+  app.handleNavigate('artist', { id: 10, name: 'Artist' })
+  assert.equal(app.navigationHistory.value.length, 3, 'A to B to A remains a real browsing path')
+  app.handleSearchRequest('query')
+  const count = app.navigationHistory.value.length
+  app.searchDraft.value = 'edited draft'
+  app.handleSearchRequest(' query ')
+  assert.equal(app.navigationHistory.value.length, count)
+  assert.equal(app.searchDraft.value, 'query')
+  for (const [view, data] of [['missing'], ['artist'], ['album'], ['rank'], ['playlist']]) {
+    assert.equal(app.handleNavigate(view, data), false)
+  }
+  assert.equal(app.navigationHistory.value.length, count)
+})
+
+test('login back closes only its overlay while account changes discard content history', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  app.handleNavigate('artist', { id: 10, name: 'Artist' })
+  app.handleShowLogin()
+  assert.equal(app.navigationHistory.value.length, 1)
+  app.handleGoBack()
+  assert.equal(app.showLogin.value, false)
+  assert.equal(app.currentView.value, 'artist')
+  assert.equal(app.navigationHistory.value.length, 1)
+  app.handleShowLogin()
+  app.handleBackToMain()
+  assert.equal(app.navigationHistory.value.length, 1)
+  app.handleLoginSuccess({ userid: 'example-account' })
+  assert.equal(app.navigationHistory.value.length, 0)
+  assert.equal(app.canGoBack.value, false)
+  app.handleNavigate('album', { id: 20, name: 'Album' })
+  app.handleLogout()
+  assert.equal(app.navigationHistory.value.length, 0)
+  assert.equal(app.canGoBack.value, true, 'the login overlay can still close without history')
+  app.handleGoBack()
+  assert.equal(app.canGoBack.value, false)
+  assert.equal(app.currentView.value, 'home')
+  app.handleNavigate('artist', { id: 10, name: 'Artist' })
+  app.handleAuthExpired()
+  assert.equal(app.navigationHistory.value.length, 0)
+  assert.equal(app.currentView.value, 'home')
+})
+
+const settingsExits = [
+  ['back', app => app.handleGoBack(), 'home'],
+  ['sidebar', app => app.handleNavigate('home'), 'home'],
+  ['search', app => app.handleSearchRequest('next query'), 'search'],
+  ['login', app => app.handleShowLogin(), 'settings'],
+  ['close', app => app.handleCloseSettings(), 'home']
+]
+
+for (const [name, leave, target] of settingsExits) {
+  test(`leaving settings through ${name} waits for saving, ignores repeated actions and retains failed drafts`, async t => {
+    const app = loadApp()
+    t.after(() => app.dispose())
+    app.handleShowSettings()
+    let saved = deferred()
+    let saves = 0
+    let closes = 0
+    app.settingsViewRef.value = { flushEditableSettings: () => { saves++; return saved.promise } }
+    app.musicPlayerRef.value = { closeLyrics() { closes++ }, showPlaylist: true }
+    const first = leave(app)
+    assert.equal(app.navigationPending.value, true)
+    assert.equal(app.canGoBack.value, false)
+    assert.equal(leave(app), false)
+    assert.equal(app.handleNavigate('artist', { id: 10, name: 'Artist' }), false)
+    await vue.nextTick()
+    assert.equal(saves, 1)
+    assert.equal(app.currentView.value, 'settings')
+    assert.equal(app.navigationHistory.value.length, 1)
+    saved.resolve(false)
+    assert.equal(await first, false)
+    assert.equal(app.currentView.value, 'settings')
+    assert.equal(app.navigationHistory.value.length, 1)
+    assert.equal(app.showLogin.value, false)
+    assert.equal(app.musicPlayerRef.value.showPlaylist, true)
+    assert.equal(closes, 0, 'a failed save does not close playback overlays')
+
+    saved = deferred()
+    const second = leave(app)
+    await vue.nextTick()
+    saved.resolve(true)
+    assert.equal(await second, true)
+    assert.equal(app.currentView.value, target)
+    assert.equal(app.navigationPending.value, false)
+    assert.equal(app.showLogin.value, name === 'login')
+    if (name === 'search') {
+      assert.equal(app.searchQuery.value, 'next query')
+      assert.equal(app.searchDraft.value, 'next query')
+      assert.equal(app.musicPlayerRef.value.showPlaylist, false)
+      assert.equal(closes, 1)
+    }
+  })
+}
+
+test('unexpected setting-save rejections leave both the page and navigation history intact', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  app.handleShowSettings()
+  app.settingsViewRef.value = { flushEditableSettings: async () => { throw new Error('storage unavailable') } }
+  assert.equal(await app.handleGoBack(), false)
+  assert.equal(app.currentView.value, 'settings')
+  assert.equal(app.navigationHistory.value.length, 1)
+  assert.equal(app.navigationPending.value, false)
+})
+
+test('navigation captures the latest search draft after a settings save finishes', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  app.handleShowSettings()
+  const saving = deferred()
+  app.settingsViewRef.value = { flushEditableSettings: () => saving.promise }
+  const navigation = app.handleNavigate('artist', { id: 10, name: 'Artist' })
+  app.searchDraft.value = 'edited while waiting'
+  await vue.nextTick()
+  saving.resolve(true)
+  assert.equal(await navigation, true)
+  assert.equal(app.searchDraft.value, 'edited while waiting')
+  app.handleGoBack()
+  assert.equal(app.currentView.value, 'settings')
+  assert.equal(app.searchDraft.value, 'edited while waiting')
+})
+
+test('starting and canceling installation invalidates an earlier pending navigation', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  app.handleShowSettings()
+  const saving = deferred()
+  app.settingsViewRef.value = { flushEditableSettings: () => saving.promise }
+  const navigation = app.handleSearchRequest('stale destination')
+  await vue.nextTick()
+  app.setInstallPreparation(true)
+  assert.equal(app.canGoBack.value, false)
+  assert.equal(app.handleNavigate('home'), false)
+  app.setInstallPreparation(false)
+  saving.resolve(true)
+  assert.equal(await navigation, false)
+  assert.equal(app.currentView.value, 'settings')
+  assert.equal(app.navigationHistory.value.length, 1)
+})
+
+for (const action of ['login', 'logout', 'expired', 'unmount']) {
+  test(`${action} invalidates a navigation waiting for settings to save`, async () => {
+    const app = loadApp()
+    app.handleShowSettings()
+    const saving = deferred()
+    app.settingsViewRef.value = { flushEditableSettings: () => saving.promise }
+    const navigation = app.handleSearchRequest('stale destination')
+    await vue.nextTick()
+    if (action === 'login') app.handleLoginSuccess({ userid: 'new-account' })
+    if (action === 'logout') app.handleLogout()
+    if (action === 'expired') app.handleAuthExpired()
+    if (action === 'unmount') await app.dispose()
+    saving.resolve(true)
+    assert.equal(await navigation, false)
+    assert.notEqual(app.currentView.value, 'search')
+    assert.notEqual(app.searchDraft.value, 'stale destination')
+    if (action !== 'unmount') {
+      assert.equal(app.navigationHistory.value.length, 0)
+      await app.dispose()
+    }
+  })
+}
+
+test('cached page scroll restoration remains independent from navigation snapshots', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  const element = { scrollTop: 480, inert: false, isConnected: true }
+  app.rememberPageScroll(element)
+  assert.equal(element.inert, true)
+  element.scrollTop = 0
+  app.restorePageScroll(element)
+  await vue.nextTick()
+  assert.equal(element.inert, false)
+  assert.equal(element.scrollTop, 480)
+  const uncached = { scrollTop: 0, inert: true, isConnected: true }
+  app.restorePageScroll(uncached)
+  await vue.nextTick()
+  assert.equal(uncached.scrollTop, 0)
+  app.handleNavigate('artist', { id: 1, name: 'Artist 1' })
+  for (let id = 2; id <= 15; id++) app.handleNavigate('artist', { id, name: `Artist ${id}` })
+  for (let id = 14; id >= 1; id--) {
+    app.handleGoBack()
+    assert.equal(app.artistData.value.id, id, 'history still addresses resources beyond the cache capacity')
+  }
+})
+
+test('titlebar renders an accessible back button that follows history availability and hides behind lyrics', t => {
+  const filename = path.join(root, 'src/components/layout/TitleBar.vue')
+  const { descriptor } = parse(fs.readFileSync(filename, 'utf8'), { filename })
+  const sandbox = vm.createContext({
+    logger: quietLogger, window: {}, module: { exports: {} },
+    minimizeIcon: '', maximizeIcon: '', restoreIcon: '', closeIcon: '',
+    UserMenu: { render: () => null }
+  })
+  vm.runInContext(stripImports(descriptor.script.content).replace('export default', 'module.exports ='), sandbox)
+  const compiled = compileTemplate({
+    source: descriptor.template.content, filename, id: 'titlebar-navigation',
+    compilerOptions: { mode: 'function', hoistStatic: false }
+  })
+  assert.deepEqual(compiled.errors, [])
+  const render = new Function('Vue', compiled.code)({ ...vue, Transition: { setup(_props, { slots }) { return () => slots.default?.()[0] } }, vModelText: {} })
+  const makeNode = (type, text = '') => ({ type, text, props: {}, children: [], parent: null })
+  const renderer = vue.createRenderer({
+    createElement: makeNode,
+    createText: text => makeNode('text', text), createComment: text => makeNode('comment', text),
+    setText: (node, text) => { node.text = text }, setElementText: (node, text) => { node.text = text },
+    patchProp: (node, key, _previous, value) => { node.props[key] = value },
+    insert(node, parent, anchor) {
+      if (node.parent) node.parent.children.splice(node.parent.children.indexOf(node), 1)
+      node.parent = parent
+      const index = anchor ? parent.children.indexOf(anchor) : -1
+      parent.children.splice(index < 0 ? parent.children.length : index, 0, node)
+    },
+    remove(node) { if (node.parent) node.parent.children.splice(node.parent.children.indexOf(node), 1) },
+    parentNode: node => node.parent,
+    nextSibling: node => node.parent?.children[node.parent.children.indexOf(node) + 1] || null
+  })
+  let backs = 0
+  const canGoBack = vue.ref(false)
+  const lyrics = vue.ref(false)
+  const component = { ...sandbox.module.exports, render }
+  const ui = renderer.createApp({ render: () => vue.h(component, {
+    canGoBack: canGoBack.value, isLyricViewVisible: lyrics.value, onBack: () => backs++
+  }) })
+  const container = makeNode('root')
+  ui.mount(container)
+  t.after(() => ui.unmount())
+  const findBack = node => node.props['aria-label'] === '返回上一页' ? node : node.children.map(findBack).find(Boolean)
+  assert.equal(findBack(container).props.disabled, true)
+  assert.equal(findBack(container).props.type, 'button')
+  canGoBack.value = true
+  return vue.nextTick().then(() => {
+    const back = findBack(container)
+    assert.equal(back.props.disabled, false)
+    back.props.onClick()
+    assert.equal(backs, 1)
+    lyrics.value = true
+    return vue.nextTick()
+  }).then(() => { assert.equal(findBack(container), undefined) })
+})
 
 test('settings initialization writes once and leaves browser paths unset', async () => {
   let writes = 0
@@ -406,7 +779,8 @@ test('artist pagination failures are diagnosed and release the loading guard', a
     .replace('export default', 'module.exports =')
   const diagnostics = []
   const sandbox = vm.createContext({
-    module: { exports: {} }, ContextMenu: {}, ArtworkCover: {}, SongBadges: {}, nextplayIcon: '',
+    module: { exports: {} }, ContextMenu: {}, ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, nextplayIcon: '',
+    ...loadModule('src/utils/songMetadata.js', {}, ['getSongArtists']),
     logger: { error: (...args) => diagnostics.push(args) },
     getArtistAudios: async () => { throw new Error('Network unavailable') }
   })
@@ -784,6 +1158,8 @@ test('out-of-order search responses and errors cannot replace newer results', as
     ContextMenu: {},
     ArtworkCover: {},
     SongBadges: {},
+    ArtistLinks: {},
+    ...loadModule('src/utils/songMetadata.js', {}, ['getSongArtists']),
     nextplayIcon: '',
     searchMusic: () => {
       const request = deferred()
@@ -926,6 +1302,99 @@ test('playlist directory requests are shared and late account results cannot rep
   assert.equal(app.userPlaylists.value[0].id, 'b-list')
   assert.equal(app.userPlaylistsLoaded.value, true)
   await app.dispose()
+})
+
+test('startup restores cached playlist entries before online directory validation and retains offline-only entries', async () => {
+  const initialization = deferred()
+  const online = deferred()
+  const calls = []
+  let publishState
+  const app = loadApp({ playlistCache: {
+    setSession(identity) { calls.push(['session', identity?.userId]); return initialization.promise },
+    onState: callback => { publishState = callback; return () => {} }
+  } }, {
+    localStorage: { getItem: name => ({ kugou_userid: 'A', kugou_token: 'example-a' })[name] ?? null },
+    isLoggedIn: () => true,
+    getLoginInfo: () => ({ userInfo: { userid: 'A' } }),
+    getUserPlaylists() { calls.push(['directory']); return online.promise }
+  })
+  assert.equal(app.userLoggedIn.value, true)
+  await vue.nextTick()
+  assert.equal(calls.some(([name]) => name === 'directory'), false)
+  initialization.resolve({ userId: 'A', generation: 1, revision: 1, playlists: [
+    { id: 'shared', name: '缓存旧名称', total: 2 }, { id: 'offline-only', name: '离线歌单', total: 1 }
+  ] })
+  await app.cacheTask()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(app.userPlaylists.value.length, 2)
+  assert.equal(app.userPlaylistsLoaded.value, false)
+  online.resolve({ status: 1, data: { info: [{ id: 'shared', name: '云端新名称' }] } })
+  await app.fetchUserPlaylists()
+  assert.equal(app.userPlaylists.value.map(item => item.id).join(','), 'shared,offline-only')
+  assert.equal(app.userPlaylists.value[0].name, '云端新名称')
+  assert.equal(app.userPlaylistsLoaded.value, true)
+  publishState({ userId: 'A', generation: 1, revision: 2, playlists: [] })
+  assert.equal(app.userPlaylists.value.map(item => item.id).join(','), 'shared', 'clearing snapshots removes only offline-only directory entries')
+  await app.dispose()
+})
+
+test('playlist cache expiration rejects previous account generations and unsubscribes on unmount', async () => {
+  let generation = 0
+  let onAuth
+  let onState
+  let unsubscribed = 0
+  const values = new Map([['kugou_userid', 'A'], ['kugou_token', 'example-a']])
+  const app = loadApp({ playlistCache: {
+    setSession: async identity => ({ userId: identity?.userId ?? null, generation: ++generation, revision: generation, playlists: [] }),
+    onState: callback => { onState = callback; return () => { unsubscribed++ } },
+    onAuthExpired: callback => { onAuth = callback; return () => { unsubscribed++ } }
+  } }, { localStorage: { getItem: key => values.get(key) ?? null } })
+  await app.cacheTask()
+  app.handleLoginSuccess({ userid: 'A' })
+  await app.cacheTask()
+  const oldGeneration = app.playlistCacheState.value.generation
+  values.set('kugou_token', 'example-refreshed-a')
+  app.handleLoginSuccess({ userid: 'A' })
+  await app.cacheTask()
+  const currentGeneration = app.playlistCacheState.value.generation
+  assert.notEqual(currentGeneration, oldGeneration)
+  onAuth({ userId: 'A', generation: oldGeneration })
+  onState({ userId: 'A', generation: oldGeneration, revision: 999, authExpired: true })
+  assert.equal(app.userLoggedIn.value, true)
+  onAuth({ userId: 'other', generation: currentGeneration })
+  assert.equal(app.userLoggedIn.value, true)
+  onAuth({ userId: 'A', generation: currentGeneration })
+  assert.equal(app.userLoggedIn.value, false)
+  assert.equal(app.playlistCacheState.value, null)
+  await app.dispose()
+  assert.equal(unsubscribed, 2)
+})
+
+test('network restoration waits for the cache account and only requests bounded network retries', async () => {
+  const initialization = deferred()
+  const calls = []
+  const app = loadApp({ playlistCache: {
+    setSession: () => initialization.promise,
+    retryNetwork: async () => { calls.push('network') },
+    resume: async () => { calls.push('resume') },
+    retry: async () => { calls.push('retry') }
+  } }, {
+    localStorage: { getItem: name => ({ kugou_userid: 'A', kugou_token: 'example-a' })[name] ?? null },
+    isLoggedIn: () => true,
+    getLoginInfo: () => ({ userInfo: { userid: 'A' } })
+  })
+  app.mount()
+  app.dispatchWindowEvent('online')
+  await vue.nextTick()
+  assert.deepEqual(calls, [])
+  initialization.resolve({ userId: 'A', generation: 1, revision: 1, playlists: [] })
+  await app.cacheTask()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(calls, ['network'])
+  await app.dispose()
+  app.dispatchWindowEvent('online')
+  await vue.nextTick()
+  assert.deepEqual(calls, ['network'], 'unmount detaches the network listener')
 })
 
 test('opening login preserves cached page identity while actual login and logout invalidate it', async () => {

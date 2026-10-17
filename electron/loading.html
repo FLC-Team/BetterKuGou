@@ -114,6 +114,10 @@
         opacity: 1;
       }
     }
+    @media (prefers-reduced-motion: reduce) {
+      .progress-fill, .status-text { transition: none; animation: none; }
+      .loading-icon { animation: none; }
+    }
   </style>
 </head>
 <body>
@@ -139,6 +143,21 @@
     
     const progressFill = document.getElementById('progressFill')
     const statusText = document.getElementById('statusText')
+    const motionPreference = window.matchMedia?.('(prefers-reduced-motion: reduce)')
+    let statusAnimation = null
+
+    /** Progress stays immediate; phase text receives an independently cancellable entrance. */
+    function updateStatus(status) {
+      if (typeof status !== 'string' || statusText.textContent === status) return
+      statusAnimation?.cancel()
+      statusAnimation = null
+      statusText.textContent = status
+      if (!motionPreference?.matches && statusText.animate) {
+        statusAnimation = statusText.animate([{ opacity: 0, translate: '0 4px' }, { opacity: 1, translate: '0 0' }], { duration: 180, easing: 'ease-out' })
+      }
+    }
+    function stopStatusAnimation() { statusAnimation?.cancel(); statusAnimation = null }
+    motionPreference?.addEventListener?.('change', stopStatusAnimation)
     const logoUrl = new URLSearchParams(window.location.search).get('logo')
     if (logoUrl) document.getElementById('appLogo').src = logoUrl
 
@@ -150,9 +169,13 @@
       progressFill.style.width = `${progress}%`
       
       // 更新状态文本
-      statusText.textContent = status
+      updateStatus(status)
     })
-    window.addEventListener('beforeunload', unsubscribeProgress, { once: true })
+    window.addEventListener('beforeunload', () => {
+      unsubscribeProgress()
+      stopStatusAnimation()
+      motionPreference?.removeEventListener?.('change', stopStatusAnimation)
+    }, { once: true })
   </script>
 </body>
 </html>

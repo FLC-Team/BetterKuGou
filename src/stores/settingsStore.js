@@ -17,9 +17,11 @@ const baseDefaultSettings = Object.freeze({
   desktopLyrics: {
     fontSize: 'medium',
     theme: 'classic',
-    locked: false
+    locked: false,
+    bounds: null
   },
   download: {
+    offlinePlaylistCacheEnabled: true,
     downloadPath: '',
     cachePath: '',
     cacheSizeIndex: 0,
@@ -242,10 +244,18 @@ function migrateSettings(rawSettings, defaults) {
   if (!normalized.playback || typeof normalized.playback !== 'object' || Array.isArray(normalized.playback)) normalized.playback = cloneDeep(defaults.playback)
   normalized.playback.showTranslation = typeof normalized.playback.showTranslation === 'boolean' ? normalized.playback.showTranslation : true
   normalized.playback.quality = ['128', '320', 'flac', 'high'].includes(normalized.playback.quality) ? normalized.playback.quality : '128'
+  if (!normalized.download || typeof normalized.download !== 'object' || Array.isArray(normalized.download)) normalized.download = cloneDeep(defaults.download)
+  normalized.download.offlinePlaylistCacheEnabled = typeof normalized.download.offlinePlaylistCacheEnabled === 'boolean' ? normalized.download.offlinePlaylistCacheEnabled : true
+  normalized.download.cacheSizeIndex = Number.isInteger(normalized.download.cacheSizeIndex) && normalized.download.cacheSizeIndex >= 0 && normalized.download.cacheSizeIndex <= 5 ? normalized.download.cacheSizeIndex : 0
+  normalized.download.concurrentDownloads = Number.isInteger(normalized.download.concurrentDownloads) ? Math.min(10, Math.max(1, normalized.download.concurrentDownloads)) : 3
   normalized.desktopLyrics = {
     fontSize: ['small', 'medium', 'large'].includes(desktop.fontSize) ? desktop.fontSize : 'medium',
     theme: ['classic', 'gradient', 'minimal'].includes(desktop.theme) ? desktop.theme : 'classic',
-    locked: typeof desktop.locked === 'boolean' ? desktop.locked : false
+    locked: typeof desktop.locked === 'boolean' ? desktop.locked : false,
+    bounds: desktop.bounds && ['x', 'y', 'width', 'height'].every(key => Number.isFinite(desktop.bounds[key]))
+      ? { x: Math.round(Math.max(-100000, Math.min(100000, desktop.bounds.x))), y: Math.round(Math.max(-100000, Math.min(100000, desktop.bounds.y))),
+          width: Math.round(Math.max(420, Math.min(8192, desktop.bounds.width))), height: Math.round(Math.max(180, Math.min(4096, desktop.bounds.height))) }
+      : null
   }
   if (!normalized.software || typeof normalized.software !== 'object' || Array.isArray(normalized.software)) normalized.software = cloneDeep(defaults.software)
   const updates = normalized.software.updates && typeof normalized.software.updates === 'object' && !Array.isArray(normalized.software.updates) ? normalized.software.updates : {}

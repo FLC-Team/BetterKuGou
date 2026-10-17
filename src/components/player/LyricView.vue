@@ -1,13 +1,13 @@
 <template>
-  <div class="lyric-view" v-if="visible" @click="closeLyricView" @keydown.esc.stop="closeLyricView" role="dialog" aria-label="歌曲歌词">
+  <div class="lyric-view" v-if="visible" @click="closeLyricView" @keydown.esc.stop="handleLyricEscape" role="dialog" aria-label="歌曲歌词">
     <!-- 模糊背景 -->
     <div class="lyric-background">
       <Transition name="track-background" @before-leave="retireTrackLayer">
-        <img v-if="coverUrl"
+        <ArtworkCover v-if="coverUrl" image-only loading="eager"
              :key="coverUrl"
              :src="coverUrl"
              alt=""
-             class="background-image">
+             class="background-image" />
       </Transition>
       <div class="background-overlay"></div>
     </div>
@@ -20,12 +20,12 @@
         <div class="album-cover-wrapper">
           <Transition :name="trackTransitionName" @before-leave="retireTrackLayer">
             <div :key="song?.hash || 'empty'" class="track-piece track-cover">
-              <img v-if="coverUrl"
+              <ArtworkCover v-if="coverUrl" image-only loading="eager"
                    :src="coverUrl"
                    :data-track-key="song?.hash"
-                   alt="专辑封面"
+                   label="专辑封面"
                    @error="handleCoverError"
-                   class="album-cover">
+                   class="album-cover" />
               <div v-else class="album-cover-placeholder">
                 <svg viewBox="0 0 1024 1024" width="120" height="120" fill="currentColor">
                   <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64z"/>
@@ -39,12 +39,12 @@
         <div class="song-info">
           <div class="track-text-stage">
             <Transition :name="trackTransitionName" @before-leave="retireTrackLayer">
-              <h2 :key="song?.hash || 'empty'" class="song-title track-piece track-title">{{ getSongName(song) }}</h2>
+              <h2 :key="song?.hash || 'empty'" class="song-title track-piece track-title"><button type="button" class="song-title-search" @click="searchSong" :aria-label="`搜索歌曲 ${getSongName(song)}`" title="搜索这首歌">{{ getSongName(song) }}</button></h2>
             </Transition>
           </div>
           <div class="track-text-stage">
             <Transition :name="trackTransitionName" @before-leave="retireTrackLayer">
-              <p :key="song?.hash || 'empty'" class="song-artist track-piece track-artist">{{ getSingerNames(song) }}</p>
+              <div :key="song?.hash || 'empty'" class="song-artist track-piece track-artist"><ArtistLinks :song="song" @select="$emit('artist', $event)" /></div>
             </Transition>
           </div>
         </div>
@@ -91,12 +91,12 @@
 
             <!-- 播放/暂停按钮 -->
             <button type="button" class="control-btn play-btn" @click="togglePlayPause" :title="isPlaying ? '暂停' : '播放'" :aria-label="isPlaying ? '暂停' : '播放'">
-              <svg v-if="isPlaying" viewBox="0 0 1024 1024" width="32" height="32" fill="currentColor">
+              <span class="control-state-stage" aria-hidden="true"><Transition name="control-state"><span :key="isPlaying" class="control-state-icon"><svg v-if="isPlaying" viewBox="0 0 1024 1024" width="32" height="32" fill="currentColor">
                 <path d="M304 176h80v672h-80zm336 0h80v672h-80z"/>
               </svg>
               <svg v-else viewBox="0 0 1024 1024" width="32" height="32" fill="currentColor">
                 <path d="M719.4 499.1l-296.1-215A15.9 15.9 0 00398 297v430c0 13.1 14.8 20.5 25.3 12.9l296.1-215a15.9 15.9 0 000-25.8z"/>
-              </svg>
+              </svg></span></Transition></span>
             </button>
 
             <!-- 下一首按钮 -->
@@ -108,46 +108,69 @@
 
             <!-- 播放模式按钮 -->
             <button type="button" class="control-btn mode-btn" @click="togglePlayMode" :title="playModeText" :aria-label="playModeText">
-              <span class="mode-icon" :style="playModeIconStyle" aria-hidden="true"></span>
+              <span class="control-state-stage" aria-hidden="true"><Transition name="control-state"><span :key="playMode" class="mode-icon control-state-icon" :style="playModeIconStyle" aria-hidden="true"></span></Transition></span>
             </button>
           </div>
           <div class="lyric-tools">
-            <label class="lyric-quality" title="音质偏好；可用音质取决于歌曲与账号权限">
-              <span>音质</span>
-              <select aria-label="全屏歌词音质偏好" :value="qualityPreference" @change="$emit('change-quality', $event.target.value)" @keydown.stop>
-                <option v-for="option in qualityOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-              </select>
-            </label>
+            <div ref="qualityControl" class="lyric-quality" @focusout="handleQualityFocusout" @keydown.stop>
+              <button ref="qualityTrigger" type="button" class="lyric-tool quality-trigger"
+                      :class="{ 'is-open': qualityMenuOpen, 'is-switching': qualitySwitching }"
+                      aria-haspopup="menu" :aria-expanded="qualityMenuOpen"
+                      :aria-label="`音质偏好：${selectedQuality.label}，${qualityStatus}`"
+                      :title="`音质偏好：${selectedQuality.label}；${qualityStatus}`"
+                      @click="toggleQualityMenu" @keydown.down.prevent="openQualityMenu"
+                      @keydown.esc.stop.prevent="closeQualityMenu(true)">
+                <span class="quality-trigger-label">音质</span>
+                <span class="quality-trigger-value">{{ selectedQuality.shortLabel || selectedQuality.label }}</span>
+                <span class="quality-chevron" aria-hidden="true"></span>
+              </button>
+              <Transition name="quality-menu" @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="retireTrackLayer"><div v-if="qualityMenuOpen" ref="qualityMenu" class="lyric-quality-menu" role="menu" aria-label="音质偏好"
+                   :style="{ '--quality-menu-x': qualityMenuPosition.x + 'px', '--quality-menu-y': qualityMenuPosition.y + 'px' }"
+                   @keydown="handleQualityMenuKeydown">
+                <div class="quality-menu-heading"><span>音质偏好</span><span>后续歌曲沿用</span></div>
+                <button v-for="option in qualityOptions" :key="option.value" type="button"
+                        class="quality-option" role="menuitemradio" :aria-checked="qualityPreference === option.value"
+                        :data-quality="option.value" @click="selectQuality(option.value)">
+                  <span class="quality-option-name">{{ option.name || option.label }}</span>
+                  <span v-if="option.detail" class="quality-option-detail">{{ option.detail }}</span>
+                  <span class="quality-option-check" aria-hidden="true"></span>
+                </button>
+                <div class="quality-menu-status" role="status" :class="{ 'is-switching': qualitySwitching }">{{ qualityStatus }}</div>
+                <p class="quality-menu-note">可用音质取决于歌曲与账号权限</p>
+              </div></Transition>
+            </div>
             <!-- 翻译切换按钮 -->
             <button 
               type="button"
               v-if="hasTranslation"
-              class="control-btn translation-btn" 
+              class="lyric-tool translation-btn"
               :class="{ active: showTranslation }" 
               @click="toggleTranslation" 
               :title="showTranslation ? '隐藏翻译' : '显示翻译'"
               :aria-label="showTranslation ? '隐藏翻译' : '显示翻译'"
               :aria-pressed="showTranslation"
             >
-              <svg viewBox="0 0 1024 1024" width="20" height="20" fill="currentColor">
-                <path d="M140 188h584v164h92V144c0-17.7-14.3-32-32-32H96c-17.7 0-32 14.3-32 32v736c0 17.7 14.3 32 32 32h232v-92H140V188z"/>
-                <path d="M414.3 256h-60.6c-3.4 0-6.4 2.2-7.6 5.4L219 629.4c-.3.8-.4 1.7-.4 2.6 0 4.4 3.6 8 8 8h55.1c3.4 0 6.4-2.2 7.6-5.4L322 540h196.2l32.7 94.6c1.3 3.2 4.3 5.4 7.6 5.4H614c4.4 0 8-3.6 8-8 0-.9-.1-1.8-.4-2.6L494.3 261.4c-1.3-3.2-4.3-5.4-7.6-5.4zM353.7 447L420 277.7 486.3 447H353.7z"/>
-                <path d="M936 528H800v-93c0-4.4-3.6-8-8-8h-56c-4.4 0-8 3.6-8 8v93H592c-13.3 0-24 10.7-24 24v176c0 13.3 10.7 24 24 24h136v152c0 4.4 3.6 8 8 8h56c4.4 0 8-3.6 8-8V752h136c13.3 0 24-10.7 24-24V552c0-13.3-10.7-24-24-24zM888 704H728V576h160v128z"/>
-              </svg>
               <span>翻译</span>
+              <span class="translation-indicator" aria-hidden="true"></span>
             </button>
           </div>
-          <div class="lyric-quality-status" role="status">
-            <span>{{ qualityMessage || qualityStatus }}</span>
-            <button v-if="qualityMessage" type="button" @click="$emit('retry-quality')">重试</button>
-          </div>
+          <Transition name="lyric-feedback" @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')"><div v-if="qualityMessage" class="lyric-tool-feedback" role="status" :aria-busy="qualitySwitching">
+            <span>{{ qualityMessage }}</span>
+            <button type="button" :disabled="qualitySwitching" @click="$emit('retry-quality')">{{ qualitySwitching ? '切换中…' : '重试' }}</button>
+          </div></Transition>
+          <Transition name="lyric-feedback" @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')"><div v-if="translationMessage" class="lyric-tool-feedback" role="status">
+            <span>{{ translationMessage }}</span>
+            <button type="button" @click="saveTranslationPreference">重试</button>
+          </div></Transition>
         </div>
       </div>
 
       <!-- 右侧歌词 -->
       <div class="lyrics-section">
         <Transition :name="trackTransitionName" @before-leave="retireTrackLayer">
-        <div :key="lyricContentKey" class="lyrics-container track-piece track-lyrics" ref="lyricsContainer">
+        <div :key="lyricContentKey" class="lyrics-container track-piece track-lyrics" :class="{ 'is-interactive': canBrowseLyrics, 'is-dragging': lyricPointer?.dragging }" ref="lyricsContainer"
+             @pointerdown="startLyricPointer($event, lyricContentKey)" @lostpointercapture="cancelLyricPointer"
+             @wheel="handleLyricWheel($event, lyricContentKey)">
           <div v-if="!lyrics" class="lyric-loading" role="status">正在加载歌词…</div>
           
           <!-- 所有歌词行，通过transform控制位置实现动画 -->
@@ -163,6 +186,14 @@
             }"
             :style="getLyricLineStyle(index)"
             :ref="createLyricLineRef(index, lyricContentKey)"
+            :role="isLyricLineInteractive(index) ? 'button' : undefined"
+            :tabindex="isLyricLineInteractive(index) ? 0 : undefined"
+            :aria-label="isLyricLineInteractive(index) ? `跳转至 ${formatTime(line.time)}，${line.text}` : undefined"
+            @click.stop="activateLyricLine(index, $event, lyricContentKey)"
+            @keydown.enter.stop.prevent="activateLyricLine(index, $event, lyricContentKey)"
+            @keydown.space.stop.prevent="activateLyricLine(index, $event, lyricContentKey)"
+            @focus="focusLyricLine(index, lyricContentKey)"
+            @contextmenu.prevent.stop="showLyricMenu($event, index, lyricContentKey)"
           >
             <!-- 主要歌词（原文） -->
             <div class="main-lyric">
@@ -214,28 +245,47 @@
             </div>
             
             <!-- 翻译歌词 -->
-            <div 
-              v-if="showTranslation && line.translation" 
-              class="translation-lyric"
-            >
-              {{ line.translation }}
-            </div>
+            <div v-if="line.translation" class="translation-stage" :class="{ 'is-visible': showTranslation }" :aria-hidden="!showTranslation"><div class="translation-clip"><div class="translation-lyric">{{ line.translation }}</div></div></div>
           </div>
 
-          <!-- 桥段进度条（覆盖在正在播放的歌词位置） -->
-          <transition name="bridge-fade">
+          <!-- 外层随歌词浏览定位，内层由歌曲时间驱动展开与收拢。 -->
+          <Transition name="bridge-morph" @before-enter="updateBridgeAnimation">
             <div 
               v-if="lyrics && isBridgeActive && bridgeInfo"
-              class="bridge-progress-bar overlay"
-              :style="{
-                transform: `translate(-50%, -50%) scaleX(${Math.max(0.05, (100 - bridgeProgress) / 100)})`,
-                backgroundColor: getBridgeProgressColor()
-              }"
-            ></div>
-          </transition>
+              :key="`${lyricContentKey}:${bridgeInfo.startTime}:${bridgeInfo.endTime}`"
+              class="bridge-indicator"
+              ref="bridgeIndicator"
+              :style="bridgeIndicatorStyle"
+              role="progressbar"
+              :aria-label="bridgeInfo.startLyricIndex === -1 ? '前奏' : '间奏'"
+              :aria-valuenow="Math.round(bridgeProgress)"
+              :aria-valuetext="`距下一句 ${bridgeRemainingSeconds} 秒`"
+              aria-valuemin="0"
+              aria-valuemax="100"
+            >
+              <div class="bridge-body" aria-hidden="true">
+                <div class="bridge-choreography">
+                  <div class="bridge-wave">
+                    <span class="bridge-aura"></span>
+                    <span v-for="index in 21" :key="index" class="bridge-particle"></span>
+                  </div>
+                  <div class="bridge-still">
+                    <span v-for="step in 3" :key="step" :class="{ filled: bridgeProgress >= (step - 1) * 100 / 3 }"></span>
+                  </div>
+                  <div class="bridge-caption">
+                    <span>{{ bridgeInfo.startLyricIndex === -1 ? '前奏' : '间奏' }}</span>
+                    <span class="bridge-caption-divider"></span>
+                    <span class="bridge-countdown">{{ formatTime(bridgeRemainingSeconds) }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Transition>
 
         </div>
         </Transition>
+        <Transition name="lyric-feedback" @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')"><button v-if="browsePosition != null" type="button" class="return-current-lyric" @click="returnToCurrentLyric">回到当前歌词</button></Transition>
+        <Transition name="lyric-feedback" @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')"><p v-if="copyFeedback" :key="copyFeedback" class="lyric-copy-feedback" role="status">{{ copyFeedback }}</p></Transition>
       </div>
 
       <!-- 关闭按钮 -->
@@ -245,6 +295,7 @@
         </svg>
       </button>
     </div>
+    <ContextMenu :visible="lyricMenuVisible" :position="lyricMenuPosition" :items="lyricMenuItems" @close="closeLyricMenu" />
   </div>
 </template>
 

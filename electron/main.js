@@ -1,5 +1,5 @@
 // 引入 Electron 模块
-const { app, BrowserWindow, ipcMain, dialog, globalShortcut, shell, Tray, Menu, nativeImage } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, globalShortcut, shell, Tray, Menu, nativeImage, clipboard, protocol, screen } = require('electron')
 const logger = require('./logger')
 // 解决 Windows 控制台中文/emoji 乱码: 尝试切换到 UTF-8 代码页 (仅开发态且是 win32)
 if (process.platform === 'win32' && !process.env.BK_SKIP_CHCP && !app.isPackaged) {
@@ -16,6 +16,7 @@ const path = require('path')
 const { pathToFileURL } = require('url')
 const { createBackendService } = require('./services/backendService')
 const { createUpdateService } = require('./services/updateService')
+const { createPlaylistCacheService } = require('./services/playlistCacheService')
 const {
   initSettingsStore,
   getSettings,
@@ -30,6 +31,11 @@ const {
 
 // 检查是否在开发环境中（手动检测，避免 ESM 依赖问题）
 const isDev = !app.isPackaged
+
+// 音频协议在 ready 前注册，开发页面和打包页面共用受限的流式资源入口。
+protocol?.registerSchemesAsPrivileged([{
+  scheme: 'bk-cache', privileges: { standard: true, secure: true, stream: true, corsEnabled: true }
+}])
 
 // 禁用 GPU 缓存以避免权限错误
 app.commandLine.appendSwitch('disable-http-cache')
@@ -49,6 +55,7 @@ let cleanupComplete = false
 let mainWindowReady = false
 let unsubscribeSettings = null
 let updateService = null
+let playlistCacheService = null
 let installRequest = null
 let installQuitService = null
 let installPreparation = null
@@ -60,9 +67,20 @@ let currentTrack = {
   cover: null // 可以是文件路径或 dataURL/base64
 }
 let isPlaying = false
+let taskbarIcons = null
 let currentDesktopLyrics = []
 let currentDesktopTime = 0
+let currentDesktopDuration = 0
 let desktopAppearanceGeneration = 0
+const desktopWindowStates = new WeakMap()
+let desktopBoundsTimer = null
+let pendingDesktopBounds = null
+let lastDesktopBounds = null
+let desktopBoundsSave = Promise.resolve(true)
+let desktopCommittedBoundsKey
+let desktopCommittedBounds = null
+let activeDesktopBoundsWrite = null
+let desktopBoundsRevision = 0
 // 桌面歌词与灵动岛歌词
 let desktopLyricEnabled = false
 let islandLyricEnabled = false
@@ -92,6 +110,40 @@ function broadcastPlayerControl(action) {
   }
   logger.trace('main', '📤 广播播放器控制指令:', action)
   wins.forEach(w => w.webContents.send('player:control', action))
+}
+
+/** 将任务栏预览按钮接入现有播放器；回调读取实时状态，不激活或还原主窗口。 */
+function updateTaskbarButtons() {
+  if (process.platform !== 'win32' || !mainWindow || mainWindow.isDestroyed()) return
+  const window = mainWindow
+  try {
+    if (!taskbarIcons) {
+      const directory = path.join(__dirname, isDev ? '../public/taskbar' : '../dist/taskbar')
+      const icons = Object.fromEntries(['previous', 'play', 'pause', 'next'].map(name => {
+        const icon = nativeImage.createFromPath(path.join(directory, `${name}.png`))
+        if (icon.isEmpty()) throw new Error(`任务栏图标加载失败: ${name}`)
+        return [name, icon]
+      }))
+      taskbarIcons = icons
+    }
+    const canControl = () => mainWindow === window && !window.isDestroyed() &&
+      mainWindowReady && !isQuitting && !installPreparation
+    // Electron 32 的原生实现以空 flags 表示启用，不接受文档中的 'enabled'。
+    const flags = canControl() ? [] : ['disabled']
+    const send = action => {
+      if (canControl()) broadcastPlayerControl(action)
+    }
+    const added = window.setThumbarButtons([
+      { tooltip: '上一首', icon: taskbarIcons.previous, flags, click: () => send('prev') },
+      { tooltip: isPlaying ? '暂停' : '播放', icon: isPlaying ? taskbarIcons.pause : taskbarIcons.play,
+        flags, click: () => send(isPlaying ? 'pause' : 'play') },
+      { tooltip: '下一首', icon: taskbarIcons.next, flags, click: () => send('next') }
+    ])
+    if (!added) logger.warn('main', 'Windows 未能更新任务栏播放按钮')
+  } catch (error) {
+    // 任务栏暂不可用时保留播放器运行，后续显示窗口或播放状态变化时再尝试。
+    logger.warn('main', '更新任务栏播放按钮失败', error)
+  }
 }
 
 function resolveIcon(p) {
@@ -141,20 +193,9 @@ function updateTrayMenu() {
     { label: '上一首', click: () => { broadcastPlayerControl('prev') } },
     { label: '下一首', click: () => { broadcastPlayerControl('next') } },
     { type: 'separator' },
-    { label: desktopLyricLabel, click: () => {
-        logger.trace('main', '🎵 托盘菜单：桌面歌词切换')
-        if (desktopLyricEnabled && desktopLyricWindow && !desktopLyricWindow.isDestroyed()) {
-          logger.trace('main', '🎵 关闭桌面歌词窗口')
-          desktopLyricWindow.close()
-          desktopLyricEnabled = false
-        } else {
-          logger.trace('main', '🎵 打开桌面歌词窗口')
-          createDesktopLyricWindow()
-          desktopLyricEnabled = true
-        }
-        updateTrayMenu()
-      }
-    },
+    { label: desktopLyricLabel, click: () => { void toggleDesktopLyricWindow() } },
+    { label: '解锁桌面歌词', enabled: desktopLyricEnabled, click: () => { void runDesktopTrayAction(() => saveDesktopPreference({ desktopLyrics: { locked: false } }), '解锁桌面歌词失败，请重试。') } },
+    { label: '找回桌面歌词', click: () => { void runDesktopTrayAction(resetDesktopLyricPosition, '找回桌面歌词失败，请重试。') } },
     { label: islandLyricLabel, click: () => {
         islandLyricEnabled = !islandLyricEnabled
         updateTrayMenu()
@@ -205,76 +246,219 @@ function createTray() {
   return tray
 }
 
-// 创建桌面歌词窗口
+/** 坐标使用 Electron DIP；显示器移除或缩放改变时把整个窗口放回可见工作区。 */
+function getDesktopLyricBounds(saved) {
+  const valid = saved && ['x', 'y', 'width', 'height'].every(key => Number.isFinite(saved[key]))
+  const fallback = { x: 0, y: 0, width: 1920, height: 1080 }
+  const area = (valid ? screen?.getDisplayMatching?.(saved) : screen?.getPrimaryDisplay?.())?.workArea || fallback
+  const width = Math.min(area.width, Math.max(420, Math.round(valid ? saved.width : 800)))
+  const height = Math.min(area.height, Math.max(180, Math.round(valid ? saved.height : 200)))
+  const x = valid ? saved.x : area.x + (area.width - width) / 2
+  const y = valid ? saved.y : area.y + area.height - height - 48
+  return { x: Math.round(Math.max(area.x, Math.min(area.x + area.width - width, x))),
+    y: Math.round(Math.max(area.y, Math.min(area.y + area.height - height, y))), width, height }
+}
+
+/** 仅最后移动结果落盘；关闭与退出等待同一队列，失败保留本次位置供重试。 */
+function flushDesktopLyricBounds() {
+  clearTimeout(desktopBoundsTimer)
+  desktopBoundsTimer = null
+  if (!pendingDesktopBounds) return desktopBoundsSave
+  const bounds = pendingDesktopBounds
+  const revision = desktopBoundsRevision
+  pendingDesktopBounds = null
+  desktopBoundsSave = desktopBoundsSave.then(async () => {
+    // 导入/恢复设置优先于尚未开始写入的旧移动结果。
+    if (revision !== desktopBoundsRevision) return true
+    let writeBounds = bounds
+    let writeRevision = revision
+    try {
+      while (true) {
+        activeDesktopBoundsWrite = { bounds: writeBounds, revision: writeRevision }
+        await setSettings({ desktopLyrics: { bounds: writeBounds } })
+        if (writeRevision === desktopBoundsRevision) return true
+        // 事务可能已排在导入后面；落盘后补回最新已接受的位置，窗口关闭时同样有效。
+        writeBounds = desktopCommittedBounds
+        writeRevision = desktopBoundsRevision
+      }
+    }
+    finally { activeDesktopBoundsWrite = null }
+  }).catch(error => {
+    if (!pendingDesktopBounds) pendingDesktopBounds = lastDesktopBounds || getDesktopLyricBounds(desktopCommittedBounds)
+    logger.error('main', '保存桌面歌词窗口位置失败', error)
+    sendDesktopLyric('desktop-lyric:error', '窗口位置保存失败，移动或关闭窗口时将重试。')
+    return false
+  })
+  return desktopBoundsSave
+}
+
+function rememberDesktopLyricBounds(win) {
+  if (!win || win.isDestroyed() || !win.getBounds) return
+  lastDesktopBounds = win.getBounds()
+  pendingDesktopBounds = lastDesktopBounds
+  clearTimeout(desktopBoundsTimer)
+  desktopBoundsTimer = setTimeout(() => { void flushDesktopLyricBounds() }, 300)
+  desktopBoundsTimer.unref?.()
+}
+
+function sendDesktopLyric(channel, ...payload) {
+  const win = desktopLyricWindow
+  if (win && !win.isDestroyed() && desktopWindowStates.get(win)?.loaded) win.webContents.send(channel, ...payload)
+}
+
+function desktopPlaybackSnapshot() {
+  return { playing: isPlaying, time: currentDesktopTime, duration: currentDesktopDuration,
+    available: mainWindowReady && currentTrack.title !== '暂无播放' && !isQuitting && !installPreparation }
+}
+
+/** 每次就绪或重开均重放完整状态，暂停状态同样立即定位。 */
+function replayDesktopLyrics() {
+  syncDesktopLyricSettings()
+  sendDesktopLyric('desktop-lyric:song-update', currentTrack.title === '暂无播放' ? null : currentTrack)
+  sendDesktopLyric('desktop-lyric:lyric-update', currentDesktopLyrics)
+  sendDesktopLyric('desktop-lyric:time-update', currentDesktopTime, { duration: currentDesktopDuration })
+  sendDesktopLyric('desktop-lyric:playback-update', desktopPlaybackSnapshot())
+}
+
+/** 就绪与关闭回调绑定创建时窗口；旧窗口不能清除或重新显示新窗口。 */
 function createDesktopLyricWindow() {
-  if (desktopLyricWindow && !desktopLyricWindow.isDestroyed()) {
-    return desktopLyricWindow
-  }
-
-  logger.trace('main', '🎵 创建桌面歌词窗口...')
-
-  desktopLyricWindow = new BrowserWindow({
-    width: 800,
-    height: 200,
-    frame: false,
-    transparent: true,
-    alwaysOnTop: true,
-    skipTaskbar: true,
-    resizable: true,
-    movable: true,
-    minimizable: false,
-    maximizable: false,
-    closable: true,
-    focusable: false, // 防止抢夺焦点
-    show: false, // 创建时先不显示
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true
+  if (isQuitting) return null
+  if (desktopLyricWindow && !desktopLyricWindow.isDestroyed()) return desktopLyricWindow
+  let saved = lastDesktopBounds
+  if (!saved) {
+    try { saved = getSettings().desktopLyrics?.bounds } catch (error) {
+      logger.trace('main', '桌面歌词使用初始位置，等待设置就绪', error)
     }
-  })
-
-  // 加载桌面歌词HTML文件
-  const desktopLyricPath = path.join(__dirname, 'desktopLyric.html')
-  desktopLyricWindow.loadFile(desktopLyricPath).catch(error => {
-    logger.error('main', '加载桌面歌词窗口失败', error)
-  })
-
-  // 窗口事件处理
-  desktopLyricWindow.on('closed', () => {
-    logger.trace('main', '🎵 桌面歌词窗口已关闭')
-    desktopLyricWindow = null
-    desktopLyricEnabled = false
-    updateTrayMenu()
-  })
-
-  desktopLyricWindow.on('ready-to-show', () => {
-    logger.trace('main', '🎵 桌面歌词窗口准备就绪')
-    desktopLyricWindow.show()
-    syncDesktopLyricSettings()
-    // 发送当前歌曲信息和歌词数据
-    if (currentTrack.title !== '暂无播放') {
-      desktopLyricWindow.webContents.send('desktop-lyric:song-update', currentTrack)
-    }
-    desktopLyricWindow.webContents.send('desktop-lyric:lyric-update', currentDesktopLyrics)
-    desktopLyricWindow.webContents.send('desktop-lyric:time-update', currentDesktopTime)
-  })
-
-  // 开发环境下打开调试工具
-  if (isDev) {
-    desktopLyricWindow.webContents.openDevTools()
   }
-
+  const win = new BrowserWindow({
+    ...getDesktopLyricBounds(saved), minWidth: 420, minHeight: 180,
+    frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true,
+    // 透明窗口使用界面缩放手柄，避免平台原生 resize 破坏透明背景。
+    resizable: false, movable: true, minimizable: false, maximizable: false,
+    closable: true, focusable: true, show: false,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), nodeIntegration: false,
+      contextIsolation: true, backgroundThrottling: false }
+  })
+  desktopLyricWindow = win
+  const state = { loaded: false, closing: false, resize: null, resolve: null, timeout: null }
+  state.ready = new Promise(resolve => { state.resolve = resolve })
+  desktopWindowStates.set(win, state)
+  const finish = (success) => { clearTimeout(state.timeout); state.resolve(success) }
+  const fail = (error) => {
+    if (state.closing) return
+    logger.error('main', '桌面歌词窗口加载失败', error)
+    finish(false)
+    state.closing = true
+    if (desktopLyricWindow === win) { desktopLyricWindow = null; desktopLyricEnabled = false; updateTrayMenu() }
+    if (!win.isDestroyed()) win.destroy()
+  }
+  const fitDisplay = () => {
+    if (win !== desktopLyricWindow || win.isDestroyed() || state.closing) return
+    win.setBounds(getDesktopLyricBounds(win.getBounds()))
+    rememberDesktopLyricBounds(win)
+  }
+  for (const event of ['display-removed', 'display-metrics-changed']) screen?.on?.(event, fitDisplay)
+  win.on('move', () => { if (state.loaded && !state.closing) rememberDesktopLyricBounds(win) })
+  win.on('resize', () => { if (state.loaded && !state.closing) rememberDesktopLyricBounds(win) })
+  win.on('close', () => {
+    if (state.loaded) rememberDesktopLyricBounds(win)
+    state.closing = true
+    finish(false)
+    void flushDesktopLyricBounds()
+  })
+  win.on('closed', () => {
+    state.closing = true
+    finish(false)
+    for (const event of ['display-removed', 'display-metrics-changed']) screen?.removeListener?.(event, fitDisplay)
+    if (desktopLyricWindow === win) { desktopLyricWindow = null; desktopLyricEnabled = false; updateTrayMenu() }
+  })
+  win.on('ready-to-show', () => {
+    if (isQuitting || state.closing || win !== desktopLyricWindow || win.isDestroyed()) { finish(false); return }
+    state.loaded = true
+    replayDesktopLyrics()
+    if (win.showInactive) win.showInactive()
+    else win.show()
+    finish(true)
+  })
+  win.webContents.on?.('render-process-gone', (_event, details) => fail(new Error(`桌面歌词渲染退出: ${details?.reason || 'unknown'}`)))
+  state.timeout = setTimeout(() => fail(new Error('桌面歌词加载超时')), 10000)
+  state.timeout.unref?.()
+  win.loadFile(path.join(__dirname, 'desktopLyric.html')).catch(fail)
   desktopLyricEnabled = true
   updateTrayMenu()
+  return win
+}
 
-  return desktopLyricWindow
+function closeDesktopLyricWindow() {
+  const win = desktopLyricWindow
+  desktopLyricWindow = null
+  desktopLyricEnabled = false
+  if (win && !win.isDestroyed()) {
+    const state = desktopWindowStates.get(win)
+    if (state) state.closing = true
+    win.close()
+  }
+  updateTrayMenu()
+}
+
+async function showDesktopLyricWindow() {
+  try {
+    const win = createDesktopLyricWindow()
+    if (!win || !await desktopWindowStates.get(win).ready || isQuitting || win !== desktopLyricWindow || win.isDestroyed()) return false
+    replayDesktopLyrics()
+    if (win.showInactive) win.showInactive()
+    else win.show()
+    return true
+  } catch (error) {
+    logger.error('main', '打开桌面歌词失败', error)
+    return false
+  }
+}
+
+async function toggleDesktopLyricWindow() {
+  if (isQuitting) return false
+  if (desktopLyricEnabled) { closeDesktopLyricWindow(); return false }
+  return showDesktopLyricWindow()
+}
+
+async function resetDesktopLyricPosition() {
+  if (isQuitting) return false
+  const result = await saveDesktopPreference({ desktopLyrics: { locked: false } })
+  if (!result.success) return false
+  lastDesktopBounds = getDesktopLyricBounds(null)
+  if (!await showDesktopLyricWindow()) return false
+  desktopLyricWindow.setBounds(lastDesktopBounds)
+  rememberDesktopLyricBounds(desktopLyricWindow)
+  return flushDesktopLyricBounds()
+}
+
+/** 锁定时歌词窗口不能接收点击，托盘操作失败通过原生对话框提供反馈。 */
+async function runDesktopTrayAction(action, message) {
+  try {
+    const result = await action()
+    if (result === true || result?.success === true) return
+    await dialog.showMessageBox({ type: 'error', title: '桌面歌词', message: result?.error || message, buttons: ['知道了'] })
+  } catch (error) {
+    logger.error('main', message, error)
+  }
+}
+
+/** 窗口按钮只确认已经落盘的偏好，写入失败时重新同步原值并返回可见错误。 */
+async function saveDesktopPreference(patch) {
+  try {
+    const settings = await setSettings(patch)
+    syncDesktopLyricSettings(settings)
+    return { success: true }
+  } catch (error) {
+    logger.error('main', '保存桌面歌词偏好失败', error)
+    syncDesktopLyricSettings()
+    return { success: false, error: '设置保存失败，请重试。' }
+  }
 }
 
 /** 桌面歌词只接收已提交的白名单显示偏好，创建和重新打开时应用同一快照。 */
 function syncDesktopLyricSettings(settings) {
   const generation = ++desktopAppearanceGeneration
-  if (!desktopLyricWindow || desktopLyricWindow.isDestroyed()) return
   if (!settings) {
     try { settings = getSettings() } catch (error) {
       // 托盘可能在初始化完成前打开歌词，先显示默认值，初始化后再由订阅同步。
@@ -282,11 +466,39 @@ function syncDesktopLyricSettings(settings) {
     }
   }
   const value = settings?.desktopLyrics || {}
+  if (settings) {
+    const boundsKey = JSON.stringify(value.bounds || null)
+    const ownWrite = activeDesktopBoundsWrite && boundsKey === JSON.stringify(activeDesktopBoundsWrite.bounds)
+    const obsoleteWrite = ownWrite && activeDesktopBoundsWrite.revision !== desktopBoundsRevision
+    if (!obsoleteWrite && boundsKey !== desktopCommittedBoundsKey) {
+      desktopCommittedBoundsKey = boundsKey
+      desktopCommittedBounds = value.bounds || null
+      // 本地落盘广播只确认写入，不能把正在拖动的窗口拉回旧位置。
+      if (!ownWrite) {
+        desktopBoundsRevision++
+        lastDesktopBounds = value.bounds ? getDesktopLyricBounds(value.bounds) : null
+        pendingDesktopBounds = null
+        clearTimeout(desktopBoundsTimer)
+        desktopBoundsTimer = null
+        if (desktopLyricWindow && !desktopLyricWindow.isDestroyed()) {
+          const bounds = getDesktopLyricBounds(lastDesktopBounds)
+          if (JSON.stringify(desktopLyricWindow.getBounds?.()) !== JSON.stringify(bounds)) desktopLyricWindow.setBounds(bounds)
+        }
+      }
+    }
+  }
+  if (!desktopLyricWindow || desktopLyricWindow.isDestroyed()) return
   const preferences = {
     fontSize: ['small', 'medium', 'large'].includes(value.fontSize) ? value.fontSize : 'medium',
     theme: ['classic', 'gradient', 'minimal'].includes(value.theme) ? value.theme : 'classic',
-    locked: typeof value.locked === 'boolean' ? value.locked : false
+    locked: typeof value.locked === 'boolean' ? value.locked : false,
+    showTranslation: settings?.playback?.showTranslation !== false
   }
+  const windowState = desktopWindowStates.get(desktopLyricWindow)
+  if (windowState) { windowState.locked = preferences.locked; if (preferences.locked) windowState.resize = null }
+  desktopLyricWindow.setIgnoreMouseEvents?.(preferences.locked, { forward: true })
+  desktopLyricWindow.setMovable?.(!preferences.locked)
+  desktopLyricWindow.setFocusable?.(!preferences.locked)
   const custom = settings?.custom
   const hasDesktopStyles = Array.isArray(custom?.themePackages) && custom.themePackages.some(theme => theme?.id === custom.theme && theme.desktopCss)
   // Ordinary preference/session broadcasts must not briefly remove an active appearance sheet.
@@ -315,6 +527,7 @@ function subscribeToSettingsUpdates() {
     })
     syncDesktopLyricSettings(nextSettings)
     updateService?.configure(nextSettings.software.updates)
+    playlistCacheService?.configure(nextSettings)
   })
 }
 
@@ -336,6 +549,42 @@ function initializeUpdateService() {
     }
   })
   updateService.configure(getSettings().software.updates)
+}
+
+/** 持久化与缓存下载在独立 Worker 执行，初始化不等待外网。 */
+function initializePlaylistCacheService() {
+  playlistCacheService = createPlaylistCacheService({
+    workerPath: app.isPackaged
+      ? path.join(process.resourcesPath, 'playlist-cache', 'playlistCacheWorker.cjs')
+      : path.join(app.getAppPath(), 'electron', 'services', 'playlistCacheWorker.cjs'),
+    cacheRoot: path.join(app.getPath('userData'), 'offline-playlists'),
+    logger,
+    onState: (state) => {
+      if (!isQuitting && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('playlist-cache:state', state)
+    },
+    onAuthExpired: (identity) => {
+      if (!isQuitting && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('playlist-cache:auth-expired', identity)
+    }
+  })
+  playlistCacheService.configure(getSettings())
+  protocol?.handle('bk-cache', request => playlistCacheService.handleRequest(request))
+}
+
+/** 离线资源 IPC 只允许主窗口顶层，不接受调用方指定的文件路径。 */
+function getPlaylistCacheForSender(event) {
+  if (isQuitting || !isMainWindowSender(event)) throw new Error('离线缓存操作只能从应用主窗口发起。')
+  if (!playlistCacheService) throw new Error('离线缓存尚未就绪，请稍后重试。')
+  return playlistCacheService
+}
+
+for (const [channel, method] of Object.entries({
+  'set-session': 'setSession', 'get-state': 'getState', 'read-playlist': 'readPlaylist',
+  'put-playlist': 'putPlaylist', 'cache-song': 'cacheSong', 'get-source': 'getSource',
+  'release-source': 'releaseSource', 'read-lyrics': 'readLyrics', 'put-lyrics': 'putLyrics',
+  'get-artwork': 'getArtwork', 'cache-artwork': 'cacheArtwork', pause: 'pause', resume: 'resume',
+  retry: 'retry', 'retry-network': 'retryNetwork', clear: 'clear'
+})) {
+  ipcMain.handle(`playlist-cache:${channel}`, (event, argument) => getPlaylistCacheForSender(event)[method](argument))
 }
 
 /** 更新桥接仅允许主窗口的顶层页面，路径与下载地址不接收渲染输入。 */
@@ -560,6 +809,7 @@ function stopMemoryCleanup() {
 function performApplicationCleanup() {
   if (cleanupPromise) return cleanupPromise
   isQuitting = true
+  updateTaskbarButtons()
   cleanupPromise = Promise.resolve().then(cleanupApplicationResources).finally(() => {
     cleanupComplete = true
   })
@@ -584,6 +834,12 @@ async function cleanupApplicationResources() {
     releaseInstallPreparation()
 
     try {
+      if (playlistCacheService) await playlistCacheService.stop()
+    } catch (error) {
+      logger.error('playlist-cache', '停止离线缓存任务失败', error)
+    }
+
+    try {
       if (updateService) await updateService.stop()
     } catch (error) {
       logger.error('updates', '停止更新任务失败', error)
@@ -602,11 +858,8 @@ async function cleanupApplicationResources() {
     // 3. 关闭桌面歌词窗口
     logger.trace('main', '🎵 关闭桌面歌词窗口...')
     try {
-      if (desktopLyricWindow && !desktopLyricWindow.isDestroyed()) {
-        desktopLyricWindow.close()
-        desktopLyricWindow = null
-        desktopLyricEnabled = false
-      }
+      closeDesktopLyricWindow()
+      await flushDesktopLyricBounds()
       logger.trace('main', '✅ 桌面歌词窗口已关闭')
     } catch (error) {
       logger.error('main', '❌ 关闭桌面歌词窗口失败:', error)
@@ -684,6 +937,21 @@ function createWindow() {
     }
   })
 
+  mainWindow.on('ready-to-show', updateTaskbarButtons)
+  mainWindow.on('show', updateTaskbarButtons)
+  const window = mainWindow
+  const resetTaskbarPlayback = () => {
+    if (mainWindow !== window) return
+    mainWindowReady = false
+    isPlaying = false
+    updateTaskbarButtons()
+    sendDesktopLyric('desktop-lyric:playback-update', desktopPlaybackSnapshot())
+  }
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) resetTaskbarPlayback()
+  })
+  mainWindow.webContents.on('render-process-gone', resetTaskbarPlayback)
+
   // 监听窗口最大化/还原事件，通知渲染进程
   mainWindow.on('maximize', () => {
     mainWindow.webContents.send('window-is-maximized')
@@ -729,6 +997,9 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null
+    mainWindowReady = false
+    isPlaying = false
+    sendDesktopLyric('desktop-lyric:playback-update', desktopPlaybackSnapshot())
   })
 }
 
@@ -760,6 +1031,11 @@ app.whenReady().then(async () => {
     // 更新服务失败不能影响正常启动和播放。
     logger.error('updates', '初始化更新服务失败', error)
   }
+  try {
+    initializePlaylistCacheService()
+  } catch (error) {
+    logger.error('playlist-cache', '初始化离线缓存失败', error)
+  }
 
   // 启动后端服务器
   backendService.start()
@@ -785,6 +1061,8 @@ ipcMain.on('renderer:ready', (event) => {
   if (isQuitting || mainWindowReady || !isMainWindowSender(event)) return
   mainWindowReady = true
   mainWindow.show()
+  updateTaskbarButtons()
+  sendDesktopLyric('desktop-lyric:playback-update', desktopPlaybackSnapshot())
   mainWindow.focus()
   closeLoadingWindow()
   pendingPlayerControls.splice(0).forEach(action => mainWindow.webContents.send('player:control', action))
@@ -796,6 +1074,16 @@ function isMainWindowSender(event) {
     event.senderFrame === mainWindow.webContents.mainFrame)
 }
 
+/** 仅主窗口顶层可写入有限长度的纯文本，不提供读取剪贴板的能力。 */
+ipcMain.handle('clipboard:write-text', (event, text) => {
+  if (!isMainWindowSender(event)) throw new Error('不允许此窗口写入剪贴板')
+  if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > 1024 * 1024) {
+    throw new Error('剪贴板文本格式或长度不符合要求')
+  }
+  clipboard.writeText(text)
+  return true
+})
+
 /** 每次准备只绑定当时的主窗口和顶层 frame，导航与销毁立即失效旧保存请求。 */
 function releaseInstallPreparation() {
   if (!installPreparation) return
@@ -803,6 +1091,8 @@ function releaseInstallPreparation() {
     emitter.removeListener(name, listener)
   }
   installPreparation = null
+  updateTaskbarButtons()
+  sendDesktopLyric('desktop-lyric:playback-update', desktopPlaybackSnapshot())
 }
 
 function notifyInstallPreparation(payload) {
@@ -831,6 +1121,8 @@ function notifyInstallPreparation(payload) {
     [window, 'closed', cancel]
   ]
   installPreparation = { requestId, window, contents, frame: contents.mainFrame, listeners }
+  updateTaskbarButtons()
+  sendDesktopLyric('desktop-lyric:playback-update', desktopPlaybackSnapshot())
   listeners.forEach(([emitter, name, listener]) => emitter.on(name, listener))
   contents.send('updates:prepare-install', payload)
   return true
@@ -1068,57 +1360,14 @@ ipcMain.handle('open-external', async (_event, url) => {
 })
 
 // 桌面歌词相关 IPC 事件处理
-ipcMain.handle('desktop-lyric:toggle', async () => {
-  try {
-    logger.trace('main', '🎵 桌面歌词切换操作...')
-    if (desktopLyricEnabled && desktopLyricWindow && !desktopLyricWindow.isDestroyed()) {
-      logger.trace('main', '🎵 关闭桌面歌词窗口')
-      desktopLyricWindow.close()
-      desktopLyricEnabled = false
-    } else {
-      logger.trace('main', '🎵 打开桌面歌词窗口')
-      createDesktopLyricWindow()
-      desktopLyricEnabled = true
-    }
-    updateTrayMenu()
-    return desktopLyricEnabled
-  } catch (error) {
-    logger.error('main', '❌ 桌面歌词切换失败:', error)
-    return false
-  }
+ipcMain.handle('desktop-lyric:toggle', event => isMainWindowSender(event) ? toggleDesktopLyricWindow() : false)
+ipcMain.handle('desktop-lyric:show', event => isMainWindowSender(event) ? showDesktopLyricWindow() : false)
+ipcMain.handle('desktop-lyric:hide', event => {
+  if (isQuitting || !isMainWindowSender(event)) return false
+  closeDesktopLyricWindow()
+  return true
 })
-
-ipcMain.handle('desktop-lyric:show', async () => {
-  try {
-    logger.trace('main', '🎵 显示桌面歌词')
-    if (!desktopLyricWindow || desktopLyricWindow.isDestroyed()) {
-      createDesktopLyricWindow()
-    } else {
-      desktopLyricWindow.show()
-    }
-    desktopLyricEnabled = true
-    updateTrayMenu()
-    return true
-  } catch (error) {
-    logger.error('main', '❌ 显示桌面歌词失败:', error)
-    return false
-  }
-})
-
-ipcMain.handle('desktop-lyric:hide', async () => {
-  try {
-    logger.trace('main', '🎵 隐藏桌面歌词')
-    if (desktopLyricWindow && !desktopLyricWindow.isDestroyed()) {
-      desktopLyricWindow.close()
-    }
-    desktopLyricEnabled = false
-    updateTrayMenu()
-    return true
-  } catch (error) {
-    logger.error('main', '❌ 隐藏桌面歌词失败:', error)
-    return false
-  }
-})
+ipcMain.handle('desktop-lyric:reset-position', event => isMainWindowSender(event) ? resetDesktopLyricPosition() : false)
 
 // 日志 API 处理
 ipcMain.handle('logger:init', async () => {
@@ -1305,82 +1554,113 @@ app.on('browser-window-focus', () => {
 })
 
 // ============ 播放器相关 IPC (供渲染进程调用) ============
-// 更新当前歌曲信息: { title, cover }
-ipcMain.on('player:track-update', (_event, payload) => {
-  if (payload && typeof payload === 'object') {
-    const trackChanged = (typeof payload.title === 'string' && payload.title !== currentTrack.title) ||
-      (typeof payload.artist === 'string' && payload.artist !== currentTrack.artist)
-    if (trackChanged) {
-      currentDesktopLyrics = []
-      currentDesktopTime = 0
-    }
-    if (typeof payload.title === 'string') currentTrack.title = payload.title || '未知歌曲'
-    if (payload.cover) currentTrack.cover = payload.cover
-    if (typeof payload.artist === 'string') currentTrack.artist = payload.artist
-    updateTrayMenu()
-
-    // 转发歌曲信息到桌面歌词窗口
-    if (desktopLyricWindow && !desktopLyricWindow.isDestroyed()) {
-      logger.trace('main', '🎵 转发歌曲信息到桌面歌词:', payload)
-      desktopLyricWindow.webContents.send('desktop-lyric:song-update', payload)
-      if (trackChanged) {
-        desktopLyricWindow.webContents.send('desktop-lyric:lyric-update', [])
-        desktopLyricWindow.webContents.send('desktop-lyric:time-update', 0)
-      }
-    }
+// 歌曲身份独立于标题；显式空歌曲清除所有重开缓存，同歌元数据更新保留进度。
+ipcMain.on('player:track-update', (event, payload) => {
+  if (isQuitting || !isMainWindowSender(event) || (payload !== null && (typeof payload !== 'object' || !payload))) return
+  const next = payload === null ? { title: '暂无播放', artist: '', cover: null, trackId: null } : {
+    title: typeof payload.title === 'string' ? payload.title || '未知歌曲' : currentTrack.title,
+    artist: typeof payload.artist === 'string' ? payload.artist : currentTrack.artist || '未知歌手',
+    cover: typeof payload.cover === 'string' ? payload.cover : null,
+    trackId: typeof payload.trackId === 'string' ? payload.trackId : null
   }
+  const trackChanged = payload === null || (next.trackId || currentTrack.trackId
+    ? next.trackId !== currentTrack.trackId
+    : next.title !== currentTrack.title || next.artist !== currentTrack.artist)
+  if (trackChanged) { currentDesktopLyrics = []; currentDesktopTime = 0; currentDesktopDuration = 0 }
+  if (payload === null) isPlaying = false
+  currentTrack = next
+  updateTrayMenu()
+  updateTaskbarButtons()
+  sendDesktopLyric('desktop-lyric:song-update', payload === null ? null : currentTrack)
+  if (trackChanged) {
+    sendDesktopLyric('desktop-lyric:lyric-update', [])
+    sendDesktopLyric('desktop-lyric:time-update', 0, { duration: 0 })
+  }
+  sendDesktopLyric('desktop-lyric:playback-update', desktopPlaybackSnapshot())
 })
 
 // 更新播放状态: playing | paused
-ipcMain.on('player:playback-state', (_event, state) => {
+ipcMain.on('player:playback-state', (event, state) => {
+  if (isQuitting || !isMainWindowSender(event) || !['playing', 'paused'].includes(state)) return
   isPlaying = state === 'playing'
   updateTrayMenu()
+  updateTaskbarButtons()
+  sendDesktopLyric('desktop-lyric:playback-update', desktopPlaybackSnapshot())
 })
 
 // 接收并转发歌词数据
-ipcMain.on('player:lyric-update', (_event, lyrics) => {
-  if (!Array.isArray(lyrics)) return
+ipcMain.on('player:lyric-update', (event, lyrics, trackId) => {
+  if (isQuitting || !isMainWindowSender(event) || !Array.isArray(lyrics) ||
+      (trackId !== undefined && trackId !== currentTrack.trackId)) return
   currentDesktopLyrics = lyrics
-  logger.trace('main', '📡 主进程接收到歌词数据:', lyrics ? lyrics.length : 0, '行')
-  if (desktopLyricWindow && !desktopLyricWindow.isDestroyed()) {
-    logger.trace('main', '🎵 转发歌词数据到桌面歌词窗口')
-    desktopLyricWindow.webContents.send('desktop-lyric:lyric-update', lyrics)
-  }
+  sendDesktopLyric('desktop-lyric:lyric-update', lyrics)
 })
 
 // 接收并转发播放时间
-ipcMain.on('player:time-update', (_event, time) => {
-  if (!Number.isFinite(time) || time < 0) return
+ipcMain.on('player:time-update', (event, time, meta) => {
+  if (isQuitting || !isMainWindowSender(event) || !Number.isFinite(time) || time < 0 ||
+      (meta?.trackId !== undefined && meta.trackId !== currentTrack.trackId)) return
   currentDesktopTime = time
-  if (desktopLyricWindow && !desktopLyricWindow.isDestroyed()) {
-    // 减少日志频率，避免刷屏
-    if (typeof time === 'number' && Math.floor(time / 1000) % 5 === 0) {
-      logger.trace('main', '⏱️ 转发播放时间到桌面歌词:', Math.floor(time / 1000) + 's')
-    }
-    desktopLyricWindow.webContents.send('desktop-lyric:time-update', time)
-  }
+  if (Number.isFinite(meta?.duration) && meta.duration >= 0) currentDesktopDuration = meta.duration
+  sendDesktopLyric('desktop-lyric:time-update', time, { duration: currentDesktopDuration })
 })
 
 // 桌面歌词窗口内部事件处理
-ipcMain.on('desktop-lyric:close', () => {
-  logger.trace('main', '🎵 桌面歌词请求关闭')
-  if (desktopLyricWindow && !desktopLyricWindow.isDestroyed()) {
-    desktopLyricWindow.close()
+function isDesktopLyricSender(event) {
+  return Boolean(!isQuitting && desktopLyricWindow && !desktopLyricWindow.isDestroyed() &&
+    event.sender === desktopLyricWindow.webContents && event.senderFrame === desktopLyricWindow.webContents.mainFrame)
+}
+
+ipcMain.on('desktop-lyric:close', event => { if (isDesktopLyricSender(event)) closeDesktopLyricWindow() })
+for (const [channel, field, values] of [
+  ['size-changed', 'fontSize', ['small', 'medium', 'large']],
+  ['theme-changed', 'theme', ['classic', 'gradient', 'minimal']],
+  ['set-locked', 'locked', [true, false]]
+]) {
+  ipcMain.handle(`desktop-lyric:${channel}`, (event, value) => {
+    if (!isDesktopLyricSender(event) || !values.includes(value)) return { success: false, error: '无效的歌词设置操作。' }
+    return saveDesktopPreference({ desktopLyrics: { [field]: value } })
+  })
+}
+ipcMain.handle('desktop-lyric:set-translation', (event, value) => {
+  if (!isDesktopLyricSender(event) || typeof value !== 'boolean') return { success: false, error: '无效的翻译设置。' }
+  return saveDesktopPreference({ playback: { showTranslation: value } })
+})
+ipcMain.handle('desktop-lyric:control', (event, action) => {
+  if (!isDesktopLyricSender(event) || !desktopPlaybackSnapshot().available || !['prev', 'toggle', 'next'].includes(action)) {
+    return { success: false, error: '播放器尚未就绪，请先播放歌曲。' }
   }
+  broadcastPlayerControl(action === 'toggle' ? (isPlaying ? 'pause' : 'play') : action)
+  return { success: true }
 })
 
-ipcMain.on('desktop-lyric:size-changed', (event, size) => {
-  if (event.sender !== desktopLyricWindow?.webContents || !['small', 'medium', 'large'].includes(size)) return
-  void setSettings({ desktopLyrics: { fontSize: size } }).catch(error => {
-    logger.error('main', '保存桌面歌词大小失败', error)
-    syncDesktopLyricSettings()
-  })
+/** 自定义缩放只使用主进程的真实鼠标坐标，锁定与窗口更换会取消操作。 */
+ipcMain.handle('desktop-lyric:begin-resize', event => {
+  if (!isDesktopLyricSender(event)) return { success: false }
+  const state = desktopWindowStates.get(desktopLyricWindow)
+  if (state.locked || !screen?.getCursorScreenPoint) return { success: false }
+  state.resize = { point: screen.getCursorScreenPoint(), bounds: desktopLyricWindow.getBounds() }
+  return { success: true }
 })
-
-ipcMain.on('desktop-lyric:theme-changed', (event, theme) => {
-  if (event.sender !== desktopLyricWindow?.webContents || !['classic', 'gradient', 'minimal'].includes(theme)) return
-  void setSettings({ desktopLyrics: { theme } }).catch(error => {
-    logger.error('main', '保存桌面歌词样式失败', error)
-    syncDesktopLyricSettings()
-  })
+ipcMain.on('desktop-lyric:resize', event => {
+  if (!isDesktopLyricSender(event)) return
+  const state = desktopWindowStates.get(desktopLyricWindow)
+  if (state.locked || !state.resize) return
+  const { point, bounds } = state.resize
+  const cursor = screen.getCursorScreenPoint()
+  desktopLyricWindow.setBounds(getDesktopLyricBounds({ ...bounds,
+    width: bounds.width + cursor.x - point.x, height: bounds.height + cursor.y - point.y }))
+})
+ipcMain.on('desktop-lyric:end-resize', event => {
+  if (!isDesktopLyricSender(event)) return
+  desktopWindowStates.get(desktopLyricWindow).resize = null
+  rememberDesktopLyricBounds(desktopLyricWindow)
+})
+ipcMain.handle('desktop-lyric:resize-by', (event, delta) => {
+  if (!isDesktopLyricSender(event) || desktopWindowStates.get(desktopLyricWindow).locked ||
+      !delta || !['width', 'height'].every(key => Number.isFinite(delta[key]) && Math.abs(delta[key]) <= 100)) return { success: false }
+  const bounds = desktopLyricWindow.getBounds()
+  desktopLyricWindow.setBounds(getDesktopLyricBounds({ ...bounds, width: bounds.width + delta.width, height: bounds.height + delta.height }))
+  rememberDesktopLyricBounds(desktopLyricWindow)
+  return { success: true }
 })

@@ -10,6 +10,15 @@
           <div class="collection-meta"><span>{{ favoriteList.length }} 首歌曲</span><span>{{ isPlaylistView ? '我的歌单' : '我喜欢' }}</span></div>
           <div class="collection-actions"><button type="button" class="play-all-btn" :disabled="favoriteList.length === 0" @click="playAll"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>播放全部</button>
             <button type="button" class="action-btn" :disabled="loading" @click="loadFavorites(true)">{{ loading ? '刷新中…' : '刷新歌单' }}</button></div>
+          <div v-if="offlineCacheAvailable" class="playlist-cache" aria-live="polite">
+            <span>{{ playlistCacheState?.enabled === false ? '离线缓存已关闭' : `已听缓存 ${offlineCacheEntry?.cached || 0} / ${favoriteList.length} 首` }}</span>
+            <span class="playlist-cache-hint">{{ offlineCacheStatusText }}</span>
+            <button v-if="playlistCacheState?.enabled !== false && offlineCacheEntry?.status === 'paused'" type="button" class="cache-action" :disabled="cacheActionPending" @click="controlPlaylistCache('resume')">继续缓存</button>
+            <button v-else-if="offlineCacheBusy" type="button" class="cache-action" :disabled="cacheActionPending" @click="controlPlaylistCache('pause')">暂停缓存</button>
+            <button v-if="cacheWriteFailed" type="button" class="cache-action" :disabled="cacheActionPending" @click="retryPlaylistSnapshot">重试保存</button>
+            <button v-else-if="offlineCacheCanRetry" type="button" class="cache-action" :disabled="cacheActionPending" @click="controlPlaylistCache('retry')">重试缓存</button>
+          </div>
+          <p v-if="offlineCacheError" class="playlist-cache-error" role="alert">{{ offlineCacheError }}</p>
         </div>
       </header>
 
@@ -19,7 +28,7 @@
         <div class="playlist-search-field">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4 4" /></svg>
           <input ref="playlistSearch" v-model="searchQuery" type="search" aria-label="搜索此歌单的歌曲、歌手或专辑" placeholder="搜索此歌单的歌曲、歌手或专辑" autocomplete="off" @keydown.esc.stop.prevent="searchQuery = ''" />
-          <button v-if="searchQuery" type="button" class="clear-search" aria-label="清空歌单搜索" @click="searchQuery = ''; $refs.playlistSearch?.focus()">×</button>
+          <Transition name="ui-pop" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><button v-if="searchQuery" type="button" class="clear-search" aria-label="清空歌单搜索" @click="searchQuery = ''; $refs.playlistSearch?.focus()">×</button></Transition>
         </div>
         <p class="playlist-search-count" role="status" aria-live="polite">{{ hasSearchQuery ? `找到 ${filteredFavoriteList.length} 首 / 共 ${favoriteList.length} 首` : `共 ${favoriteList.length} 首歌曲` }}</p>
       </div>
@@ -29,6 +38,7 @@
         <button type="button" class="action-btn" :disabled="loading" @click="loadFavorites(true)">重试</button>
       </div>
 
+      <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
       <!-- 加载状态 -->
       <div v-if="loading && favoriteList.length === 0" class="loading-container">
         <span class="loading-spinner" role="status" aria-label="加载中"></span>
@@ -61,7 +71,8 @@
       </div>
 
       <!-- 歌曲列表 -->
-      <div v-else class="song-list">
+      <WindowedList v-else ref="songList" v-list-motion="filteredFavoriteList" class="song-list" :items="filteredFavoriteList" item-key="index">
+        <template #header>
         <div class="list-header">
           <div class="col-index"><button type="button" class="sort-button" @click="toggleSortOrder" :aria-label="'切换曲目顺序，当前' + (sortOrder === 'desc' ? '倒序' : sortOrder === 'asc' ? '正序' : '原始顺序')">
             <span>#</span>
@@ -75,12 +86,15 @@
           <div class="col-duration">时长</div>
           <div class="col-actions-label"><span class="visually-hidden">操作</span></div>
         </div>
+        </template>
 
+        <template #default="{ item: song, index }">
         <div
-          v-for="song in filteredFavoriteList"
-          :key="song.hash"
+          :key="`${song.hash}:${song.index}`"
+          :data-motion-key="`${song.hash}:${song.index}`"
+          :data-window-index="index"
           class="song-item"
-          :class="{ playing: isCurrentlyPlaying(song) }"
+          :class="{ playing: isCurrentlyPlaying(song), 'is-striped': index % 2 === 1 }"
           :aria-current="isCurrentlyPlaying(song) ? 'true' : undefined"
           @dblclick="playSong(song)"
           @contextmenu.prevent.stop="showContextMenu($event, song)"
@@ -93,20 +107,19 @@
             <ArtworkCover :src="song.cover || ''" class="song-cover" />
             <div class="song-info">
               <div class="song-title-line">
-                <button type="button" class="song-name" @click.stop="playSong(song)" @dblclick.stop :title="getSongName(song.name)">
+                <button type="button" class="song-name" @click.stop="searchSong(song)" @dblclick.stop :title="getSongName(song.name)">
                   {{ getSongName(song.name) }}
                   <span v-if="song.relate_goods && song.relate_goods.some(g => g.level >= 5)" class="quality-badge">SQ</span>
                 </button>
                 <SongBadges :song="song" />
+                <span v-if="offlineSongHashes.has(String(song.hash || '').toLowerCase())" class="offline-song-badge" title="已保留音频，可离线播放">已缓存</span>
               </div>
-              <button type="button" class="artist-link mobile-artist" @click.stop="goArtist(song)" @dblclick.stop>{{ getSingerNames(song.singerinfo, song) || song.singername || song.author_name || (song.name?.includes(' - ') ? song.name.split(' - ')[0] : '未知歌手') }}</button>
+              <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />
             </div>
           </div>
 
           <div class="col-artist">
-            <button type="button" class="artist-link" @click.stop="goArtist(song)" @dblclick.stop>
-              {{ getSingerNames(song.singerinfo, song) || song.singername || song.author_name || (song.name && song.name.includes(' - ') ? song.name.split(' - ')[0] : '-') }}
-            </button>
+            <ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" />
           </div>
     <div class="col-album"><button type="button" class="album-link" @click.stop="goAlbum(song)" @dblclick.stop>{{ song.albuminfo?.name || song.remark || '-' }}</button></div>
           <div class="col-duration">{{ formatDuration(song.timelen) }}</div>
@@ -123,8 +136,10 @@
               </button>
             </div>
         </div>
-      </div>
+        </template>
+      </WindowedList>
 
+      </Transition>
       <!-- 右键菜单 -->
       <ContextMenu
         :visible="contextMenuVisible"

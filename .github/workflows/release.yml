@@ -2,8 +2,6 @@ name: Build & Release
 
 on:
   push:
-    branches:
-      - master
     tags:
       - 'v*'
   pull_request:
@@ -33,18 +31,18 @@ jobs:
       - run: npm test
       - run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
-            npm run dist:win
+            npm run dist:win -- --publish never
           elif [ "${{ runner.os }}" = "Linux" ]; then
-            npm run dist:linux
+            npm run dist:linux -- --publish never
           elif [ "${{ runner.os }}" = "macOS" ]; then
-            npm run dist:mac
+            npm run dist:mac -- --publish never
           fi
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Verify native installer protocol and versions
+      - name: Verify native installer protocol, versions and UI
         if: runner.os == 'Windows'
-        run: node --test tests/installer-nsis.test.cjs
+        run: node --test tests/installer-nsis.test.cjs tests/installer-ui.test.cjs
         env:
           BK_REQUIRE_NSIS_TESTS: '1'
       - name: Upload Release Assets
@@ -58,6 +56,9 @@ jobs:
             release/betterkugou-*.rpm
             release/BetterKuGou-*.dmg
           body_path: updata_log.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Upload Build Artifacts

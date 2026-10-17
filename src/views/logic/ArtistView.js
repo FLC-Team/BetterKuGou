@@ -1,23 +1,30 @@
 
 import ArtworkCover from '../../components/common/ArtworkCover.vue'
 import SongBadges from '../../components/common/SongBadges.vue'
+import ArtistLinks from '../../components/common/ArtistLinks.vue'
+import { getSongArtists } from '../../utils/songMetadata.js'
 import { logger } from '../../utils/logger.js'
 import { getArtistDetail, getArtistAudios, getArtistAlbums, followArtist, unfollowArtist, findArtistByName, getImagesByHash, getAlbumInfo } from '../../api/music.js'
 
 export default {
-  components: { ArtworkCover, SongBadges },
+  components: { ArtworkCover, SongBadges, ArtistLinks },
   name: 'ArtistView',
   props: {
     artistId: { type: [String, Number], default: null },
     artistName: { type: String, default: '' },
     currentSong: { type: Object, default: null }
   },
-  emits: ['play', 'navigate'],
+  emits: ['play', 'navigate', 'search'],
   data() {
     return {
       id: this.artistId || null,
       artist: null,
       followed: false,
+      followPending: false,
+      followMessage: '',
+      followError: false,
+      songsError: '',
+      albumsError: '',
       activeTab: 'hot',
       // 热门歌曲直接取单曲接口 sort=hot 前10
       hotSongs: [],
@@ -32,7 +39,9 @@ export default {
       infiniteScrollObserver: null,
       isPageActive: true,
       isDisposed: false,
-      initialLoadComplete: false
+      initialLoadComplete: false,
+      initialLoading: false,
+      errorMessage: ''
     }
   },
   async mounted() {
@@ -42,31 +51,7 @@ export default {
       id: this.id
     })
     
-    try {
-      // 如果没有ID但有名称，尝试搜索获取ID
-      if (!this.id && this.artistName) {
-        logger.trace('ArtistView', '🔍 [ArtistView] 通过名称搜索歌手ID:', this.artistName)
-        const found = await findArtistByName(this.artistName)
-        if (this.isDisposed) return
-        logger.trace('ArtistView', '🔍 [ArtistView] 搜索结果:', found)
-        if (found?.AuthorId || found?.author_id || found?.ID) {
-          this.id = found.AuthorId || found.author_id || found.ID
-          logger.trace('ArtistView', '🔍 [ArtistView] 找到歌手ID:', this.id)
-        }
-      }
-
-      await this.loadArtist()
-      if (this.isDisposed) return
-      await this.loadHot()
-    } catch (error) {
-      if (!this.isDisposed) logger.error('ArtistView', '初始化歌手页面失败', { artistId: this.id }, error)
-    } finally {
-      // 初始化结束后允许其他标签独立加载，热门请求失败不能锁死缓存页面。
-      if (!this.isDisposed) {
-        this.initialLoadComplete = true
-        this.$nextTick(() => this.resumeActiveTab())
-      }
-    }
+    await this.loadInitial()
   },
   activated() {
     if (this.isDisposed) return
@@ -83,9 +68,37 @@ export default {
     }
   },
   methods: {
+    /** 按所选姓名解析唯一入口；失败保留当前标签并允许显式重试。 */
+    async loadInitial() {
+      if (this.isDisposed || this.initialLoading) return
+      this.initialLoading = true
+      this.errorMessage = ''
+      try {
+        if (!this.id && this.artistName) {
+          const found = await findArtistByName(this.artistName)
+          if (this.isDisposed) return
+          this.id = getSongArtists({ singerinfo: [found] })[0]?.id || null
+        }
+        if (!this.id) throw new Error('未找到这位歌手的资料，请稍后重试')
+        await this.loadArtist()
+        if (this.isDisposed) return
+        await this.loadHot()
+      } catch (error) {
+        if (!this.isDisposed) {
+          this.errorMessage = error?.message || '加载歌手资料失败，请重试'
+          logger.error('ArtistView', '初始化歌手页面失败', { artistId: this.id }, error)
+        }
+      } finally {
+        if (!this.isDisposed) {
+          this.initialLoading = false
+          this.initialLoadComplete = true
+          this.$nextTick(() => this.resumeActiveTab())
+        }
+      }
+    },
     // 缓存隐藏时暂停观察器；挂载完成或重新激活只恢复当前标签需要的资源。
     resumeActiveTab() {
-      if (this.isPageActive === false || this.isDisposed || !this.initialLoadComplete) return
+      if (this.isPageActive === false || this.isDisposed || !this.initialLoadComplete || this.initialLoading || !this.id || !this.artist) return
       this.teardownInfiniteScroll()
       if (this.activeTab === 'songs') {
         if (this.songs.length === 0) this.loadMore()
@@ -102,10 +115,12 @@ export default {
       if (this.isDisposed) return
       const res = await getArtistDetail(this.id)
       if (this.isDisposed) return
+      if (res?.status !== undefined && Number(res.status) !== 1) throw new Error('加载歌手资料失败，请重试')
       const raw = res?.data || res?.info || res?.author || res || null
       // 尽量规范化歌手字段
       const avatar = raw?.sizable_avatar || raw?.avatar || raw?.pic || raw?.sizable_cover || ''
       const name = raw?.author_name || raw?.name || raw?.base?.author_name || raw?.base?.name
+      if (!name) throw new Error('歌手资料暂不可用，请重试')
       const fans = raw?.fans_cnt || raw?.fans_total || raw?.fans || raw?.follow_cnt || raw?.base?.fans_cnt
       const isFollow = raw?.is_follow || raw?.followed || raw?.isFollow
       this.artist = {
@@ -122,6 +137,7 @@ export default {
       logger.trace('ArtistView', '🎵 [ArtistView] 加载热门歌曲，歌手ID:', this.id)
       const res = await getArtistAudios(this.id, 1, 10, 'hot')
       if (this.isDisposed) return
+      if (res?.status !== undefined && Number(res.status) !== 1) throw new Error('加载歌手热门歌曲失败，请重试')
       logger.trace('ArtistView', '🎵 [ArtistView] 热门歌曲API响应:', res)
       
       const list = res?.data?.lists || res?.data?.info || res?.data || res?.lists || []
@@ -143,9 +159,11 @@ export default {
     async loadMore() {
       if (this.isPageActive === false || this.isDisposed || !this.hasMore || this.loadingMore) return
       this.loadingMore = true
+      this.songsError = ''
       try {
         const res = await getArtistAudios(this.id, this.page, this.pagesize, 'new')
         if (this.isDisposed) return
+        if (res?.status !== undefined && Number(res.status) !== 1) throw new Error('加载单曲失败，请重试')
         const list = res?.data?.lists || res?.data?.info || res?.data || res?.lists || []
         const normalized = this.normalizeAudioList(list)
         if (Array.isArray(normalized) && normalized.length > 0) {
@@ -157,6 +175,7 @@ export default {
         }
       } catch (error) {
         if (this.isDisposed) return
+        this.songsError = '加载单曲失败，请重试'
         logger.error('ArtistView', '加载歌手分页曲目失败', error)
       } finally {
         if (!this.isDisposed) this.loadingMore = false
@@ -337,8 +356,6 @@ export default {
           const albumInfo = it.album_info || it.albuminfo || {}
           cover = albumInfo.sizable_cover || albumInfo.cover || albumInfo.img || albumInfo.imgurl || ''
         }
-        const authors = it.authors || it.singerinfo || []
-        
         // 检查所有可能的封面字段
         const coverFields = {
           sizable_cover: it.sizable_cover,
@@ -368,12 +385,7 @@ export default {
         }
         logger.trace('ArtistView', `🎵 [ArtistView] 第${index + 1}首歌曲专辑封面字段:`, albumCoverFields)
         
-        const singerArray = Array.isArray(authors)
-          ? authors.map(a => ({
-              id: a.id || a.author_id || a.singerid,
-              name: a.name || a.author_name || a.singer_name || a.singername
-            })).filter(a => a.name)
-          : []
+        const singerArray = getSongArtists(it)
         const singername = singerArray.map(a => a.name).join('、') || it.singername || it.SingerName || it.author_name
         // 名称优先级
         const rawName = it.audio_name || it.song_name || it.name || it.filename || it.remark
@@ -407,10 +419,12 @@ export default {
     async loadAlbums() {
       if (this.isPageActive === false || this.isDisposed || this.albumsLoading) return
       this.albumsLoading = true
+      this.albumsError = ''
       try {
         logger.trace('ArtistView', '📀 [ArtistView] 加载专辑，歌手ID:', this.id, '页码:', this.albumsPage)
         const res = await getArtistAlbums(this.id, this.albumsPage, 30, 'new')
         if (this.isDisposed) return
+        if (res?.status !== undefined && Number(res.status) !== 1) throw new Error('加载专辑失败，请重试')
         logger.trace('ArtistView', '📀 [ArtistView] 专辑API响应:', res)
         
         const list = res?.data?.lists || res?.data?.albums || res?.data || []
@@ -426,21 +440,34 @@ export default {
         // 为新增的这批专辑回填封面
         this.$nextTick(() => this.patchAlbumCovers(list))
         this.albumsPage += 1
+      } catch (error) {
+        if (this.isDisposed) return
+        this.albumsError = '加载专辑失败，请重试'
+        logger.error('ArtistView', '加载歌手专辑失败', error)
       } finally {
         if (!this.isDisposed) this.albumsLoading = false
       }
     },
+    /** 同一次关注请求完成前禁止重复提交，失败保留真实关注状态。 */
     async toggleFollow() {
+      if (this.followPending || this.isDisposed || !this.id) return
+      const wasFollowed = this.followed
+      this.followPending = true
+      this.followMessage = ''
+      this.followError = false
       try {
-        if (this.followed) {
-          await unfollowArtist(this.id)
-          this.followed = false
-        } else {
-          await followArtist(this.id)
-          this.followed = true
-        }
-      } catch (e) {
-        logger.error('ArtistView', '切换关注失败:', e)
+        const response = await (wasFollowed ? unfollowArtist(this.id) : followArtist(this.id))
+        if (this.isDisposed) return
+        if (response?.status !== undefined && Number(response.status) !== 1) throw new Error('关注操作未成功')
+        this.followed = !wasFollowed
+        this.followMessage = this.followed ? '已关注这位歌手' : '已取消关注'
+      } catch (error) {
+        if (this.isDisposed) return
+        this.followError = true
+        this.followMessage = '更新关注失败，请检查登录状态后重试'
+        logger.error('ArtistView', '切换关注失败', { artistId: this.id }, error)
+      } finally {
+        if (!this.isDisposed) this.followPending = false
       }
     },
     formatNumber(n) {
@@ -502,13 +529,6 @@ export default {
       logger.trace('ArtistView', '📷 [ArtistView] 歌曲封面加载失败:', song.name, event.target.src)
       event.target.style.display = 'none'
     },
-    getSingerNames(singerinfo, song) {
-      if (Array.isArray(singerinfo) && singerinfo.length) {
-        return singerinfo.map(s => s.name || s.singer_name || s.singername || s.author_name).filter(Boolean).join('、')
-      }
-      if (typeof singerinfo === 'string' && singerinfo.trim()) return singerinfo
-      return song?.singername || song?.author_name || ''
-    },
     getSongName(fullName) {
       if (!fullName) return '未知歌曲'
       const parts = fullName.split(' - ')
@@ -523,11 +543,6 @@ export default {
     },
     play(song) {
       this.$emit('play', song)
-    },
-    goArtist(song) {
-      const id = this.getPrimaryArtistId(song)
-      const name = this.getPrimaryArtistName(song)
-      this.$emit('navigate', 'artist', { id, name })
     },
     goAlbum(song) {
       const s = song || {}
@@ -554,30 +569,6 @@ export default {
       if (id) {
         this.$emit('navigate', 'album', { id, name })
       }
-    },
-    // 提取首个歌手ID
-    getPrimaryArtistId(song) {
-      const s = song || {}
-      if (s.SingerId || s.singerid || s.AuthorId || s.author_id) return s.SingerId || s.singerid || s.AuthorId || s.author_id
-      if (Array.isArray(s.singerinfo) && s.singerinfo.length) {
-        const first = s.singerinfo[0]
-        return first?.id || first?.singerid || first?.author_id || null
-      }
-      return null
-    },
-    // 提取首个歌手名
-    getPrimaryArtistName(song) {
-      const s = song || {}
-      if (s.SingerName || s.singername || s.author_name) return s.SingerName || s.singername || s.author_name
-      if (Array.isArray(s.singerinfo) && s.singerinfo.length) {
-        const first = s.singerinfo[0]
-        return first?.name || first?.singer_name || first?.singername || first?.author_name || null
-      }
-      // 从 "歌手 - 歌名" 中分离
-      if (typeof s.name === 'string' && s.name.includes(' - ')) {
-        return s.name.split(' - ')[0]
-      }
-      return null
     },
     pretty(val) {
       try { return JSON.stringify(val, null, 2) } catch { return String(val) }

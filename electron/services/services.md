@@ -8,6 +8,9 @@
 - `updateService.js`：调度应用更新 Worker、已提交更新策略、状态与进度广播、任务去重、取消及退出清理；保留安装包私有路径供主进程复核。
 - `updateWorker.cjs`：独立 Node Worker，负责固定仓库发布分页、SemVer/平台架构筛选、双源网络请求、流式下载和文件校验；仅使用 Node 内置模块，随 extraResources 发布。
 - `installQuitService.js`：Windows 安装退出协作，使用 Node 内置 net 和每 PID 命名管道承载固定能力探测、保存退出协议，不启动旧版 exe 或强制结束进程。
+- `playlistCacheService.js`：主窗口固定缓存能力与 Worker RPC、会话代次、状态广播、媒体租约及退出清理；不在主线程下载或计算摘要。
+- `playlistCacheWorker.cjs`：独立离线缓存 Worker，维护账号索引、完整歌单快照、实际播放歌曲的下载队列、歌词翻译和已加载封面；只用 Node 内置模块，通过 extraResources 发布。
+- `playlistCacheMedia.js`：将已授予的私有媒体租约转换为 GET/HEAD/单段 Range 响应，不接受调用方路径。
 
 ## 核心函数与数据流
 
@@ -31,6 +34,16 @@
 - `getDownloadedFile()` 在 Worker 中重验大小和 SHA256，主进程据此执行定位或明确确认后的打开；Worker 没有安装命令。切换渠道取消旧任务并丢弃候选状态，进程内状态及取消记录不持久化。
 
 已提交设置 → updateService 调度 → updateWorker 检查/下载/校验 → 带 revision 的主窗口展示状态；用户确认安装 → Worker 再次复核 → 主进程打开同一安装包。
+
+### 离线歌单与已播放歌曲
+
+- `createPlaylistCacheService({ workerPath, cacheRoot, onState, onAuthExpired })` 初始化单个 Worker；`configure()` 只消费已提交的设置。`setSession()` 绑定瞬态凭证并推进代次；账号索引使用 userId 摘要命名，凭证不落盘、不进入日志或展示状态。
+- `putPlaylist()` 只保存完整列表及真实歌单 ID，收藏使用 isFavorite 别名并与普通入口去重，保留收藏与最近 10 个普通歌单；`readPlaylist()` 更新最近访问而不解除暂停。只有实际播放后的 `cacheSong()` 才排音频任务，不遍历列表预取；`putLyrics()` 保存播放器已取得的完整歌词翻译响应，`cacheArtwork()` 由图片真实 load 触发。
+- 下载复用旧 `/audio` 和 `/song/url`，不请求试听；按响应内容识别认证错误，包括 HTTP 502 的业务错误。音频与封面流式写 `.part`，核对长度、实际格式、SHA256 后原子发布，损坏完整文件不可复用。媒体与图片下载不携带账号凭证，图片域名及公网地址受限。
+- 全局配额包括所有账号、临时文件、索引及待释放媒体；并发预留空间，按最近使用回收非租约文件，evicted 不自动循环重下。网络失败有限退避，`retryNetwork()` 仅恢复网络失败，不解除暂停、清理抑制或重试权限错误；用户 retry 可重试失败任务。
+- `getSource()` / `getArtwork()` 校验完整文件后授予不透明租约，渲染侧只获得 `bk-cache://media/<lease>`。租约持续保护当前、候选与回滚音源，logout 不撤销已授源，后续读取需要当前账号；release 后清理等待删除文件，Worker 重建也恢复租约与孤儿释放保障。
+- `clear()` 清理当前账号音频、歌词与封面，保留完整列表入口，正在使用文件延迟至租约释放后删除；清理后仅新播放或用户继续/重试可重新积累，不由页面激活或联网事件解除。关闭自动缓存暂停任务，读取已有音源仍可用；重启只恢复先前已播放的未完成任务。
+- Worker 故障使进行中 RPC 失败，后续操作可重建 Worker；部分损坏索引经过规范化后可恢复，临时残留不作为完整资源。应用退出取消网络与写入、等待索引落盘，超时结束线程，重复 stop 共享同一任务。
 
 ## 生命周期保障
 

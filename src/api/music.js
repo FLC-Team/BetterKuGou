@@ -74,6 +74,7 @@ apiClient.interceptors.response.use(
     return response.data
   },
   (error) => {
+    if (error.code === 'ERR_CANCELED') return Promise.reject(error)
     if (isAuthExpiredPayload(error.response?.data)) {
       notifyAuthExpired(error.config)
       return Promise.reject(createAuthExpiredError(error))
@@ -134,11 +135,13 @@ export const getAIRecommend = (album_audio_id) => {
 /**
  * 获取歌曲详情
  * @param {string} hash - 歌曲 hash
+ * @param {{ signal?: AbortSignal }} options - 可选的请求取消信号
  * @returns {Promise}
  */
-export const getSongDetail = (hash) => {
+export const getSongDetail = (hash, options = {}) => {
   return apiClient.get('/audio', {
-    params: { hash }
+    params: { hash },
+    signal: options.signal
   })
 }
 
@@ -148,9 +151,10 @@ export const getSongDetail = (hash) => {
  * @param {number} album_id - 专辑 ID
  * @param {number} album_audio_id - 专辑音频 ID
  * @param {string} quality - 普通音质：128、320、flac 或 high
+ * @param {{ signal?: AbortSignal }} options - 可选的请求取消信号
  * @returns {Promise}
  */
-export const getSongUrl = (hash, album_id = 0, album_audio_id = 0, quality = '128') => {
+export const getSongUrl = (hash, album_id = 0, album_audio_id = 0, quality = '128', options = {}) => {
   // 获取认证信息
   const token = localStorage.getItem('kugou_token') || ''
   const userid = localStorage.getItem('kugou_userid') || '0'
@@ -173,7 +177,7 @@ export const getSongUrl = (hash, album_id = 0, album_audio_id = 0, quality = '12
   url += '?' + params.toString()
   
   // 使用 axios 直接请求
-  return apiClient.get(url)
+  return apiClient.get(url, { signal: options.signal })
 }
 
 /**
@@ -356,18 +360,27 @@ export const unfollowArtist = (id) => {
   })
 }
 
-/**
- * 根据名称查找歌手（用于从搜索结果或缺少ID时兜底）
- */
+/** 按单个歌手姓名精确匹配，避免将合唱者或无关搜索首项当作所选歌手。 */
 export const findArtistByName = async (name) => {
-  if (!name) return null
+  if (typeof name !== 'string' || !name.trim()) return null
+  const normalizeName = value => typeof value === 'string'
+    ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase()
+    : ''
+  const targetName = normalizeName(name)
+  const hasId = value => (typeof value === 'string' || typeof value === 'number') &&
+    String(value).trim() !== '' && Number.isFinite(Number(value)) && Number(value) > 0
   try {
-    const res = await apiClient.get('/search', { params: { keywords: name, type: 'author', pagesize: 5 } })
-    const list = res?.data?.lists || []
-    return list[0] || null
+    const res = await apiClient.get('/search', { params: { keywords: name.trim(), type: 'author', pagesize: 5 } })
+    if (res?.status !== undefined && Number(res.status) !== 1) throw new Error('查询歌手失败，请重试')
+    const list = res?.data?.lists
+    if (!Array.isArray(list)) throw new Error('歌手搜索结果格式无效，请重试')
+    return list.find(artist => artist &&
+      [artist.AuthorId, artist.author_id, artist.SingerId, artist.singerid, artist.singer_id, artist.ID, artist.id].some(hasId) &&
+      [artist.AuthorName, artist.author_name, artist.SingerName, artist.singer_name, artist.singername, artist.name]
+        .some(value => normalizeName(value) === targetName)) || null
   } catch (e) {
     logger.error('music-api', 'findArtistByName失败', e)
-    return null
+    throw e
   }
 }
 

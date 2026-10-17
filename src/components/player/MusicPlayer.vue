@@ -36,13 +36,13 @@
         </button>
         <div class="song-details">
           <div class="song-text-viewport song-title-viewport">
-            <Transition name="song-meta">
-              <div :key="currentSong.hash" class="song-name" :title="getSongName(currentSong.name)">{{ getSongName(currentSong.name) }}</div>
+            <Transition name="song-meta" @before-enter="setSongTitleInteractivity($event, true)" @before-leave="setSongTitleInteractivity($event, false)">
+              <button :key="currentSong.hash" type="button" class="song-name" :title="`搜索 ${getSongName(currentSong.name)}`" :aria-label="`搜索 ${getSongName(currentSong.name)}`" @click.stop="searchSong(currentSong)">{{ getSongName(currentSong.name) }}</button>
             </Transition>
           </div>
           <div class="song-text-viewport song-artist-viewport">
-            <Transition name="song-meta">
-              <div :key="currentSong.hash" class="song-artist">{{ getSingerNames(currentSong.singerinfo) || currentSong.singername || (currentSong.name && currentSong.name.includes(' - ') ? currentSong.name.split(' - ')[0] : '未知歌手') }}</div>
+            <Transition name="song-meta" @before-enter="setSongTitleInteractivity($event, true)" @before-leave="setSongTitleInteractivity($event, false)">
+              <div :key="currentSong.hash" class="song-artist"><ArtistLinks :song="currentSong" compact @select="openArtist" /></div>
             </Transition>
           </div>
         </div>
@@ -75,13 +75,13 @@
             </svg>
           </button>
           
-          <button class="control-btn play-btn" @click="togglePlay">
-            <svg v-if="isPlaying" viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor">
+          <button class="control-btn play-btn" @click="togglePlay" :aria-label="isPlaying ? '暂停' : '播放'" :aria-pressed="isPlaying">
+            <span class="control-state-stage" aria-hidden="true"><Transition name="control-state"><span :key="isPlaying" class="control-state-icon"><svg v-if="isPlaying" viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor">
               <path d="M304 176h80v672h-80zm336 0h80v672h-80z"/>
             </svg>
             <svg v-else viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor">
               <path d="M719.4 499.1l-296.1-215A15.9 15.9 0 00398 297v430c0 13.1 14.8 20.5 25.3 12.9l296.1-215a15.9 15.9 0 000-25.8z"/>
-            </svg>
+            </svg></span></Transition></span>
           </button>
           
           <button class="control-btn" @click="playNext" title="下一曲">
@@ -94,11 +94,11 @@
             class="icon-btn" 
             @click="togglePlayMode" 
             @contextmenu.prevent.stop="showPlayModeMenu"
-            :title="playModeText"
+            :title="playModeText" :aria-label="playModeText"
           >
-            <img v-if="playMode === 'loop'" :src="repeatAllIcon" alt="列表循环" width="18" height="18" />
+            <span class="control-state-stage" aria-hidden="true"><Transition name="control-state"><span :key="playMode" class="control-state-icon"><img v-if="playMode === 'loop'" :src="repeatAllIcon" alt="列表循环" width="18" height="18" />
             <img v-else-if="playMode === 'single'" :src="repeatOneIcon" alt="单曲循环" width="18" height="18" />
-            <img v-else :src="shuffleIcon" alt="随机播放" width="18" height="18" />
+            <img v-else :src="shuffleIcon" alt="随机播放" width="18" height="18" /></span></Transition></span>
           </button>
         </div>
         
@@ -110,13 +110,13 @@
             </svg>
           </button>
           
-          <button class="control-btn play-btn" @click="togglePlay">
-            <svg v-if="isPlaying" viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor">
+          <button class="control-btn play-btn" @click="togglePlay" :aria-label="isPlaying ? '暂停' : '播放'" :aria-pressed="isPlaying">
+            <span class="control-state-stage" aria-hidden="true"><Transition name="control-state"><span :key="isPlaying" class="control-state-icon"><svg v-if="isPlaying" viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor">
               <path d="M304 176h80v672h-80zm336 0h80v672h-80z"/>
             </svg>
             <svg v-else viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor">
               <path d="M719.4 499.1l-296.1-215A15.9 15.9 0 00398 297v430c0 13.1 14.8 20.5 25.3 12.9l296.1-215a15.9 15.9 0 000-25.8z"/>
-            </svg>
+            </svg></span></Transition></span>
           </button>
           
           <button class="control-btn" @click="playNext" title="下一曲">
@@ -162,19 +162,19 @@
           class="icon-btn" 
           @click="togglePlayMode" 
           @contextmenu.prevent.stop="showPlayModeMenu"
-          :title="playModeText"
+          :title="playModeText" :aria-label="playModeText"
         >
-          <img v-if="playMode === 'loop'" :src="repeatAllIcon" alt="列表循环" width="18" height="18" />
+          <span class="control-state-stage" aria-hidden="true"><Transition name="control-state"><span :key="playMode" class="control-state-icon"><img v-if="playMode === 'loop'" :src="repeatAllIcon" alt="列表循环" width="18" height="18" />
           <img v-else-if="playMode === 'single'" :src="repeatOneIcon" alt="单曲循环" width="18" height="18" />
-          <img v-else :src="shuffleIcon" alt="随机播放" width="18" height="18" />
+          <img v-else :src="shuffleIcon" alt="随机播放" width="18" height="18" /></span></Transition></span>
         </button>
 
         <div class="volume-control">
-          <button class="icon-btn" @click="toggleMute">
-            <img v-if="isMuted || volume === 0" :src="sound0Icon" alt="静音" width="18" height="18" />
+          <button class="icon-btn" @click="toggleMute" :aria-label="isMuted || volume === 0 ? '取消静音' : '静音'" :aria-pressed="isMuted || volume === 0">
+            <span class="control-state-stage" aria-hidden="true"><Transition name="control-state"><span :key="isMuted || volume === 0 ? 0 : volume <= 30 ? 1 : volume <= 60 ? 2 : 3" class="control-state-icon"><img v-if="isMuted || volume === 0" :src="sound0Icon" alt="静音" width="18" height="18" />
             <img v-else-if="volume <= 30" :src="sound1Icon" alt="音量低" width="18" height="18" />
             <img v-else-if="volume <= 60" :src="sound2Icon" alt="音量中" width="18" height="18" />
-            <img v-else :src="sound3Icon" alt="音量高" width="18" height="18" />
+            <img v-else :src="sound3Icon" alt="音量高" width="18" height="18" /></span></Transition></span>
           </button>
           <input 
             type="range" 
@@ -192,11 +192,11 @@
       </div>
     </div>
 
-    <div v-if="qualityFeedback" class="quality-feedback" role="status">
+    <Transition name="player-feedback" @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')"><div v-if="qualityFeedback" class="quality-feedback" role="status" :aria-busy="loadingQualityChange || Boolean(pendingSongOptions?.qualityChange)">
       <span>{{ qualityFeedback }}</span>
-      <button type="button" @click="retryQualityChange">重试</button>
+      <button type="button" :disabled="loadingQualityChange || Boolean(pendingSongOptions?.qualityChange)" @click="retryQualityChange">{{ loadingQualityChange || pendingSongOptions?.qualityChange ? '切换中…' : '重试' }}</button>
       <button type="button" aria-label="关闭音质提示" @click="qualityMessage = ''; qualitySaveMessage = ''">×</button>
-    </div>
+    </div></Transition>
 
     <!-- 音频元素 -->
     <audio 
@@ -207,6 +207,7 @@
       @pause="handlePause"
       @timeupdate="handleTimeUpdate"
       @seeked="handleSeeked"
+      @error="handleAudioError"
     ></audio>
     
     <!-- 播放列表抽屉 -->
@@ -221,6 +222,8 @@
         @play="handlePlaylistPlay"
         @remove="handleRemoveSong"
         @clear="handleClearPlaylist"
+        @search="searchSong"
+        @artist="openArtist"
       />
 
       <!-- 播放模式右键菜单 -->
@@ -239,8 +242,10 @@
           :song="currentSong"
           :track-transition="trackTransition"
           :lyrics="currentLyrics"
+          :lyrics-interactive="!isLyricPlaceholder"
           :lyric-data="currentLyricData"
           :current-play-time="currentTime"
+          :read-playback-time="getAnimationPlaybackTime"
           :preview-time="seekPreviewTime"
           :duration="duration"
           :is-playing="isPlaying"
@@ -251,6 +256,7 @@
           :quality-preference="qualityPreference"
           :quality-status="qualityStatus"
           :quality-message="qualityFeedback"
+          :quality-switching="loadingQualityChange || Boolean(pendingSongOptions?.qualityChange)"
           @close="closeLyrics"
           @toggle-play="togglePlay"
           @previous="playPrevious"
@@ -258,6 +264,8 @@
           @toggle-play-mode="cyclePlayMode"
           @toggle-favorite="toggleFavorite"
           @seek="handleSeek"
+          @search="searchSong"
+          @artist="openArtist"
           @change-quality="changeQuality"
           @retry-quality="retryQualityChange"
         />

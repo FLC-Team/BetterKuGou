@@ -8,12 +8,13 @@
           <p class="eyebrow">THE ALBUM / 专辑</p>
           <h1 class="page-title">{{ album?.album_name || album?.name || albumName || '专辑' }}</h1>
           <p class="collection-description">一张专辑，一段完整的音乐叙事。</p>
-          <div class="collection-meta"><span>{{ album?.author_name || album?.singername || '未知歌手' }}</span><span v-if="album?.publish_date || album?.pub_time">{{ album.publish_date || album.pub_time }}</span><span>{{ songs.length }} 首歌曲</span></div>
+          <div class="collection-meta"><span><ArtistLinks :song="album" @select="$emit('navigate', 'artist', $event)" /></span><span v-if="album?.publish_date || album?.pub_time">{{ album.publish_date || album.pub_time }}</span><span>{{ songs.length }} 首歌曲</span></div>
 
         </div>
       </header>
       <div class="section-heading"><h2>专辑曲目</h2></div>
 
+      <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
       <div class="song-list" v-if="songs.length">
         <div class="list-header">
           <div class="col-index">#</div>
@@ -22,18 +23,18 @@
           <div class="col-duration">时长</div>
         </div>
         <div v-for="(song, idx) in songs" :key="song.hash || idx" class="song-item" :class="{ playing: !!song.hash && currentSong?.hash === song.hash }" :aria-current="song.hash && currentSong?.hash === song.hash ? 'true' : undefined" @dblclick="$emit('play', song)">
-          <div class="col-index">{{ String(idx + 1).padStart(2, '0') }}</div>
+          <div class="col-index"><button type="button" class="index-play" :aria-label="'播放 ' + getSongName(song.name)" @click.stop="$emit('play', song)" @dblclick.stop>{{ String(idx + 1).padStart(2, '0') }}</button></div>
           <div class="col-title">
             <ArtworkCover :src="song.cover || ''" class="song-cover" />
             <div class="song-info">
               <div class="song-title-line">
-                <button type="button" class="song-name" @click.stop="$emit('play', song)" @dblclick.stop :title="getSongName(song.name)">{{ getSongName(song.name) }}</button>
+                <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="getSongName(song.name)">{{ getSongName(song.name) }}</button>
                 <SongBadges :song="song" />
               </div>
-              <span class="mobile-artist">{{ getSingerNames(song.singerinfo, song) || '未知歌手' }}</span>
+              <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />
             </div>
           </div>
-          <div class="col-artist">{{ getSingerNames(song.singerinfo, song) }}</div>
+          <div class="col-artist"><ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" /></div>
           <div class="col-duration">{{ formatDuration(song.timelen) }}</div>
         </div>
       </div>
@@ -43,6 +44,7 @@
   <p class="empty-text">无法打开专辑</p><p>{{ error }}</p><button type="button" class="retry-btn" @click="load">重试</button>
       </div>
       <div v-else class="empty"><p class="empty-text">暂无专辑曲目</p><p>稍后再来听听，或返回发现更多音乐。</p></div>
+      </Transition>
     </div>
   </div>
 </template>
@@ -50,19 +52,21 @@
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
 import SongBadges from '../components/common/SongBadges.vue'
+import ArtistLinks from '../components/common/ArtistLinks.vue'
+import { getSongArtists } from '../utils/songMetadata.js'
 import { logger } from '../utils/logger.js'
 
 import { getAlbumDetail, getAlbumSongs, getImagesByHash } from '../api/music.js'
 
 export default {
-  components: { ArtworkCover, SongBadges },
+  components: { ArtworkCover, SongBadges, ArtistLinks },
   name: 'AlbumDetailView',
   props: {
     albumId: { type: [String, Number], required: false },
     albumName: { type: String, default: '' },
     currentSong: { type: Object, default: null }
   },
-  emits: ['navigate','play'],
+  emits: ['navigate','play','search'],
   data() {
     return {
       id: this.albumId || null,
@@ -135,10 +139,7 @@ export default {
       return list.map(it => {
         const hash = it.hash || it.Hash || it.filehash || it.FileHash || it.audio_hash
         const cover = it.sizable_cover || it.cover || it.img || it.Image || ''
-        const authors = it.authors || it.singerinfo || []
-        const singerArray = Array.isArray(authors)
-          ? authors.map(a => ({ id: a.id || a.author_id || a.singerid, name: a.name || a.author_name || a.singer_name || a.singername })).filter(a => a.name)
-          : []
+        const singerArray = getSongArtists(it)
         const singername = singerArray.map(a => a.name).join('、') || it.singername || it.SingerName || it.author_name
         const rawName = it.audio_name || it.song_name || it.name || it.filename || it.remark
         const name = rawName || (typeof it.filename === 'string' ? it.filename.split(' - ').slice(1).join(' - ') : '未知歌曲')
@@ -167,13 +168,6 @@ export default {
     getCover(album) {
       const url = album?.sizable_cover || album?.cover || ''
       return typeof url === 'string' ? url.replace('{size}', '400') : ''
-    },
-    getSingerNames(singerinfo, song) {
-      if (Array.isArray(singerinfo) && singerinfo.length) {
-        return singerinfo.map(s => s.name || s.singer_name || s.singername || s.author_name).filter(Boolean).join('、')
-      }
-      if (typeof singerinfo === 'string' && singerinfo.trim()) return singerinfo
-      return song?.singername || song?.author_name || ''
     },
     getSongName(fullName) {
       if (!fullName) return '未知歌曲'

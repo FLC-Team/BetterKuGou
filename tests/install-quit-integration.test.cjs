@@ -50,6 +50,7 @@ function loadMain({ platform = 'win32', packaged = true, startFails = false } = 
         dialog: {}, shell: {}, nativeImage: {}, Menu: {}, Tray: class {}
       }
       if (name === './logger') return logger
+      if (name === './services/playlistCacheService') return { createPlaylistCacheService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/backendService') return { createBackendService: () => ({ stop: async () => {} }) }
       if (name === './services/updateService') return { createUpdateService() {} }
       if (name === './services/installQuitService') return { createInstallQuitService(value) { options = value; return service } }
@@ -99,6 +100,7 @@ test('preparation waits for the ready main page and rejects wrong windows, subfr
   f.api.initializeInstallQuitService()
   assert.equal(f.prepare('not-ready'), false)
   f.ready()
+  const existingCrashListeners = f.main.webContents.listeners('render-process-gone')
   assert.equal(f.prepare('current'), true)
   assert.equal(f.messages.at(-1)[0], 'updates:prepare-install')
   assert.equal(f.messages.at(-1)[1].phase, 'prepare')
@@ -113,7 +115,7 @@ test('preparation waits for the ready main page and rejects wrong windows, subfr
   assert.equal(f.completed.length, 1)
   f.options().onQuit()
   assert.equal(f.app.quitCalls, 1)
-  assert.equal(f.main.webContents.listenerCount('render-process-gone'), 0)
+  assert.deepEqual(f.main.webContents.listeners('render-process-gone'), existingCrashListeners)
   let prevented = false
   f.main.emit('close', { preventDefault() { prevented = true } })
   assert.equal(prevented, false, 'normal installer quit bypasses tray hiding')
@@ -125,6 +127,8 @@ test('main-frame reload, crash, destruction and closed windows cancel saving and
     const f = loadMain()
     f.api.initializeInstallQuitService()
     f.ready()
+    const existingListeners = new Map(['did-start-navigation', 'render-process-gone', 'destroyed']
+      .map(event => [event, f.main.webContents.listeners(event)]))
     f.prepare('current')
     f.main.webContents.emit('did-start-navigation', {}, 'subframe', false, false)
     f.main.webContents.emit('did-start-navigation', {}, 'hash', true, true)
@@ -137,7 +141,7 @@ test('main-frame reload, crash, destruction and closed windows cancel saving and
     assert.equal(f.complete('current').success, false)
     assert.equal(f.completed.length, 0)
     for (const event of ['did-start-navigation', 'render-process-gone', 'destroyed']) {
-      assert.equal(f.main.webContents.listenerCount(event), 0)
+      assert.deepEqual(f.main.webContents.listeners(event), existingListeners.get(event))
     }
     await f.api.performApplicationCleanup()
   }
@@ -147,6 +151,7 @@ test('navigation changing the top frame rejects the old frame even before cancel
   const f = loadMain()
   f.api.initializeInstallQuitService()
   f.ready()
+  const existingNavigationListeners = f.main.webContents.listeners('did-start-navigation')
   f.prepare('first')
   f.main.webContents.mainFrame = {}
   assert.equal(f.complete('first').success, false)
@@ -155,5 +160,5 @@ test('navigation changing the top frame rejects the old frame even before cancel
   assert.equal(f.complete('first').success, false)
   await cleanup
   assert.equal(f.stops(), 1)
-  assert.equal(f.main.webContents.listenerCount('did-start-navigation'), 0)
+  assert.deepEqual(f.main.webContents.listeners('did-start-navigation'), existingNavigationListeners)
 })

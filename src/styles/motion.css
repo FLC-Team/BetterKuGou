@@ -1,0 +1,82 @@
+/* 跨页面交互基线。独立 scale/translate 不覆盖组件自己的 transform。 */
+:root {
+  --ui-motion-fast: 140ms;
+  --ui-motion-normal: 180ms;
+  --ui-motion-ease: cubic-bezier(.2, .7, .2, 1);
+}
+
+:where(button, a[href], [role="button"], input, select, textarea, summary) {
+  transition: color var(--ui-motion-fast), background-color var(--ui-motion-fast), border-color var(--ui-motion-fast), box-shadow var(--ui-motion-fast), outline-color var(--ui-motion-fast), outline-offset var(--ui-motion-fast), opacity var(--ui-motion-fast), scale var(--ui-motion-fast) var(--ui-motion-ease);
+}
+
+:where(button, a[href], [role="button"], summary):not(:disabled, [aria-disabled="true"], [hidden], [inert], [inert] *, [aria-hidden="true"], [aria-hidden="true"] *):focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 16%, transparent);
+}
+
+@media (hover: hover) {
+  :where(button, a[href], [role="button"], summary):not(:disabled, [aria-disabled="true"], [hidden], [inert], [inert] *, [aria-hidden="true"], [aria-hidden="true"] *):hover {
+    scale: 1.025;
+  }
+}
+
+:where(button, a[href], [role="button"], summary):not(:disabled, [aria-disabled="true"], [hidden], [inert], [inert] *, [aria-hidden="true"], [aria-hidden="true"] *):active {
+  scale: .965;
+}
+
+:where(input, select, textarea):not(:disabled, [hidden], [inert], [inert] *):hover {
+  border-color: color-mix(in srgb, var(--color-primary) 60%, var(--color-border));
+}
+
+:where(input, select, textarea):not(:disabled, [hidden], [inert], [inert] *):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 65%, transparent);
+  outline-offset: 2px;
+}
+
+:where(input[type="range"])::-webkit-slider-thumb {
+  transition: scale var(--ui-motion-fast), box-shadow var(--ui-motion-fast);
+}
+:where(input[type="range"]):not(:disabled):is(:hover, :focus-visible)::-webkit-slider-thumb { scale: 1.12; }
+:where(input[type="range"]):not(:disabled):active::-webkit-slider-thumb { scale: 1.2; }
+
+:where(input[type="checkbox"], input[type="radio"]):not(:disabled, [inert], [inert] *):hover { scale: 1.08; }
+:where(input[type="checkbox"], input[type="radio"]):not(:disabled, [inert], [inert] *):active { scale: .93; }
+
+.ui-fade-enter-active, .ui-fade-leave-active,
+.ui-pop-enter-active, .ui-pop-leave-active,
+.ui-list-enter-active, .ui-list-leave-active {
+  /* 仅在显式 Vue 过渡阶段覆盖 scoped 控件自己的 transition 清单。 */
+  transition: opacity var(--ui-motion-normal) var(--ui-motion-ease), translate var(--ui-motion-normal) var(--ui-motion-ease), scale var(--ui-motion-normal) var(--ui-motion-ease), transform var(--ui-motion-normal) var(--ui-motion-ease) !important;
+}
+.ui-fade-enter-from, .ui-fade-leave-to { opacity: 0; translate: 0 6px; }
+.ui-pop-enter-from, .ui-pop-leave-to { opacity: 0; scale: .96; }
+.ui-list-enter-from, .ui-list-leave-to { opacity: 0; translate: 0 8px; }
+.ui-list-move { transition: transform var(--ui-motion-normal) var(--ui-motion-ease); }
+.ui-fade-leave-active, .ui-pop-leave-active, .ui-list-leave-active { pointer-events: none; }
+/* Only opt-in lists remove leaving items from flow, preserving other grid/table layouts. */
+.ui-list-container { position: relative; }
+.ui-list-container > .ui-list-leave-active { position: absolute; }
+
+.loading-spinner.inline-spinner { width: 16px; height: 16px; border-width: 2px; flex: 0 0 16px; vertical-align: middle; }
+
+/* 包括第三方/旧组件的已有动画，保证系统“减少动态效果”贯穿全部窗口内容。 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+  :where(button, a[href], [role="button"], summary):is(:hover, :active) { scale: 1 !important; }
+  :where(input[type="checkbox"], input[type="radio"]):is(:hover, :active) { scale: 1 !important; }
+  .ui-fade-enter-active, .ui-fade-leave-active,
+  .ui-pop-enter-active, .ui-pop-leave-active,
+  .ui-list-enter-active, .ui-list-leave-active {
+    transition-duration: .01ms !important;
+    transition-delay: 0ms !important;
+  }
+  .ui-fade-enter-from, .ui-fade-leave-to, .ui-list-enter-from, .ui-list-leave-to { translate: none; }
+  .ui-pop-enter-from, .ui-pop-leave-to { scale: 1; }
+}

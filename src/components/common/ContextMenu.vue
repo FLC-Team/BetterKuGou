@@ -1,17 +1,24 @@
 <template>
   <teleport to="body">
+    <Transition name="menu" appear>
     <div 
-      v-if="visible" 
+      v-if="visible && !closing"
       ref="menu"
       class="context-menu"
+      role="menu"
+      tabindex="-1"
       :style="menuStyle"
       @click.stop
       @contextmenu.prevent
+      @keydown="handleKey"
     >
       <div 
         v-for="(item, index) in items" 
         :key="index"
         :class="['menu-item', { 'divider': item.divider, 'disabled': item.disabled }]"
+        :role="item.divider ? 'separator' : 'menuitem'"
+        :tabindex="item.divider || item.disabled ? undefined : -1"
+        :aria-disabled="item.disabled || undefined"
         @click="handleItemClick(item)"
       >
         <template v-if="!item.divider">
@@ -31,6 +38,7 @@
         </template>
       </div>
     </div>
+    </Transition>
   </teleport>
 </template>
 
@@ -54,7 +62,8 @@ export default {
   },
   data() {
     return {
-      adjustedPosition: { x: 0, y: 0 }
+      adjustedPosition: { ...this.position },
+      closing: false
     }
   },
   computed: {
@@ -68,14 +77,16 @@ export default {
   watch: {
     visible(newVal) {
       if (newVal) {
+        this.closing = false
         this.$nextTick(() => {
           this.adjustMenuPosition()
         })
-      }
+      } else this.lockMenu()
     },
     position: {
       handler() {
         if (this.visible) {
+          this.closing = false
           this.$nextTick(() => {
             this.adjustMenuPosition()
           })
@@ -88,6 +99,7 @@ export default {
     document.addEventListener('click', this.handleClickOutside)
     window.addEventListener('resize', this.handleClickOutside)
     window.addEventListener('scroll', this.handleClickOutside, true)
+    if (this.visible) this.$nextTick(() => this.adjustMenuPosition())
   },
   beforeUnmount() {
     document.removeEventListener('click', this.handleClickOutside)
@@ -96,16 +108,45 @@ export default {
   },
   methods: {
     handleItemClick(item) {
+      if (this.closing || !this.visible) return
       if (!item.divider && !item.disabled && item.action) {
-        item.action()
+        this.lockMenu()
+        try { item.action() } finally { this.$emit('close') }
+      }
+    },
+    /** Lock the leaving DOM immediately, including programmatic double activation. */
+    lockMenu() {
+      this.closing = true
+      if (this.$refs.menu) this.$refs.menu.inert = true
+    },
+    handleKey(event) {
+      if (this.closing) return
+      if (event.key === 'Escape' || event.key === 'Tab') {
+        if (event.key === 'Escape') event.preventDefault()
+        this.lockMenu()
         this.$emit('close')
+        return
+      }
+      const entries = Array.from(this.$refs.menu?.querySelectorAll('[role="menuitem"]:not([aria-disabled="true"])') || [])
+      const index = entries.indexOf(document.activeElement)
+      if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+        event.preventDefault()
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? entries.length - 1
+          : index < 0 ? (event.key === 'ArrowDown' ? 0 : entries.length - 1)
+            : (index + (event.key === 'ArrowDown' ? 1 : -1) + entries.length) % entries.length
+        entries[next]?.focus()
+      } else if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        document.activeElement?.click()
       }
     },
     handleClickOutside(event) {
+      if (!this.visible || this.closing) return
       // 如果点击的是菜单内部，不关闭
       if (this.$refs.menu && event.target && this.$refs.menu.contains(event.target)) {
         return
       }
+      this.lockMenu()
       this.$emit('close')
     },
     adjustMenuPosition() {
@@ -146,6 +187,8 @@ export default {
       }
       
       this.adjustedPosition = { x, y }
+      menu.inert = false
+      menu.focus({ preventScroll: true })
     }
   }
 }
@@ -162,19 +205,12 @@ export default {
   padding: 4px;
   z-index: 10000;
   backdrop-filter: blur(10px);
-  animation: menuFadeIn 0.15s ease-out;
+  transform-origin: top left;
 }
 
-@keyframes menuFadeIn {
-  from {
-    opacity: 0;
-    transform: scale(0.95) translateY(-5px);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
-}
+.menu-enter-active, .menu-leave-active { transition: opacity .15s ease, transform .15s ease; }
+.menu-enter-from, .menu-leave-to { opacity: 0; transform: scale(.95) translateY(-5px); }
+.menu-leave-active { pointer-events: none; }
 
 .menu-item {
   display: flex;
@@ -189,10 +225,13 @@ export default {
   user-select: none;
 }
 
-.menu-item:not(.divider):not(.disabled):hover {
+.menu-item:not(.divider):not(.disabled):hover,
+.menu-item:not(.divider):not(.disabled):focus-visible {
   background: var(--bg-hover);
   color: var(--text-white);
 }
+.menu-item:focus-visible { outline: 1px solid var(--color-primary); outline-offset: -1px; }
+.menu-item:not(.disabled):not(.divider):active { scale: .97; }
 
 .menu-item.disabled {
   opacity: 0.5;
@@ -231,4 +270,5 @@ export default {
   opacity: 0.5;
   margin-left: auto;
 }
+@media (prefers-reduced-motion: reduce) { .context-menu, .menu-item, .menu-icon { transition-duration: .001ms !important; } }
 </style>

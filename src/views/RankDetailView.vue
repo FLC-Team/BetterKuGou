@@ -14,7 +14,8 @@
       </header>
       <div class="section-heading"><h2>曲目</h2><span>跟随音乐的热度</span></div>
 
-      <div v-if="error && songs.length > 0" class="refresh-error" role="alert"><span>{{ error }}</span><button type="button" class="retry-btn" @click="loadData">重试</button></div>
+      <Transition name="ui-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">      <div v-if="error && songs.length > 0" class="refresh-error" role="alert"><span>{{ error }}</span><button type="button" class="retry-btn" @click="loadData">重试</button></div></Transition>
+      <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
       <div v-if="loading && songs.length === 0" class="loading-container">
         <span class="loading-spinner" role="status" aria-label="加载中"></span>
         <p>加载中...</p>
@@ -64,15 +65,15 @@
             <ArtworkCover :src="song.imgurl || song.album_img || ''" class="song-cover" />
             <div class="song-info">
               <div class="song-title-line">
-                <button type="button" class="song-name" @click.stop="handlePlay(song)" @dblclick.stop :title="song.songname || song.filename || '未知歌曲'">{{ song.songname || song.filename }}</button>
+                <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="song.songname || song.filename || '未知歌曲'">{{ song.songname || song.filename }}</button>
                 <SongBadges :song="song" />
               </div>
-              <button type="button" class="artist-link mobile-artist" @click.stop="goArtist(song)" @dblclick.stop>{{ song.author_name || song.singername || '未知歌手' }}</button>
+              <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />
             </div>
           </div>
 
           <div class="col-artist">
-            <button type="button" class="artist-link" @click.stop="goArtist(song)" @dblclick.stop>{{ song.author_name || song.singername || '未知歌手' }}</button>
+            <ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" />
           </div>
           <div class="col-album">
             <button type="button" class="album-link" @click.stop="goAlbum(song)" @dblclick.stop>{{ song.album_name || song.remark || '-' }}</button>
@@ -87,6 +88,7 @@
             </div>
         </div>
       </div>
+      </Transition>
     </div>
   </div>
 </template>
@@ -94,13 +96,14 @@
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
 import SongBadges from '../components/common/SongBadges.vue'
+import ArtistLinks from '../components/common/ArtistLinks.vue'
 import { logger } from '../utils/logger.js'
 
 import { getRankInfo } from '../api/music.js'
 import { useSettingsStore } from '../stores/settingsStore.js'
 
 export default {
-  components: { ArtworkCover, SongBadges },
+  components: { ArtworkCover, SongBadges, ArtistLinks },
   name: 'RankDetailView',
   props: {
     rankData: {
@@ -112,7 +115,7 @@ export default {
       default: null
     }
   },
-  emits: ['navigate', 'play', 'play-all'],
+  emits: ['navigate', 'play', 'play-all', 'search'],
   setup() {
     const { settings } = useSettingsStore()
     return { settings }
@@ -148,11 +151,6 @@ export default {
       } finally {
         this.loading = false
       }
-    },
-    goArtist(song) {
-      const id = song.AuthorId || song.author_id || song.SingerId || song.singerid || null
-      const name = song.author_name || song.singername || null
-      if (id || name) this.$emit('navigate', 'artist', { id, name })
     },
     goAlbum(song) {
       const id =

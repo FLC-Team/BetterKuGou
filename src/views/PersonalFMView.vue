@@ -9,6 +9,7 @@
         <div class="collection-meta"><span>{{ songs.length }} 首待听歌曲</span><span>为你而选</span></div>
       </header>
 
+      <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
       <div v-if="loading" class="loading-container">
         <span class="loading-spinner" role="status" aria-label="加载中"></span>
         <p>加载中...</p>
@@ -35,12 +36,13 @@
           <button type="button" class="fm-play" @click="handlePlay(song)" :aria-label="'播放 ' + (song.songname || song.filename)">
             <ArtworkCover :src="song.imgurl || song.album_img || ''" class="fm-cover" />
             <span class="fm-play-icon" aria-hidden="true">▶</span>
-            <span class="fm-song-title">{{ song.songname || song.filename }}</span>
           </button>
+          <button type="button" class="fm-song-title" :title="song.songname || song.filename" @click.stop="$emit('search', song)" @dblclick.stop>{{ song.songname || song.filename }}</button>
           <SongBadges :song="song" />
-          <button type="button" class="artist-link" @click="goArtist(song)">{{ song.singername || song.author_name || '未知歌手' }}</button>
+          <ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" />
         </article>
       </div>
+      </Transition>
     </div>
   </div>
 </template>
@@ -48,15 +50,16 @@
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
 import SongBadges from '../components/common/SongBadges.vue'
+import ArtistLinks from '../components/common/ArtistLinks.vue'
 import { logger } from '../utils/logger.js'
 
 import { getPersonalFM } from '../api/music.js'
 import { useSettingsStore } from '../stores/settingsStore.js'
 
 export default {
-  components: { ArtworkCover, SongBadges },
+  components: { ArtworkCover, SongBadges, ArtistLinks },
   name: 'PersonalFMView',
-  emits: ['navigate', 'play'],
+  emits: ['navigate', 'play', 'search'],
   props: {
     currentSong: {
       type: Object,
@@ -97,12 +100,6 @@ export default {
         this.loading = false
       }
     },
-    goArtist(song) {
-      const id = song.SingerId || song.singerid || song.AuthorId || song.author_id || null
-      const name = song.singername || song.author_name || null
-      if (id || name) this.$emit('navigate', 'artist', { id, name })
-    },
-    
     handleBack() {
       this.$emit('navigate', 'home')
     },

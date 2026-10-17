@@ -26,7 +26,7 @@
             <span class="record-disc"><span class="record-label">BK<br /><small>DAILY SOUNDS</small></span></span>
             <span class="record-sleeve">
               <span class="sleeve-pattern"></span>
-              <img v-if="dailyCover && !failedImages[fixImgUrl(dailyCover, 400)]" :src="fixImgUrl(dailyCover, 400)" alt="" @error="markImageFailed(dailyCover, 400)" />
+              <ArtworkCover v-if="dailyCover && !failedImages[fixImgUrl(dailyCover, 400)]" image-only :src="fixImgUrl(dailyCover, 400)" loading="eager" @error="markImageFailed(dailyCover, 400)" />
               <span v-else class="sleeve-lettering"><small>THE DAILY</small><strong>好音乐<br />日常听。</strong><span>SELECTED FOR YOU</span></span>
               <span class="sleeve-caption">DAILY MIX <span>↗</span></span>
             </span>
@@ -58,6 +58,7 @@
           </div>
         </header>
 
+        <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
         <div v-if="aiLoading && !aiRecommendList.length" class="recommend-grid skeleton-grid" role="status" aria-label="正在加载推荐歌曲">
           <div v-for="item in 6" :key="item" class="skeleton-card" aria-hidden="true"><div class="skeleton-cover"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
         </div>
@@ -66,20 +67,21 @@
           <div><h3>好音乐，从你的喜欢开始</h3><p>收藏喜欢的歌曲，让 AI 为你发现更多心动旋律。</p></div>
           <button class="text-action empty-action" type="button" @click="handleDailyRecommend">先听每日推荐 <span aria-hidden="true">↗</span></button>
         </div>
-        <div v-else id="recommend-grid" class="recommend-grid">
+        <TransitionGroup v-else ref="recommendGrid" id="recommend-grid" v-content-size="visibleRecommendations" tag="div" name="ui-list" class="recommend-grid ui-list-container" @before-leave="freezeGridLeave" @leave-cancelled="clearGridLeave">
           <article v-for="song in visibleRecommendations" :key="song.hash" class="song-card">
             <button class="song-play" type="button" :aria-label="`播放 ${song.songname || song.filename || song.name || '歌曲'}`" @click="handleSongClick(song)">
               <span class="song-cover">
                 <span class="cover-placeholder" aria-hidden="true"><span>♪</span></span>
-                <img v-if="song.imgurl && !failedImages[fixImgUrl(song.imgurl, 400)]" :src="fixImgUrl(song.imgurl, 400)" alt="" loading="lazy" @error="markImageFailed(song.imgurl, 400)" />
+                <ArtworkCover v-if="song.imgurl && !failedImages[fixImgUrl(song.imgurl, 400)]" image-only :src="fixImgUrl(song.imgurl, 400)" loading="lazy" @error="markImageFailed(song.imgurl, 400)" />
                 <span class="play-overlay" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m9 5 11 7-11 7z" /></svg></span>
               </span>
-              <span class="song-name" :title="song.songname || song.filename || song.name">{{ song.songname || song.filename || song.name || '未知歌曲' }}</span>
             </button>
+            <button class="song-name" type="button" :title="song.songname || song.filename || song.name" @click.stop="$emit('search', song)" @dblclick.stop>{{ song.songname || song.filename || song.name || '未知歌曲' }}</button>
             <SongBadges :song="song" />
-            <button class="artist-link" type="button" :title="song.singername || song.author_name" :disabled="!song.singername && !song.author_name" @click.stop="goArtistFromAISong(song)">{{ song.singername || song.author_name || '未知歌手' }}</button>
+            <ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" />
           </article>
-        </div>
+        </TransitionGroup>
+        </Transition>
       </section>
 
       <section class="rank-section" aria-labelledby="rank-title" :aria-busy="rankLoading">
@@ -87,22 +89,27 @@
           <div><p class="eyebrow">ON THE CHARTS</p><h2 id="rank-title" class="section-title">此刻流行<span class="section-caption">好音乐，正在被听见</span></h2></div>
           <button v-if="rankList.length > 4" class="rank-toggle text-action" type="button" :aria-expanded="showRankList" aria-controls="rank-grid" @click="toggleRankList">{{ showRankList ? '收起榜单' : '全部榜单' }} <span aria-hidden="true">{{ showRankList ? '−' : '↗' }}</span></button>
         </header>
+        <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
         <div v-if="rankLoading && !rankList.length" class="rank-empty" role="status"><span class="loading-spinner" aria-hidden="true"></span> 正在加载榜单…</div>
         <div v-else-if="!rankList.length" class="rank-empty"><span>暂时没有榜单，稍后再来听听。</span><button class="text-action" type="button" @click="loadRankList">重新加载 <span aria-hidden="true">↗</span></button></div>
-        <div v-else id="rank-grid" class="rank-grid">
+        <TransitionGroup v-else ref="rankGrid" id="rank-grid" v-content-size="visibleRanks" tag="div" name="ui-list" class="rank-grid ui-list-container" @before-leave="freezeGridLeave" @leave-cancelled="clearGridLeave">
           <button v-for="(rank, index) in visibleRanks" :key="rank.rankid" class="rank-item" type="button" @click="handleRankClick(rank)">
-            <span class="rank-cover"><span aria-hidden="true">{{ String(index + 1).padStart(2, '0') }}</span><img v-if="rank.imgurl && !failedImages[fixImgUrl(rank.imgurl)]" :src="fixImgUrl(rank.imgurl)" alt="" loading="lazy" @error="markImageFailed(rank.imgurl)" /></span>
+            <span class="rank-cover"><span aria-hidden="true">{{ String(index + 1).padStart(2, '0') }}</span><ArtworkCover v-if="rank.imgurl && !failedImages[fixImgUrl(rank.imgurl)]" image-only :src="fixImgUrl(rank.imgurl)" loading="lazy" @error="markImageFailed(rank.imgurl)" /></span>
             <span class="rank-info"><span class="rank-name">{{ rank.rankname }}</span><span class="rank-description">{{ rank.intro || '发现榜单里的热门旋律' }}</span></span>
             <svg class="rank-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
           </button>
-        </div>
+        </TransitionGroup>
+        </Transition>
       </section>
       <footer class="home-footer"><span></span>音乐，让日常多一点喜欢<span></span></footer>
     </div>
   </div>
 </template>
 <script>
+import { contentSize, freezeGridLeave, clearGridLeave, setContentSizeActive } from './logic/layoutMotion.js'
 import SongBadges from '../components/common/SongBadges.vue'
+import ArtistLinks from '../components/common/ArtistLinks.vue'
+import ArtworkCover from '../components/common/ArtworkCover.vue'
 import { logger } from '../utils/logger.js'
 
 import { 
@@ -121,7 +128,9 @@ function getAccountIdentity() {
 
 export default {
   name: 'HomeView',
-  components: { SongBadges },
+  directives: { contentSize },
+  emits: ['navigate', 'play', 'search'],
+  components: { SongBadges, ArtistLinks, ArtworkCover },
   props: {
     favoritesRevision: { type: Number, default: 0 }
   },
@@ -171,13 +180,21 @@ export default {
     this.loadData()
   },
   activated() {
+    setContentSizeActive(this.$refs?.recommendGrid, true)
+    setContentSizeActive(this.$refs?.rankGrid, true)
     if (!this.fmLoaded) this.loadPersonalFM()
     if (!this.rankLoaded) this.loadRankList()
     if (this.dailyLoadedDate !== new Date().toDateString()) {
       this.loadDailyRecommend()
     }
   },
+  deactivated() {
+    setContentSizeActive(this.$refs?.recommendGrid, false)
+    setContentSizeActive(this.$refs?.rankGrid, false)
+  },
   beforeUnmount() {
+    setContentSizeActive(this.$refs?.recommendGrid, false)
+    setContentSizeActive(this.$refs?.rankGrid, false)
     this.isDisposed = true
   },
   watch: {
@@ -188,6 +205,8 @@ export default {
     }
   },
   methods: {
+    freezeGridLeave,
+    clearGridLeave,
     // 缓存页可接收在途响应；账号变化或真正卸载后不再写回旧数据。
     isCurrentHomeRequest() {
       return !this.isDisposed && this.requestIdentity === getAccountIdentity()
@@ -407,12 +426,6 @@ export default {
         timelen: song.duration || song.time_length || song.timelen
       }
       this.$emit('play', normalizedSong)
-    }
-    ,
-    goArtistFromAISong(song) {
-      const id = song.SingerId || song.singerid || song.AuthorId || song.author_id || null
-      const name = song.singername || song.author_name || null
-      if (id || name) this.$emit('navigate', 'artist', { id, name })
     }
   }
 }

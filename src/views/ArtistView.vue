@@ -1,7 +1,9 @@
 <template>
   <div class="artist-view list-page">
     <div class="list-content">
-      <template v-if="artist">
+      <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
+      <div v-if="artist" key="artist-content">
+        <div v-if="errorMessage" class="refresh-error" role="alert"><span>{{ errorMessage }}</span><button type="button" :disabled="initialLoading" @click="loadInitial">重试</button></div>
         <header class="collection-hero">
           <ArtworkCover :src="getAvatar(artist)" class="collection-art" mark="♪" />
           <div class="collection-copy">
@@ -9,18 +11,22 @@
             <h1 class="page-title">{{ artist.author_name || artist.name }}</h1>
             <p class="collection-description">从熟悉的代表作，到值得珍藏的每一首。</p>
             <div class="collection-meta"><span>歌手</span><span v-if="artist.fans_cnt">{{ formatNumber(artist.fans_cnt) }} 位粉丝</span></div>
-            <div class="collection-actions"><button type="button" class="action-btn" :aria-pressed="followed" @click="toggleFollow">{{ followed ? '已关注' : '＋ 关注歌手' }}</button></div>
+            <div class="collection-actions"><button type="button" class="action-btn" :aria-pressed="followed" :disabled="followPending" :aria-busy="followPending" @click="toggleFollow"><span v-if="followPending" class="loading-spinner inline-spinner" aria-hidden="true"></span>{{ followPending ? '正在更新…' : followed ? '已关注' : '＋ 关注歌手' }}</button></div>
+            <Transition name="ui-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><p v-if="followMessage" class="follow-message" :class="{ 'is-error': followError }" :role="followError ? 'alert' : 'status'">{{ followMessage }}</p></Transition>
           </div>
         </header>
 
         <!-- Tabs -->
-        <div class="tabs">
+        <div class="tabs" :style="{ '--active-tab': ['hot', 'songs', 'albums', 'about'].indexOf(activeTab) }">
+          <span class="tab-indicator" aria-hidden="true"></span>
           <button type="button" :class="{active: activeTab==='hot'}" :aria-pressed="activeTab==='hot'" @click="activeTab='hot'">热门歌曲</button>
           <button type="button" :class="{active: activeTab==='songs'}" :aria-pressed="activeTab==='songs'" @click="activeTab='songs'">单曲</button>
           <button type="button" :class="{active: activeTab==='albums'}" :aria-pressed="activeTab==='albums'" @click="activeTab='albums'">专辑</button>
           <button type="button" :class="{active: activeTab==='about'}" :aria-pressed="activeTab==='about'" @click="activeTab='about'">资料</button>
         </div>
 
+        <Transition name="ui-fade" mode="out-in" @after-enter="resumeActiveTab" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
+        <div :key="activeTab" class="artist-tab-panel">
         <!-- 热门歌曲（10 首） -->
         <div v-if="activeTab==='hot'" class="song-list">
           <div class="list-header">
@@ -39,19 +45,17 @@
               <ArtworkCover :src="song.cover || ''" class="song-cover" />
               <div class="song-info">
                 <div class="song-title-line">
-                  <button type="button" class="song-name" @click.stop="play(song)" @dblclick.stop :title="getSongName(song.name)">
+                  <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="getSongName(song.name)">
                     {{ getSongName(song.name) }}
                     <span v-if="song.relate_goods && song.relate_goods.some(g => g.level >= 5)" class="quality-badge">SQ</span>
                   </button>
                   <SongBadges :song="song" />
                 </div>
-                <button type="button" class="artist-link mobile-artist" @click.stop="goArtist(song)" @dblclick.stop>{{ getSingerNames(song.singerinfo, song) || artist.author_name || '未知歌手' }}</button>
+                <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />
               </div>
             </div>
             <div class="col-artist">
-              <button type="button" class="artist-link" @click.stop="goArtist(song)" @dblclick.stop>
-                {{ getSingerNames(song.singerinfo, song) || artist.author_name || '-' }}
-              </button>
+              <ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" />
             </div>
             <div class="col-album">
               <button type="button" class="album-link" @click.stop="goAlbum(song)" @dblclick.stop>{{ song.albuminfo?.name || song.remark || '-' }}</button>
@@ -65,8 +69,8 @@
                 </button>
               </div>
           </div>
-          <div v-if="initialLoadComplete && hotSongs.length === 0" class="empty"><p>暂无热门歌曲</p></div>
-          <div v-else-if="!initialLoadComplete" class="loading-container"><span class="loading-spinner" role="status" aria-label="加载中"></span><p>正在加载热门歌曲…</p></div>
+          <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><div v-if="initialLoadComplete && hotSongs.length === 0" class="empty"><p>暂无热门歌曲</p></div>
+          <div v-else-if="!initialLoadComplete" class="loading-container"><span class="loading-spinner" role="status" aria-label="加载中"></span><p>正在加载热门歌曲…</p></div></Transition>
         </div>
 
         <!-- 单曲（无限滚动） -->
@@ -87,19 +91,17 @@
               <ArtworkCover :src="song.cover || ''" class="song-cover" />
               <div class="song-info">
                 <div class="song-title-line">
-                  <button type="button" class="song-name" @click.stop="play(song)" @dblclick.stop :title="getSongName(song.name)">
+                  <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="getSongName(song.name)">
                     {{ getSongName(song.name) }}
                     <span v-if="song.relate_goods && song.relate_goods.some(g => g.level >= 5)" class="quality-badge">SQ</span>
                   </button>
                   <SongBadges :song="song" />
                 </div>
-                <button type="button" class="artist-link mobile-artist" @click.stop="goArtist(song)" @dblclick.stop>{{ getSingerNames(song.singerinfo, song) || artist.author_name || '未知歌手' }}</button>
+                <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />
               </div>
             </div>
             <div class="col-artist">
-              <button type="button" class="artist-link" @click.stop="goArtist(song)" @dblclick.stop>
-                {{ getSingerNames(song.singerinfo, song) || artist.author_name || '-' }}
-              </button>
+              <ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" />
             </div>
             <div class="col-album">
               <button type="button" class="album-link" @click.stop="goAlbum(song)" @dblclick.stop>{{ song.albuminfo?.name || song.remark || '-' }}</button>
@@ -114,8 +116,11 @@
               </div>
           </div>
           <div ref="sentinel" class="sentinel" />
-          <div v-if="loadingMore" class="loading" role="status">加载中...</div>
-          <div v-else-if="songs.length === 0" class="empty"><p>暂无单曲</p></div>
+          <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
+            <div v-if="loadingMore" class="artist-loading" role="status"><span class="loading-spinner inline-spinner" aria-hidden="true"></span>加载中…</div>
+            <div v-else-if="songsError" class="refresh-error" role="alert"><span>{{ songsError }}</span><button type="button" class="retry-btn" @click="loadMore">重试</button></div>
+            <div v-else-if="songs.length === 0" class="empty"><p>暂无单曲</p></div>
+          </Transition>
         </div>
 
         <!-- 专辑列表 -->
@@ -127,23 +132,30 @@
               <div class="album-date">{{ al.publish_date || '' }}</div>
             </div>
           </button>
-          <div v-if="albumsLoading" class="loading" role="status">加载中...</div>
-          <div v-else-if="albums.length === 0" class="empty"><p>暂无专辑</p></div>
+          <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
+            <div v-if="albumsLoading" class="artist-loading" role="status"><span class="loading-spinner inline-spinner" aria-hidden="true"></span>加载中…</div>
+            <div v-else-if="albumsError" class="refresh-error" role="alert"><span>{{ albumsError }}</span><button type="button" class="retry-btn" @click="loadAlbums">重试</button></div>
+            <div v-else-if="albums.length === 0" class="empty"><p>暂无专辑</p></div>
+          </Transition>
         </div>
 
         <!-- 资料 -->
         <div v-else class="about">
           <pre class="about-text">{{ pretty(artist) }}</pre>
         </div>
-      </template>
+        </div>
+        </Transition>
+      </div>
       <div v-else-if="initialLoadComplete" class="error" role="alert">
       <p class="empty-text">暂时无法打开歌手资料</p>
-      <button type="button" class="retry-btn" @click="$emit('navigate', 'home')">返回发现</button>
+      <p>{{ errorMessage }}</p>
+      <button type="button" class="retry-btn" :disabled="initialLoading" @click="loadInitial">{{ initialLoading ? '正在重试…' : '重试' }}</button>
     </div>
       <div v-else class="loading-container">
       <span class="loading-spinner" role="status" aria-label="加载中"></span>
       <p>加载中...</p>
     </div>
+      </Transition>
     </div>
   </div>
 </template>

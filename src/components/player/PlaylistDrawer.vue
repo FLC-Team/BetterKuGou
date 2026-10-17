@@ -1,7 +1,7 @@
 <template>
   <div class="playlist-drawer" :class="{ 'show': visible }" @click.self="closeDrawer">
     <!-- 抽屉内容 -->
-    <div ref="drawerContent" class="drawer-content" :inert="!visible" :aria-hidden="!visible" @click.stop @keydown.esc.stop="closeDrawer">
+    <Transition name="drawer-panel" appear @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')"><div v-if="visible" ref="drawerContent" class="drawer-content" :inert="!visible" :aria-hidden="!visible" @click.stop @keydown.esc.stop="closeDrawer">
       <!-- 头部 -->
       <div class="drawer-header">
         <h3>播放列表</h3>
@@ -14,7 +14,7 @@
       </div>
 
       <!-- 播放列表 -->
-      <div v-if="visible" class="playlist-content">
+      <div class="playlist-content">
         <TransitionGroup 
           name="playlist-item" 
           tag="div" 
@@ -30,21 +30,21 @@
             @contextmenu.prevent.stop="showContextMenu($event, song, index)"
           >
           <!-- 播放状态指示器 -->
-          <div class="play-indicator">
+          <button type="button" class="play-indicator" :aria-label="'播放 ' + getSongName(song)" @click.stop="playSong(song)" @dblclick.stop>
             <svg v-if="isCurrentSong(song) && isPlaying" 
                  viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor">
               <path d="M304 176h80v672h-80zm336 0h80v672h-80z"/>
             </svg>
             <span v-else class="song-index">{{ index + 1 }}</span>
-          </div>
+          </button>
 
           <!-- 歌曲信息 -->
           <div class="song-info">
             <div class="song-title-line">
-              <div class="song-name">{{ getSongName(song) }}</div>
+              <button type="button" class="song-name" :title="getSongName(song)" @click.stop="$emit('search', song)" @dblclick.stop>{{ getSongName(song) }}</button>
               <SongBadges :song="song" />
             </div>
-            <div class="song-artist">{{ getSingerNames(song) }}</div>
+            <div class="song-artist"><ArtistLinks :song="song" @select="$emit('artist', $event)" /></div>
           </div>
 
           <!-- 歌曲时长 -->
@@ -89,11 +89,11 @@
           {{ showClearConfirm ? '确认清除' : '清空列表' }}
         </button>
       </div>
-    </div>
+    </div></Transition>
 
-    <button v-if="!visible" ref="restoreButton" type="button" class="drawer-restore-button" aria-label="展开播放列表" title="展开播放列表" aria-expanded="false" @click="$emit('open')">
+    <Transition name="drawer-restore" @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')"><button v-if="!visible" ref="restoreButton" type="button" class="drawer-restore-button" aria-label="展开播放列表" title="展开播放列表" aria-expanded="false" @click="$emit('open')">
       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 5-7 7 7 7" /></svg>
-    </button>
+    </button></Transition>
 
     <!-- 右键菜单 -->
     <ContextMenu
@@ -111,13 +111,16 @@ import { logger } from '../../utils/logger.js'
 import { TransitionGroup } from 'vue'
 import ContextMenu from '../common/ContextMenu.vue'
 import SongBadges from '../common/SongBadges.vue'
+import ArtistLinks from '../common/ArtistLinks.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 
 export default {
   name: 'PlaylistDrawer',
+  emits: ['open', 'close', 'play', 'remove', 'clear', 'search', 'artist'],
   components: {
     ContextMenu,
     SongBadges,
+    ArtistLinks,
     TransitionGroup
   },
   props: {
@@ -405,41 +408,6 @@ export default {
       return '未知歌曲'
     },
     
-    // 获取歌手名称
-    getSingerNames(song) {
-      if (!song) return '未知歌手'
-      
-      // 尝试从 singerinfo 数组获取
-      if (song.singerinfo && Array.isArray(song.singerinfo) && song.singerinfo.length > 0) {
-        const names = song.singerinfo.map(s => {
-          if (typeof s === 'object' && s !== null) {
-            return s.name || s.singer_name || s.singername || s.author_name
-          }
-          return String(s)
-        }).filter(name => name && name.trim() && name !== '[object Object]')
-        
-        if (names.length > 0) {
-          return names.join('、')
-        }
-      }
-      
-      // 备用字段
-      if (song.singername) {
-        return song.singername
-      }
-      
-      if (song.author) {
-        return song.author
-      }
-      
-      // 从 name 字段提取(格式: "歌手 - 歌名")
-      if (song.name && song.name.includes(' - ')) {
-        return song.name.split(' - ')[0]
-      }
-      
-      return '未知歌手'
-    },
-    
     // 格式化时长
     formatDuration(duration) {
       if (!duration || duration <= 0) {
@@ -464,12 +432,13 @@ export default {
   z-index: 1000;
   pointer-events: none;
   background: transparent;
+  transition: background-color 0.3s ease;
 }
 
 .playlist-drawer.show {
   pointer-events: auto;
   background: var(--playlist-overlay); /* 半透明遮罩背景 */
-  animation: fadeIn 0.3s ease;
+
 }
 
 @keyframes fadeIn {
@@ -491,13 +460,14 @@ export default {
   border-right: none;
   display: flex;
   flex-direction: column;
-  transform: translateX(100%);
-  transition: transform 0.3s ease;
-}
-
-.playlist-drawer.show .drawer-content {
   transform: translateX(0);
 }
+
+.drawer-panel-enter-active, .drawer-panel-leave-active { transition: transform 0.3s ease; }
+.drawer-panel-enter-from, .drawer-panel-leave-to { transform: translateX(100%); }
+.drawer-panel-leave-active { pointer-events: none; }
+.drawer-restore-enter-active, .drawer-restore-leave-active { transition: opacity 180ms ease, translate 180ms ease; }
+.drawer-restore-enter-from, .drawer-restore-leave-to { opacity: 0; translate: 100% 0; }
 
 .drawer-restore-button {
   position: fixed;
@@ -517,13 +487,14 @@ export default {
   box-shadow: var(--shadow-sidebar);
   pointer-events: auto;
   cursor: pointer;
+  transition: color 150ms ease, background-color 150ms ease, scale 100ms ease;
 }
 .drawer-restore-button:hover { color: var(--color-primary); }
 .drawer-restore-button:focus-visible, .close-btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -3px; }
 
 @media (prefers-reduced-motion: reduce) {
-  .drawer-content { transition: none; }
-  .playlist-drawer.show { animation: none; }
+  .playlist-drawer, .drawer-content, .drawer-panel-enter-active, .drawer-panel-leave-active, .drawer-restore-enter-active, .drawer-restore-leave-active { transition: none; }
+  .playlist-drawer *, .playlist-item-enter-active, .playlist-item-leave-active, .playlist-item-move { animation: none !important; transition-duration: 0s !important; }
 }
 
 /* 头部 */
@@ -598,6 +569,9 @@ export default {
 
 .play-indicator {
   width: 20px;
+  min-height: 28px;
+  color: inherit;
+  border-radius: 3px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -625,7 +599,12 @@ export default {
   text-overflow: ellipsis;
   white-space: nowrap;
   margin-bottom: 4px;
+  text-align: left;
+  border-radius: 3px;
 }
+
+.song-name:hover, .play-indicator:hover { color: var(--color-primary); }
+.song-name:focus-visible, .play-indicator:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
 
 .song-title-line { display: flex; align-items: center; gap: 7px; min-width: 0; margin-bottom: 4px; }
 .song-title-line > .song-name { min-width: 0; margin-bottom: 0; }
@@ -633,9 +612,6 @@ export default {
 .song-artist {
   font-size: var(--font-size-xs);
   color: var(--color-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .song-duration {

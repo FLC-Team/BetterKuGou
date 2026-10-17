@@ -1,9 +1,9 @@
 // 普通音质来自本地 /song/url 协议；魔法音乐和蝰蛇音效不属于此列表。
 export const PLAYBACK_QUALITY_OPTIONS = Object.freeze([
-  { value: '128', label: '标准 128 kbps' },
-  { value: '320', label: '高品 320 kbps' },
-  { value: 'flac', label: '无损 FLAC' },
-  { value: 'high', label: '无损 HIGH' }
+  { value: '128', label: '标准 128 kbps', name: '标准', detail: '128 kbps', shortLabel: '128K' },
+  { value: '320', label: '高品 320 kbps', name: '高品', detail: '320 kbps', shortLabel: '320K' },
+  { value: 'flac', label: '无损 FLAC', name: '无损', detail: 'FLAC', shortLabel: 'FLAC' },
+  { value: 'high', label: '无损 HIGH', name: '无损', detail: 'HIGH', shortLabel: 'HIGH' }
 ])
 
 export function normalizePlaybackQuality(value) {

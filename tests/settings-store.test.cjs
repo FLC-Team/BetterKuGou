@@ -52,12 +52,12 @@ test('desktop lyric preferences supplement old settings and reject invalid displ
   const fixture = createStore()
   await fixture.store.initSettingsStore(fixture.app)
   assert.equal(fixture.store.getSettings().playback.showTranslation, true)
-  assert.deepEqual(JSON.parse(JSON.stringify(fixture.store.getSettings().desktopLyrics)), { fontSize: 'medium', theme: 'classic', locked: false })
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.store.getSettings().desktopLyrics)), { fontSize: 'medium', theme: 'classic', locked: false, bounds: null })
   await fixture.store.setSettings({ desktopLyrics: { fontSize: 'large', theme: 'minimal', locked: true } })
-  assert.deepEqual(JSON.parse(JSON.stringify(fixture.store.getSettings().desktopLyrics)), { fontSize: 'large', theme: 'minimal', locked: true })
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.store.getSettings().desktopLyrics)), { fontSize: 'large', theme: 'minimal', locked: true, bounds: null })
   await fixture.store.setSettings({ desktopLyrics: { fontSize: 900, theme: 'arbitrary-css', locked: 'false' } })
-  assert.deepEqual(JSON.parse(JSON.stringify(fixture.store.getSettings().desktopLyrics)), { fontSize: 'medium', theme: 'classic', locked: false })
-  assert.deepEqual(JSON.parse(fixture.files.get(fixture.settingsPath)).desktopLyrics, { fontSize: 'medium', theme: 'classic', locked: false })
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.store.getSettings().desktopLyrics)), { fontSize: 'medium', theme: 'classic', locked: false, bounds: null })
+  assert.deepEqual(JSON.parse(fixture.files.get(fixture.settingsPath)).desktopLyrics, { fontSize: 'medium', theme: 'classic', locked: false, bounds: null })
   for (const playback of [null, 'invalid', false, [], 1]) {
     await fixture.store.setSettings({ playback })
     assert.equal(fixture.store.getSettings().playback.showTranslation, true)
@@ -66,6 +66,40 @@ test('desktop lyric preferences supplement old settings and reject invalid displ
   assert.equal(fixture.store.getSettings().playback.showTranslation, false)
   await fixture.store.setSettings({ playback: { showTranslation: 'false' } })
   assert.equal(fixture.store.getSettings().playback.showTranslation, true)
+})
+
+test('desktop geometry persists negative monitor coordinates and rejects malformed imported bounds', async () => {
+  const { store, app } = createStore()
+  await store.initSettingsStore(app)
+  const bounds = { x: -1500, y: 80, width: 900, height: 220 }
+  await store.setSettings({ desktopLyrics: { bounds } })
+  await store.setSettings({ desktopLyrics: { fontSize: 'large' } })
+  assert.deepEqual(JSON.parse(JSON.stringify(store.getSettings().desktopLyrics.bounds)), bounds)
+  await store.overwriteSettings({ desktopLyrics: { bounds: { x: 0, y: 0, width: 20, height: 10 } } })
+  assert.deepEqual(JSON.parse(JSON.stringify(store.getSettings().desktopLyrics.bounds)), { x: 0, y: 0, width: 420, height: 180 })
+  for (const invalid of [null, {}, { x: '1', y: 2, width: 800, height: 200 }, { x: 0, y: 0, width: NaN, height: 200 }]) {
+    await store.overwriteSettings({ desktopLyrics: { bounds: invalid } })
+    assert.equal(store.getSettings().desktopLyrics.bounds, null)
+  }
+})
+
+test('offline cache defaults and imported controls are normalized without changing reserved paths', async () => {
+  const { store, app } = createStore()
+  await store.initSettingsStore(app)
+  assert.equal(store.getSettings().download.offlinePlaylistCacheEnabled, true)
+  assert.equal(store.getSettings().download.cacheSizeIndex, 0)
+  assert.equal(store.getSettings().download.concurrentDownloads, 3)
+  await store.setSettings({ download: { offlinePlaylistCacheEnabled: false, cacheSizeIndex: 5, concurrentDownloads: 10, cachePath: '/saved-reserved-cache' } })
+  assert.equal(store.getSettings().download.offlinePlaylistCacheEnabled, false)
+  assert.equal(store.getSettings().download.cacheSizeIndex, 5)
+  assert.equal(store.getSettings().download.concurrentDownloads, 10)
+  await store.setSettings({ download: { offlinePlaylistCacheEnabled: 'false', cacheSizeIndex: 100, concurrentDownloads: 20 } })
+  assert.equal(store.getSettings().download.offlinePlaylistCacheEnabled, true)
+  assert.equal(store.getSettings().download.cacheSizeIndex, 0)
+  assert.equal(store.getSettings().download.concurrentDownloads, 10)
+  assert.equal(store.getSettings().download.cachePath, '/saved-reserved-cache')
+  await store.setSettings({ download: null })
+  assert.equal(store.getSettings().download.concurrentDownloads, 3)
 })
 
 test('failed settings writes preserve the committed cache and later transactions still work', async () => {

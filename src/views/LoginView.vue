@@ -9,6 +9,8 @@
           v-for="tab in tabs" 
           :key="tab.id"
           :class="['tab-btn', { active: currentTab === tab.id }]"
+          :disabled="loginFeedback.kind === 'success'"
+          :aria-pressed="currentTab === tab.id"
           @click="currentTab = tab.id"
         >
           {{ tab.name }}
@@ -18,7 +20,7 @@
       <!-- 登录表单区域 -->
       <div class="login-form">
         <!-- 手机号登录 -->
-        <div v-if="currentTab === 'phone'" class="form-content">
+        <div v-if="currentTab === 'phone'" class="form-content" :aria-busy="phoneLoading">
           <div class="form-group">
             <label class="form-label">手机号</label>
             <input 
@@ -41,20 +43,23 @@
               />
               <button 
                 class="btn btn-secondary captcha-btn"
-                :disabled="captchaCountdown > 0 || captchaLoading"
+                :disabled="captchaCountdown > 0 || captchaLoading || loginFeedback.kind === 'success'"
+                :aria-busy="captchaLoading"
                 @click="sendCaptcha"
               >
-                {{ captchaCountdown > 0 ? `${captchaCountdown}s` : '获取验证码' }}
+                <span v-if="captchaLoading" class="loading-spinner inline-spinner" aria-hidden="true"></span>
+                {{ captchaLoading ? '发送中…' : captchaCountdown > 0 ? `${captchaCountdown}s` : '获取验证码' }}
               </button>
             </div>
           </div>
-          <button class="btn btn-primary login-submit" @click="handlePhoneLogin">
-            登录
+          <button type="button" class="btn btn-primary login-submit" :disabled="phoneLoading || loginFeedback.kind === 'success'" :aria-busy="phoneLoading" @click="handlePhoneLogin">
+            <span v-if="phoneLoading" class="loading-spinner inline-spinner" aria-hidden="true"></span>
+            {{ phoneLoading ? '正在登录…' : loginFeedback.kind === 'success' ? '登录成功' : '登录' }}
           </button>
         </div>
 
         <!-- 账号登录 -->
-        <div v-if="currentTab === 'account'" class="form-content">
+        <div v-if="currentTab === 'account'" class="form-content" :aria-busy="accountLoading">
           <div class="form-group">
             <label class="form-label">账号</label>
             <input 
@@ -73,14 +78,16 @@
               placeholder="请输入密码"
             />
           </div>
-          <button class="btn btn-primary login-submit" @click="handleAccountLogin">
-            登录
+          <button type="button" class="btn btn-primary login-submit" :disabled="accountLoading || loginFeedback.kind === 'success'" :aria-busy="accountLoading" @click="handleAccountLogin">
+            <span v-if="accountLoading" class="loading-spinner inline-spinner" aria-hidden="true"></span>
+            {{ accountLoading ? '正在登录…' : loginFeedback.kind === 'success' ? '登录成功' : '登录' }}
           </button>
         </div>
 
         <!-- 扫码登录 -->
         <div v-if="currentTab === 'qrcode'" class="form-content qrcode-content">
           <div class="qrcode-box" :class="{ 'qrcode-error': qrcodeStatus === 'error' || qrcodeStatus === 'expired' }">
+            <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
             <!-- 二维码图片 -->
             <div v-if="qrcodeUrl && qrcodeStatus === 'waiting'" class="qrcode-image">
               <img :src="qrcodeUrl" alt="二维码" />
@@ -88,19 +95,19 @@
             
             <!-- 加载中 -->
             <div v-else-if="qrcodeLoading" class="qrcode-loading">
-              <div class="loading"></div>
+              <span class="loading-spinner" role="status" aria-label="正在生成二维码"></span>
               <p>正在生成二维码...</p>
             </div>
             
             <!-- 加载失败 -->
-            <div v-else-if="qrcodeStatus === 'error'" class="qrcode-error-msg" @click="retryQRCode">
+            <button type="button" v-else-if="qrcodeStatus === 'error'" class="qrcode-error-msg" @click="retryQRCode">
               <svg viewBox="0 0 1024 1024" width="48" height="48" fill="currentColor">
                 <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64zm0 820c-205.4 0-372-166.6-372-372s166.6-372 372-372 372 166.6 372 372-166.6 372-372 372z"/>
                 <path d="M464 336a48 48 0 1096 0 48 48 0 10-96 0zm32 120h64v288h-64z"/>
               </svg>
               <p class="error-title">加载失败</p>
               <p class="error-subtitle">点击重新加载</p>
-            </div>
+            </button>
             
             <!-- 二维码过期 -->
             <div v-else-if="qrcodeStatus === 'expired'" class="qrcode-expired-msg">
@@ -125,11 +132,17 @@
               <p class="scanned-user">{{ scannedUsername || '用户' }} 已扫描</p>
               <p class="scanned-tip">请在手机上确认登录</p>
             </div>
+            <div v-else-if="qrcodeStatus === 'success'" class="qrcode-scanned-msg" role="status"><span class="success-icon">✓</span><p>登录成功</p></div>
+            </Transition>
           </div>
           
           <!-- 提示文字 -->
           <p v-if="qrcodeStatus === 'waiting'" class="qrcode-tip">请使用酷狗音乐 App 扫码登录</p>
         </div>
+      </div>
+
+      <div class="login-feedback-region" aria-live="polite" aria-atomic="true">
+        <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><p v-if="loginFeedback.text" :key="loginFeedback.kind + loginFeedback.text" class="login-feedback" :class="loginFeedback.kind" :role="loginFeedback.kind === 'error' ? 'alert' : 'status'">{{ loginFeedback.text }}</p></Transition>
       </div>
 
       <!-- 返回按钮 -->
@@ -193,7 +206,8 @@ export default {
       phoneLoading: false,
       accountLoading: false,
       disposed: false,
-      loginGeneration: 0
+      loginGeneration: 0,
+      loginFeedback: { text: '', kind: 'info' }
     }
   },
   mounted() {
@@ -213,6 +227,7 @@ export default {
   },
   watch: {
     currentTab(newTab) {
+      this.loginFeedback = { text: '', kind: 'info' }
       this.loginGeneration += 1
       this.phoneLoading = false
       this.accountLoading = false
@@ -227,6 +242,17 @@ export default {
     }
   },
   methods: {
+    setFeedback(text, kind = 'error') {
+      this.loginFeedback = { text: String(text || '操作失败，请重试'), kind }
+    },
+    /** 认证立即落盘；先刷新成功状态，再沿原事件出口导航。 */
+    async completeLogin(userData) {
+      saveLoginInfo(userData)
+      this.setFeedback('登录成功，正在打开音乐…', 'success')
+      await this.$nextTick()
+      this.$emit('loginSuccess', userData)
+      this.$emit('back')
+    },
     // 错误对象可能包含密码、验证码和请求头，只记录诊断所需的状态。
     logLoginFailure(message, error) {
       logger.error('LoginView', message, {
@@ -241,11 +267,11 @@ export default {
     // 发送验证码
     async sendCaptcha() {
       if (!this.phoneForm.phone) {
-        alert('请输入手机号')
+        this.setFeedback('请输入手机号')
         return
       }
       if (!/^1[3-9]\d{9}$/.test(this.phoneForm.phone)) {
-        alert('请输入正确的手机号')
+        this.setFeedback('请输入正确的手机号')
         return
       }
 
@@ -253,11 +279,12 @@ export default {
       const generation = this.loginGeneration
 
       try {
+        this.setFeedback('正在发送验证码…', 'info')
         this.captchaLoading = true
         const response = await sendCaptchaAPI(this.phoneForm.phone)
         if (!this.isCurrentLogin(generation)) return
         if (response.status !== 1) {
-          alert('验证码发送失败，请稍后重试')
+          this.setFeedback('验证码发送失败，请稍后重试')
           return
         }
         
@@ -271,11 +298,11 @@ export default {
           }
         }, 1000)
 
-        alert('验证码已发送')
+        this.setFeedback('验证码已发送，请查看手机', 'info')
       } catch (error) {
         if (!this.isCurrentLogin(generation)) return
         this.logLoginFailure('发送验证码失败', error)
-        alert('发送验证码失败，请稍后重试')
+        this.setFeedback('发送验证码失败，请稍后重试')
       } finally {
         if (this.isCurrentLogin(generation)) this.captchaLoading = false
       }
@@ -284,7 +311,7 @@ export default {
     // 手机号登录
     async handlePhoneLogin() {
       if (!this.phoneForm.phone || !this.phoneForm.captcha) {
-        alert('请填写完整信息')
+        this.setFeedback('请填写完整信息')
         return
       }
 
@@ -292,6 +319,7 @@ export default {
       const generation = this.loginGeneration
 
       try {
+        this.setFeedback('正在验证登录信息…', 'info')
         this.phoneLoading = true
         const response = await loginByPhone(
           this.phoneForm.phone,
@@ -301,21 +329,14 @@ export default {
         
         // 检查响应状态
         if (response.status === 1 && response.data?.token) {
-          // 保存登录信息
-          saveLoginInfo(response.data)
-          
-          // 通知父组件登录成功
-          this.$emit('loginSuccess', response.data)
-          this.$emit('back')
-          
-          alert('登录成功！')
+          await this.completeLogin(response.data)
         } else {
-          alert(response.error || '登录失败，请检查手机号和验证码')
+          this.setFeedback(response.error || '登录失败，请检查手机号和验证码')
         }
       } catch (error) {
         if (!this.isCurrentLogin(generation)) return
         this.logLoginFailure('手机号登录失败', error)
-        alert('登录失败，请稍后重试')
+        this.setFeedback('登录失败，请稍后重试')
       } finally {
         if (this.isCurrentLogin(generation)) this.phoneLoading = false
       }
@@ -324,7 +345,7 @@ export default {
     // 账号登录
     async handleAccountLogin() {
       if (!this.accountForm.username || !this.accountForm.password) {
-        alert('请填写完整信息')
+        this.setFeedback('请填写完整信息')
         return
       }
 
@@ -332,6 +353,7 @@ export default {
       const generation = this.loginGeneration
 
       try {
+        this.setFeedback('正在验证登录信息…', 'info')
         this.accountLoading = true
         const response = await loginByAccount(
           this.accountForm.username,
@@ -341,21 +363,14 @@ export default {
         
         // 检查响应状态
         if (response.status === 1 && response.data?.token) {
-          // 保存登录信息
-          saveLoginInfo(response.data)
-          
-          // 通知父组件登录成功
-          this.$emit('loginSuccess', response.data)
-          this.$emit('back')
-          
-          alert('登录成功！')
+          await this.completeLogin(response.data)
         } else {
-          alert(response.error || '登录失败，请检查用户名和密码')
+          this.setFeedback(response.error || '登录失败，请检查用户名和密码')
         }
       } catch (error) {
         if (!this.isCurrentLogin(generation)) return
         this.logLoginFailure('账号登录失败', error)
-        alert('登录失败，请稍后重试')
+        this.setFeedback('登录失败，请稍后重试')
       } finally {
         if (this.isCurrentLogin(generation)) this.accountLoading = false
       }
@@ -521,14 +536,9 @@ export default {
             case 4:
               // 授权登录成功
               if (!userData?.token) throw new Error('登录响应缺少凭证')
-              // 保存登录信息
-              saveLoginInfo(userData)
               this.qrcodeStatus = 'success'
               this.stopQRCodePolling()
-              
-              // 通知父组件登录成功
-              this.$emit('loginSuccess', userData)
-              this.$emit('back')
+              await this.completeLogin(userData)
               return
               
             default:
@@ -973,10 +983,17 @@ export default {
 }
 
 .btn-back svg {
-  transition: transform var(--transition-fast);
+  transition: transform var(--transition-fast), scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
 
 .btn-back:hover svg {
   transform: translateX(-2px);
 }
+.login-submit, .captcha-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.login-feedback-region { min-height: 42px; margin-top: 10px; }
+.login-feedback { padding: 9px 12px; border-radius: var(--radius-sm); background: var(--color-background); color: var(--color-text-secondary); font-size: var(--font-size-xs); line-height: 1.7; overflow-wrap: anywhere; }
+.login-feedback.error { color: var(--color-error); }
+.login-feedback.success { color: var(--color-success); }
+.login-submit .loading-spinner { border-top-color: currentColor; }
+@media (prefers-reduced-motion: reduce) { .form-content { animation: none; } }
 </style>

@@ -1,19 +1,26 @@
 <script setup>
 import { logger } from './utils/logger.js'
 
-import { ref, computed, defineAsyncComponent, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ref, computed, h, defineAsyncComponent, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { TitleBar, Sidebar, MusicPlayer } from './components/index.js'
 import HomeView from './views/HomeView.vue'
+import PageLoadingView from './views/PageLoadingView.vue'
 import { clearLoginInfo, getLoginInfo, isLoggedIn } from './api/auth.js'
 import { getUserPlaylists, KUGOU_AUTH_EXPIRED_EVENT } from './api/music.js'
 import { useSettingsStore } from './stores/settingsStore.js'
 import { cloneDeep } from './utils/objectUtils.js'
+import { getSongSearchKeyword } from './utils/songMetadata.js'
+import { initializePlaylistCacheSession, getPlaylistCacheAPI, callPlaylistCache } from './utils/playlistCache.js'
 import ThemeRecovery from './components/common/ThemeRecovery.vue'
 
 /** 非首页界面首次使用时加载，保留原组件名供 KeepAlive 缓存。 */
-function createLazyView(name, loader) {
+function createLazyView(name, loader, options = {}) {
   return defineAsyncComponent({
     loader,
+    loadingComponent: options.floating
+      ? { name: 'FloatingPageLoadingView', render: () => h(PageLoadingView, { floating: true }) }
+      : PageLoadingView,
+    delay: 120,
     onError(error, _retry, fail) {
       logger.error('App', `加载${name}界面失败`, error)
       fail()
@@ -30,7 +37,7 @@ const RankDetailView = createLazyView('排行榜', () => import('./views/RankDet
 const SearchView = createLazyView('搜索', () => import('./views/SearchView.vue'))
 const ArtistView = createLazyView('歌手', () => import('./views/ArtistView.vue'))
 const AlbumDetailView = createLazyView('专辑', () => import('./views/AlbumDetailView.vue'))
-const ThemeStudio = createLazyView('外观编辑器', () => import('./components/common/ThemeStudio.vue'))
+const ThemeStudio = createLazyView('外观编辑器', () => import('./components/common/ThemeStudio.vue'), { floating: true })
 
 const themeStudioOpen = ref(false)
 const settingsViewRef = ref(null)
@@ -46,6 +53,10 @@ function blockInputDuringInstall(event) {
 }
 
 function setInstallPreparation(active) {
+  if (active && !preparingInstall.value) {
+    navigationVersion++
+    navigationPending.value = false
+  }
   preparingInstall.value = active
   for (const name of installBlockedEvents) {
     if (active) document.addEventListener(name, blockInputDuringInstall, true)
@@ -182,6 +193,7 @@ const albumData = ref(null)
 
 // 搜索数据
 const searchQuery = ref('')
+const searchDraft = ref('')
 const searchResults = ref(null)
 
 // 用户歌单列表（TODO: 从API获取）
@@ -193,23 +205,108 @@ const userPlaylists = ref([
 const selectedPlaylistId = ref(null)
 const selectedPlaylistData = ref(null)
 const userPlaylistsLoaded = ref(false)
+const playlistCacheState = ref(null)
+let playlistCacheTask = Promise.resolve(null)
+let unsubscribePlaylistCache = null
+let unsubscribePlaylistCacheAuth = null
+let playlistCacheInitialization = 0
+let playlistCacheReady = false
 const pageSessionVersion = ref(0)
 const favoritesRevision = ref(0)
 const cachedPageNames = ['HomeView', 'FavoriteView', 'RankDetailView', 'AlbumDetailView', 'ArtistView', 'SearchView', 'DailyRecommendView']
 const pageSessionKey = computed(() => `${userLoggedIn.value ? userInfo.value?.userid || 'user' : 'guest'}:${pageSessionVersion.value}`)
 const pageScrollPositions = new WeakMap()
+const navigationHistory = ref([])
+const navigationPending = ref(false)
+const canGoBack = computed(() => !navigationPending.value && !preparingInstall.value && (showLogin.value || navigationHistory.value.length > 0))
+let navigationVersion = 0
 let playlistDirectoryRequestId = 0
 let playlistDirectoryTask = null
+let onlineUserPlaylists = []
 
 /** 账户改变后释放私有页面缓存；仅打开登录页面不影响已有页面。 */
 const resetPageSession = () => {
+  navigationVersion++
+  navigationPending.value = false
+  navigationHistory.value = []
   pageSessionVersion.value++
   playlistDirectoryRequestId++
   playlistDirectoryTask = null
   userPlaylistsLoaded.value = false
   userPlaylists.value = []
+  onlineUserPlaylists = []
   selectedPlaylistId.value = null
   selectedPlaylistData.value = null
+  playlistCacheState.value = null
+  playlistCacheReady = false
+}
+
+/** 保留当前账号最近打开歌单的离线入口，在线目录仍提供最新名称和顺序。 */
+function mergeCachedPlaylistDirectory(lists) {
+  const result = [...lists]
+  const known = new Set(result.map(item => String(item.id)))
+  for (const item of playlistCacheState.value?.playlists || []) {
+    if (item?.id == null || known.has(String(item.id))) continue
+    known.add(String(item.id))
+    result.push({ id: item.id, name: item.name || '歌单', count: item.total || 0 })
+  }
+  return result
+}
+
+/** 缓存广播与页面使用同一账号身份；旧快照不能恢复上一账号的侧栏。 */
+function applyPlaylistCacheState(state) {
+  const userId = localStorage.getItem('kugou_userid')
+  if (!playlistCacheReady || !state || !userLoggedIn.value || !userId || String(state.userId) !== String(userId)) return
+  const previous = playlistCacheState.value
+  if (previous && (Number(state.generation) < Number(previous.generation) ||
+      (state.generation === previous.generation && Number(state.revision) < Number(previous.revision)))) return
+  if (state.authExpired === true || state.error?.code === 'KUGOU_AUTH_EXPIRED') {
+    handleAuthExpired()
+    return
+  }
+  playlistCacheState.value = state
+  userPlaylists.value = mergeCachedPlaylistDirectory(onlineUserPlaylists)
+}
+
+/** 先初始化桌面账号并恢复目录，后续网络请求和播放器共享这次初始化。 */
+function initializeAccountPlaylistCache() {
+  const initialization = ++playlistCacheInitialization
+  playlistCacheReady = false
+  if (!window.electronAPI?.playlistCache) return Promise.resolve(null)
+  const identity = userLoggedIn.value ? {
+    userId: localStorage.getItem('kugou_userid'), token: localStorage.getItem('kugou_token')
+  } : null
+  playlistCacheTask = initializePlaylistCacheSession(identity).then(async state => {
+    if (initialization !== playlistCacheInitialization) return null
+    if (identity && !state) state = await getPlaylistCacheAPI()?.getState?.()
+    if (initialization !== playlistCacheInitialization) return null
+    playlistCacheReady = Boolean(identity)
+    applyPlaylistCacheState(state)
+    return state
+  }).catch(error => {
+    logger.warn('App', '初始化歌单缓存失败', { name: error?.name, message: error?.message })
+    return null
+  })
+  return playlistCacheTask
+}
+
+if (window.electronAPI?.playlistCache?.onState) {
+  unsubscribePlaylistCache = window.electronAPI.playlistCache.onState(applyPlaylistCacheState)
+}
+if (window.electronAPI?.playlistCache?.onAuthExpired) {
+  unsubscribePlaylistCacheAuth = window.electronAPI.playlistCache.onAuthExpired(event => {
+    const state = playlistCacheState.value
+    if (playlistCacheReady && state && String(event?.userId) === String(state.userId) &&
+        event?.generation === state.generation) handleAuthExpired()
+  })
+}
+
+/** 恢复网络只重试网络失败的既有任务；暂停、清理与权限状态由服务保留。 */
+function handlePlaylistCacheOnline() {
+  if (!userLoggedIn.value || isAppUnmounting || !window.electronAPI?.playlistCache) return
+  callPlaylistCache('retryNetwork').catch(error => {
+    logger.warn('App', '恢复离线缓存网络任务失败', { name: error?.name })
+  })
 }
 
 /** 独立滚动容器随页面缓存，并在脱离文档前保存真实滚动位置。 */
@@ -240,10 +337,13 @@ const checkLoginStatus = () => {
       userLoggedIn.value = true
       userInfo.value = loginInfo.userInfo
       logger.trace('App', '已恢复登录状态')
+      initializeAccountPlaylistCache()
       // 登录后获取用户歌单
       fetchUserPlaylists()
+      return
     }
   }
+  initializeAccountPlaylistCache()
 }
 
 // 获取用户歌单
@@ -257,16 +357,19 @@ const fetchUserPlaylists = () => {
   userPlaylistsLoaded.value = false
   const task = Promise.resolve().then(async () => {
     try {
+      if (window.electronAPI?.playlistCache) await playlistCacheTask
+      if (!isCurrentRequest()) return
       const response = await getUserPlaylists(1, 100)
       if (!isCurrentRequest()) return
       if (response.status !== 1 || !response.data) throw new Error('获取用户歌单失败')
       const lists = response.data.info || response.data.lists || response.data.list || []
-      userPlaylists.value = (Array.isArray(lists) ? lists : []).map(item => ({
+      onlineUserPlaylists = (Array.isArray(lists) ? lists : []).map(item => ({
         ...item,
         id: item.global_collection_id ?? item.globalCollectionId ?? item.listid ?? item.list_id ?? item.id,
         name: item.name || '',
         count: item.count || 0
       })).filter(item => item.id != null)
+      userPlaylists.value = mergeCachedPlaylistDirectory(onlineUserPlaylists)
     } catch (error) {
       if (isCurrentRequest()) logger.error('App', '获取用户歌单失败:', error)
     } finally {
@@ -283,22 +386,20 @@ checkLoginStatus()
 
 // 显示登录界面
 const handleShowLogin = () => {
-  showLogin.value = true
+  if (showLogin.value) return false
+  return runPageNavigation(() => { showLogin.value = true; return true })
 }
 
 // 显示设置界面
 const handleShowSettings = () => {
   logger.trace('App', '打开设置界面')
-  showLogin.value = false
-  currentView.value = 'settings'
-  showSettings.value = true
+  return handleNavigate('settings')
 }
 
 // 关闭设置界面
 const handleCloseSettings = () => {
   logger.trace('App', '关闭设置界面')
-  currentView.value = 'home'
-  showSettings.value = false
+  return navigationHistory.value.length ? handleGoBack() : handleNavigate('home')
 }
 
 // 设置改变处理
@@ -309,7 +410,7 @@ const handleSettingsChanged = () => {
 
 // 返回主界面
 const handleBackToMain = () => {
-  showLogin.value = false
+  return handleGoBack()
 }
 
 // 登录成功处理
@@ -324,6 +425,7 @@ const handleLoginSuccess = (data) => {
     vip_type: data.vip_type || 0
   }
   showLogin.value = false
+  initializeAccountPlaylistCache()
   // 登录后获取用户歌单
   fetchUserPlaylists()
 }
@@ -338,6 +440,7 @@ const handleLogout = () => {
   // 重置状态
   userLoggedIn.value = false
   userInfo.value = null
+  initializeAccountPlaylistCache()
   userPlaylists.value = []
   currentView.value = 'home'
 
@@ -351,29 +454,97 @@ const handleAuthExpired = () => {
   resetPageSession()
   userLoggedIn.value = false
   userInfo.value = null
+  initializeAccountPlaylistCache()
   userPlaylists.value = []
   currentView.value = 'home'
   showLogin.value = true
 }
 
-// 处理侧边栏导航
-const handleNavigate = (view, data) => {
-  logger.trace('App', 'Navigate to:', view, data)
+/** 资源身份同时用于历史去重与缓存 key，避免数字 ID、空 ID 和名称回退串页。 */
+function getPageKey(view, data = null, query = '') {
+  if (view === 'search') return `search:${query}`
+  if (!['playlist', 'rank', 'artist', 'album'].includes(view)) return view
+  const rawId = view === 'rank' ? data?.rankid ?? data?.id : data?.id
+  const id = rawId == null ? '' : String(rawId).trim()
+  return `${view}:${id && id !== '0' ? `id:${id}` : `name:${data?.name || ''}`}`
+}
+
+/** 历史只持有路由参数与搜索草稿；曲目、筛选和滚动仍由原缓存实例维护。 */
+function captureNavigationPage() {
+  const view = currentView.value
+  const data = view === 'rank' ? rankData.value
+    : view === 'artist' ? artistData.value
+      : view === 'album' ? albumData.value
+        : view === 'playlist' ? selectedPlaylistData.value : null
+  return { view, data: cloneDeep(data), searchQuery: searchQuery.value, searchDraft: searchDraft.value }
+}
+
+/** 恢复来源页参数以重新激活对应缓存，播放器和曲目队列不参与路由恢复。 */
+function restoreNavigationPage(page) {
+  if (page.view === 'rank') rankData.value = cloneDeep(page.data)
+  if (page.view === 'artist') artistData.value = cloneDeep(page.data)
+  if (page.view === 'album') albumData.value = cloneDeep(page.data)
+  if (page.view === 'playlist') {
+    selectedPlaylistId.value = page.data?.id ?? null
+    selectedPlaylistData.value = cloneDeep(page.data)
+  }
+  searchQuery.value = page.searchQuery
+  searchDraft.value = page.searchDraft
+  currentView.value = page.view
+  showSettings.value = page.view === 'settings'
   showLogin.value = false
-  currentView.value = view
-  if (view === 'playlist') {
-    selectedPlaylistId.value = data?.id ?? null
-    selectedPlaylistData.value = data || null
-  }
-  // 如果是排行榜详情，保存排行榜数据
-  if (view === 'rank' && data) {
-    rankData.value = data
-  } else if (view === 'artist' && data) {
-    // data 结构 { id?, name? }
-    artistData.value = data
-  } else if (view === 'album' && data) {
-    albumData.value = data
-  }
+}
+
+/** 设置页离场须先落盘；失败保留草稿，重复操作及账号变更后的迟到结果不提交。 */
+function runPageNavigation(commit) {
+  if (navigationPending.value || preparingInstall.value || isAppUnmounting) return false
+  if (showLogin.value || currentView.value !== 'settings' || !settingsViewRef.value) return commit()
+  const version = ++navigationVersion
+  const view = settingsViewRef.value
+  navigationPending.value = true
+  return Promise.resolve().then(() => version === navigationVersion && !isAppUnmounting ? view.flushEditableSettings() : false).then(saved => {
+    if (!saved || version !== navigationVersion || preparingInstall.value || isAppUnmounting) return false
+    return commit()
+  }).catch(error => {
+    logger.error('App', '离开设置前保存失败', error)
+    return false
+  }).finally(() => {
+    if (version === navigationVersion) navigationPending.value = false
+  })
+}
+
+/** 只为不同目标压入来源页；恢复历史使用独立出口，返回不会重新生成历史。 */
+function navigateToPage(target, afterNavigation) {
+  return runPageNavigation(() => {
+    const current = captureNavigationPage()
+    const page = { ...current, ...target }
+    if (getPageKey(current.view, current.data, current.searchQuery) !== getPageKey(page.view, page.data, page.searchQuery)) {
+      navigationHistory.value.push(current)
+    }
+    restoreNavigationPage(page)
+    afterNavigation?.()
+    return true
+  })
+}
+
+/** 登录覆盖层先关闭；普通返回仅弹出来源页，不把离开的页面再次压栈。 */
+const handleGoBack = () => {
+  return runPageNavigation(() => {
+    // 登录只覆盖当前内容页，关闭它不能消耗内容页的历史。
+    if (showLogin.value) { showLogin.value = false; return true }
+    const page = navigationHistory.value.pop()
+    if (!page) return false
+    restoreNavigationPage(page)
+    return true
+  })
+}
+
+const handleNavigate = (view, data) => {
+  const pageViews = ['home', 'favorite', 'playlist', 'personal-fm', 'daily-recommend', 'rank', 'search', 'artist', 'album', 'settings']
+  if (!pageViews.includes(view)) return false
+  if (['rank', 'artist', 'album', 'playlist'].includes(view) && (!data || typeof data !== 'object')) return false
+  logger.trace('App', 'Navigate to:', view, data)
+  return navigateToPage({ view, data: cloneDeep(data || null) })
 }
 
 // 处理创建歌单
@@ -444,40 +615,24 @@ const handleRemoveFromPlaylist = (song) => {
   }
 }
 
-// 处理搜索歌曲
+/** All song-title entry points share title-only metadata normalization. */
 const handleSearch = (song) => {
-  logger.trace('App', '搜索歌曲:', song)
-
-  // 构造搜索关键词：优先使用歌曲名，如果没有则使用文件名
-  const songName = song.name || song.filename || song.audio_name || song.songname
-  const artistName = song.singername || (song.singerinfo && song.singerinfo.length > 0 ? song.singerinfo[0].singername : '')
-
-  // 构造搜索词：歌曲名 + 歌手名
-  let searchKeyword = songName
-  if (artistName) {
-    searchKeyword += ` ${artistName}`
-  }
-
-  if (searchKeyword.trim()) {
-    // 调用搜索请求处理函数
-    handleSearchRequest(searchKeyword.trim())
-  } else {
+  const keyword = getSongSearchKeyword(song)
+  if (!keyword) {
     logger.warn('App', '无法构造搜索关键词，歌曲信息不完整')
-    alert('无法搜索：歌曲信息不完整')
+    return
   }
+  return handleSearchRequest(keyword)
 }
 
-// 处理搜索请求
-const handleSearchRequest = async (keywords) => {
-  logger.trace('App', '执行搜索:', keywords)
-  try {
-    searchQuery.value = keywords
-    currentView.value = 'search'
-    // 这里暂时不直接调用搜索API，而是在SearchView组件中处理
-  } catch (error) {
-    logger.error('App', '搜索失败:', error)
-    alert('搜索失败，请稍后重试')
-  }
+/** Keep drafts separate from submitted cache keys; navigation never changes playback. */
+const handleSearchRequest = (keywords) => {
+  const keyword = typeof keywords === 'string' ? keywords.trim() : ''
+  if (!keyword) return
+  return navigateToPage({ view: 'search', data: null, searchQuery: keyword, searchDraft: keyword }, () => {
+    musicPlayerRef.value?.closeLyrics?.()
+    if (musicPlayerRef.value) musicPlayerRef.value.showPlaylist = false
+  })
 }
 
 // 处理清空播放列表
@@ -892,6 +1047,7 @@ onMounted(() => {
   if (typeof window !== 'undefined') {
     window.addEventListener('beforeunload', handleBeforeUnload)
     window.addEventListener(KUGOU_AUTH_EXPIRED_EVENT, handleAuthExpired)
+    window.addEventListener('online', handlePlaylistCacheOnline)
   }
   startSessionCheckpoint()
 
@@ -905,9 +1061,15 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   isAppUnmounting = true
+  navigationVersion++
+  navigationPending.value = false
   installPreparationRequestId = null
   setInstallPreparation(false)
   unsubscribeInstallPreparation?.()
+  unsubscribePlaylistCache?.()
+  unsubscribePlaylistCacheAuth?.()
+  playlistCacheInitialization++
+  playlistCacheReady = false
   playlistDirectoryRequestId++
   playlistDirectoryTask = null
   shortcutGeneration += 1
@@ -938,6 +1100,7 @@ onBeforeUnmount(() => {
   if (typeof window !== 'undefined') {
     window.removeEventListener('beforeunload', handleBeforeUnload)
     window.removeEventListener(KUGOU_AUTH_EXPIRED_EVENT, handleAuthExpired)
+    window.removeEventListener('online', handlePlaylistCacheOnline)
   }
 })
 
@@ -1221,15 +1384,19 @@ function performMemoryCleanup() {
 
 <template>
   <Teleport to="body">
-    <div v-if="preparingInstall" class="install-preparation" role="status" aria-live="polite">
+    <Transition name="ui-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><div v-if="preparingInstall" class="install-preparation" role="status" aria-live="polite">
       <div class="install-preparation-message">
+        <span class="loading-spinner" aria-hidden="true"></span>
         <p>正在保存，准备更新</p>
         <span>保存完成后将关闭 BetterKuGou，请稍候。</span>
       </div>
-    </div>
+    </div></Transition>
   </Teleport>
   <div class="app-container" :class="{ 'has-player': hasPlayer, 'has-floating-player': hasPlayer && settings.custom?.playerStyle === 'netease' }">
     <TitleBar
+      v-model="searchDraft"
+      :can-go-back="canGoBack"
+      @back="handleGoBack"
       @show-login="handleShowLogin"
       @logout="handleLogout"
       @open-settings="handleShowSettings"
@@ -1273,16 +1440,17 @@ function performMemoryCleanup() {
               <HomeView
                 v-else-if="currentView === 'home'" key="home" class="page-view view-home"
                 :favorites-revision="favoritesRevision"
-                @navigate="handleNavigate" @play="handlePlay"
+                @navigate="handleNavigate" @play="handlePlay" @search="handleSearch"
               />
               <FavoriteView
                 v-else-if="userLoggedIn && (currentView === 'favorite' || currentView === 'playlist')"
-                :key="currentView === 'favorite' ? 'favorite' : 'playlist:' + selectedPlaylistId"
+                :key="getPageKey(currentView, selectedPlaylistData)"
                 class="page-view view-favorite"
                 :current-song="currentSong"
                 :playlist-id="currentView === 'playlist' ? selectedPlaylistId : null"
                 :playlist-name="selectedPlaylistData?.name || '歌单'"
                 :user-playlists="userPlaylists" :playlists-loaded="userPlaylistsLoaded"
+                :playlist-cache-state="playlistCacheState"
                 @favorites-changed="handleFavoritesChanged"
                 @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll"
                 @play-next="handlePlayNext" @remove-from-playlist="handleRemoveFromPlaylist" @search="handleSearch"
@@ -1290,37 +1458,37 @@ function performMemoryCleanup() {
               <PersonalFMView
                 v-else-if="currentView === 'personal-fm'" key="personal-fm" class="page-view view-personal-fm"
                 :current-song="currentSong"
-                @navigate="handleNavigate" @play="handlePlay"
+                @navigate="handleNavigate" @play="handlePlay" @search="handleSearch"
               />
               <DailyRecommendView
                 v-else-if="currentView === 'daily-recommend'" key="daily-recommend" class="page-view view-daily-recommend"
                 :current-song="currentSong"
-                @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll"
+                @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll" @search="handleSearch"
               />
               <RankDetailView
                 v-else-if="currentView === 'rank' && rankData"
-                :key="'rank:' + (rankData.rankid ?? rankData.id)" class="page-view view-rank-detail"
+                :key="getPageKey('rank', rankData)" class="page-view view-rank-detail"
                 :rank-data="rankData" :current-song="currentSong"
-                @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll"
+                @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll" @search="handleSearch"
               />
               <SearchView
-                v-else-if="currentView === 'search'" :key="'search:' + searchQuery" class="page-view view-search"
+                v-else-if="currentView === 'search'" :key="getPageKey('search', null, searchQuery)" class="page-view view-search"
                 :search-keyword="searchQuery" :current-song="currentSong"
-                @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll" @play-next="handlePlayNext"
+                @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll" @play-next="handlePlayNext" @search="handleSearch"
               />
               <ArtistView
                 v-else-if="currentView === 'artist' && artistData"
-                :key="'artist:' + (artistData.id ?? artistData.name)" class="page-view view-artist"
+                :key="getPageKey('artist', artistData)" class="page-view view-artist"
                 :artist-id="artistData.id" :artist-name="artistData.name"
                 :current-song="currentSong"
-                @navigate="handleNavigate" @play="handlePlay"
+                @navigate="handleNavigate" @play="handlePlay" @search="handleSearch"
               />
               <AlbumDetailView
                 v-else-if="currentView === 'album' && albumData"
-                :key="'album:' + (albumData.id ?? albumData.name)" class="page-view view-album"
+                :key="getPageKey('album', albumData)" class="page-view view-album"
                 :album-id="albumData.id" :album-name="albumData.name"
                 :current-song="currentSong"
-                @navigate="handleNavigate" @play="handlePlay"
+                @navigate="handleNavigate" @play="handlePlay" @search="handleSearch"
               />
               <div v-else-if="!userLoggedIn && currentView !== 'home'" class="page-view login-required" key="login-required">
                 <svg viewBox="0 0 1024 1024" width="80" height="80" fill="currentColor" opacity="0.3">
@@ -1355,6 +1523,8 @@ function performMemoryCleanup() {
         @clear-playlist="handleClearPlaylist"
         @playlist-updated="handlePlaylistUpdated"
         @lyric-view-changed="handleLyricViewChanged"
+        @search="handleSearch"
+        @navigate="handleNavigate"
       />
     </Transition>
   </div>

@@ -10,9 +10,10 @@ const flush = () => new Promise(resolve => setImmediate(resolve))
 function createArtist(t, hotRequest = () => Promise.reject(new Error('temporary hot-song failure'))) {
   const requests = []
   const failures = []
-  const sandbox = {
+  const sandbox = { listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},
     ArtworkCover: {},
     SongBadges: {},
+    ArtistLinks: {},
     process: { env: { NODE_ENV: 'test' } },
     logger: {
       trace() {},
@@ -38,6 +39,7 @@ function createArtist(t, hotRequest = () => Promise.reject(new Error('temporary 
     .replace(/^import[^\n]*\n/gm, '')
     .replace('export default', 'globalThis.component =')
   vm.createContext(sandbox)
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/utils/songMetadata.js'), 'utf8').replace(/^export /gm, ''), sandbox)
   vm.runInContext(source, sandbox)
   const { component } = sandbox
   const artist = {
@@ -113,8 +115,10 @@ function createHome(t, songs = []) {
     requests[type].push({ args, resolve, reject })
     return promise
   }
-  const sandbox = {
+  const sandbox = { listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},
     SongBadges: {},
+    ArtworkCover: {},
+    ArtistLinks: {},
     logger: { trace() {}, error() {} },
     Date: class { toDateString() { return currentDay } },
     localStorage: { getItem: key => memory.get(key) ?? null },
@@ -128,6 +132,7 @@ function createHome(t, songs = []) {
     .replace(/^import\b[\s\S]*?from\s+['"][^'"]+['"]\s*;?\s*$/gm, '')
     .replace('export default', 'globalThis.component =')
   vm.createContext(sandbox)
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/utils/songMetadata.js'), 'utf8').replace(/^export /gm, ''), sandbox)
   vm.runInContext(source, sandbox)
   const { component } = sandbox
   const home = { favoritesRevision: 0, ...component.data() }

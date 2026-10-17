@@ -1,7 +1,7 @@
 .sidebar-space {
   flex: 0 0 calc(var(--sidebar-width) + 2vw);
   min-width: 0;
-  transition: flex-basis 0.3s ease;
+  transition: flex-basis 0.3s ease, scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
 
 .sidebar-space.sidebar-hidden { flex-basis: 0; }
@@ -20,7 +20,7 @@
   display: flex;
   flex-direction: column;
   padding: 10px 0;
-  transition: width 0.3s ease, transform 0.3s ease, visibility 0s;
+  transition: width 0.3s ease, transform 0.3s ease, visibility 0s, scale var(--ui-motion-fast) var(--ui-motion-ease);
   overflow: hidden;
   z-index: var(--z-dropdown);
   box-shadow: var(--shadow-sidebar);
@@ -31,7 +31,7 @@
   transform: translateX(calc(-100% - 2vw));
   visibility: hidden;
   pointer-events: none;
-  transition: width 0.3s ease, transform 0.3s ease, visibility 0s 0.3s;
+  transition: width 0.3s ease, transform 0.3s ease, visibility 0s 0.3s, scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
 
 .sidebar-restore {
@@ -52,7 +52,7 @@
   box-shadow: var(--shadow-sidebar);
   cursor: pointer;
   z-index: var(--z-dropdown);
-  transition: color 0.2s ease, background-color 0.2s ease;
+  transition: color 0.2s ease, background-color 0.2s ease, scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
 .sidebar-restore svg { width: 18px; height: 18px; }
 .sidebar-restore:hover { color: var(--color-text); background: var(--color-background-lighter); }
@@ -86,7 +86,7 @@
   cursor: pointer;
   position: relative;
   color: var(--color-text-secondary);
-  transition: background-color 0.2s ease, color 0.2s ease;
+  transition: background-color 0.2s ease, color 0.2s ease, scale var(--ui-motion-fast) var(--ui-motion-ease);
   user-select: none;
 }
 .sidebar-item:hover {
@@ -133,7 +133,7 @@
   background: var(--color-primary);
   border-radius: 2px 0 0 2px;
   pointer-events: none;
-  transition: top 0.3s ease, opacity 0.2s ease;
+  transition: top 0.3s ease, opacity 0.2s ease, scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
 .sidebar-divider {
   height: 1px;
@@ -142,7 +142,7 @@
   opacity: 0.3;
   flex-shrink: 0;
 }
-.sidebar-label-enter-active, .sidebar-label-leave-active { transition: opacity 0.2s ease; }
+.sidebar-label-enter-active, .sidebar-label-leave-active { transition: opacity 0.2s ease, scale var(--ui-motion-fast) var(--ui-motion-ease); }
 .sidebar-label-enter-from, .sidebar-label-leave-to { opacity: 0; }
 
 /* 较矮窗口仍保留歌单滚动区，且底部控件不会压到播放器。 */
