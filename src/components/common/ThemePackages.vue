@@ -8,7 +8,7 @@
       <span class="theme-current">当前：{{ currentThemeName }}</span>
     </div>
 
-    <div class="theme-grid" aria-label="可用主题包">
+    <TransitionGroup name="ui-list" tag="div" class="theme-grid ui-list-container" aria-label="可用主题包" @before-leave="freezeGridLeave" @before-enter="clearGridLeave" @leave-cancelled="clearGridLeave">
       <article
         v-for="theme in availableThemes"
         :key="theme.id"
@@ -46,7 +46,7 @@
           移除主题
         </button>
       </article>
-    </div>
+    </TransitionGroup>
 
     <div class="theme-modes" aria-label="其他主题模式">
       <button
@@ -101,19 +101,21 @@
       <p class="theme-description theme-file-hint">支持 .bk-theme.json 或 .json 文件，最大 {{ maxFileSizeLabel }}。</p>
     </div>
 
-    <p
+    <Transition name="ui-fade" mode="out-in"><p
       v-if="message"
+      :key="messageKey"
       class="theme-message"
       :class="{ 'is-error': messageType === 'error' }"
       :role="messageType === 'error' ? 'alert' : 'status'"
     >
       {{ message }}
-    </p>
+    </p></Transition>
   </div>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { freezeGridLeave, clearGridLeave } from './motionLayout.js'
 import {
   BUILTIN_THEMES,
   MAX_THEME_FILE_BYTES,
@@ -135,6 +137,7 @@ const fileInput = ref(null)
 const isImporting = ref(false)
 const isExporting = ref(false)
 const message = ref('')
+const messageKey = ref(0)
 const messageType = ref('success')
 const exportName = ref('')
 const exportAuthor = ref('')
@@ -171,11 +174,12 @@ function updateCustom(patch) {
 function showMessage(text, type = 'success') {
   message.value = text
   messageType.value = type
+  messageKey.value++
 }
 
 function selectTheme(id) {
   updateCustom({ theme: id })
-  message.value = ''
+  showMessage(`已切换到「${id === 'system' ? '跟随系统' : id === 'custom' ? '自定义配色' : availableThemes.value.find(theme => theme.id === id)?.name || id}」。`)
 }
 
 /** 只给缩略预览映射所需颜色，避免主题包的其他令牌影响设置面板。 */
@@ -328,6 +332,7 @@ onBeforeUnmount(() => {
 }
 
 .theme-grid {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
   gap: var(--spacing-md);
@@ -339,8 +344,15 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-lg);
   background: var(--color-background-light);
   overflow: hidden;
-  transition: border-color var(--transition-fast);
+  transition: border-color var(--transition-fast), background-color var(--transition-fast), box-shadow var(--transition-fast), transform .18s ease, opacity .18s ease;
 }
+.theme-card:focus-within { border-color: var(--color-primary); box-shadow: var(--shadow-control-hover); }
+.theme-card.ui-list-enter-active, .theme-card.ui-list-leave-active { transition: opacity .18s ease, translate .18s ease, scale .18s ease; }
+.theme-card.ui-list-move { transition: transform .18s ease; }
+.theme-card.is-selected .theme-preview { scale: .98; }
+.theme-preview { transition: background-color .2s ease, scale .2s ease; }
+.theme-card.ui-list-leave-active { pointer-events: none; }
+.theme-card-select:disabled, .theme-remove:disabled { pointer-events: none; }
 
 .theme-card:hover,
 .theme-card.is-selected {

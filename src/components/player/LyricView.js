@@ -9,6 +9,9 @@ import repeatAllIcon from '../../assets/icons/repeat_all.svg'
 import repeatOneIcon from '../../assets/icons/repeat_one.svg'
 import shuffleIcon from '../../assets/icons/shuffle.svg'
 
+// DOM 与帧缓存不进入 Vue 响应式依赖，避免桥段每帧重建整首歌词的虚拟节点。
+const bridgeAnimationFrames = new WeakMap()
+
 export default {
   name: 'LyricView',
   components: { ContextMenu, ArtistLinks, ArtworkCover },
@@ -40,6 +43,10 @@ export default {
     currentPlayTime: {
       type: Number,
       default: 0
+    },
+    readPlaybackTime: {
+      type: Function,
+      default: null
     },
     previewTime: {
       type: Number,
@@ -80,6 +87,10 @@ export default {
     qualityMessage: {
       type: String,
       default: ''
+    },
+    qualitySwitching: {
+      type: Boolean,
+      default: false
     }
   },
   setup() {
@@ -98,6 +109,11 @@ export default {
       previousBodyOverflow: null,
       previousFocus: null,
       seekPreviewTime: null,
+      qualityMenuOpen: false,
+      qualityMenuPosition: { x: 0, y: 0 },
+      translationMessage: '',
+      translationSaveVersion: 0,
+      translationPreferenceDraft: null,
       hasTimedLyrics: false,
       browsePosition: null,
       browseBridgeAnchor: null,
@@ -126,9 +142,9 @@ export default {
       // RAF 驱动的更新循环
       updateLoopRafId: null,
       internalPlayTime: 0, // 内部时间，用于 RAF 更新
-      // 桥段进度条
+      // 桥段动效与播放时间共用同一进度源
       bridgeInfo: null, // { startTime, duration, startLyricIndex } - 当前桥段信息
-      isBridgeActive: false, // 是否正在显示桥段进度条
+      isBridgeActive: false, // 是否正在显示桥段
       bridgeProgress: 0, // 桥段进度 0-100
       // 翻译相关
       hasTranslation: false, // 是否有翻译
@@ -138,6 +154,10 @@ export default {
     }
   },
   computed: {
+    selectedQuality() {
+      return this.qualityOptions.find(option => option.value === this.qualityPreference) ||
+        { label: '标准 128 kbps', shortLabel: '128K' }
+    },
     canBrowseLyrics() {
       return this.lyricsInteractive && this.hasTimedLyrics && this.visible && !this.pauseUpdates && !this.isDisposed &&
         this.seekPreviewTime == null && this.previewTime == null
@@ -163,9 +183,21 @@ export default {
         offset = (position - this.browsePosition) * this.lyricLineHeight
       }
       return {
-        transform: `translate(-50%, -50%) translateY(${offset}px) scaleX(${Math.max(0.05, (100 - this.bridgeProgress) / 100)})`,
-        backgroundColor: this.getBridgeProgressColor()
+        transform: `translate(-50%, -50%) translateY(${offset}px)`,
+        '--bridge-height': `${Math.min(44, this.lyricLineHeight * 0.72)}px`,
+        '--bridge-scale': Math.min(1, this.lyricLineHeight * 0.72 / 44)
       }
+    },
+    /** 只用歌词时间编排展开、呼吸和收拢，暂停与进度预览不会产生独立时钟漂移。 */
+    bridgeMotion() {
+      return this.getBridgeMotion(this.internalPlayTime)
+    },
+    bridgeRemainingSeconds() {
+      return Math.ceil(this.bridgeMotion.remaining)
+    },
+    /** 三组光点展开为流动波形，结束前回收到三个核心；不模拟真实音频频谱。 */
+    bridgeParticles() {
+      return this.getBridgeParticles(this.bridgeMotion)
     },
     trackTransitionName() {
       const type = ['previous', 'next', 'auto', 'select', 'shuffle'].includes(this.trackTransition)
@@ -209,7 +241,7 @@ export default {
       if (this.viewportWidth < 900 || this.viewportHeight < 600) height *= 0.7
       return height
     },
-    // 检测所有桥段（句子间隔>10秒）
+    // 检测所有桥段（句子间隔>20秒）
     bridges() {
       const bridges = []
       const BRIDGE_THRESHOLD = 20 // 20秒阈值，避免误检测短间隔
@@ -217,7 +249,7 @@ export default {
       
       if (!this.parsedLyrics || this.parsedLyrics.length === 0) return bridges
       
-      // 检查开头是否是桥段（第一句之前>10秒）
+      // 检查开头是否是桥段（第一句之前>20秒）
       if (this.parsedLyrics[0] && this.parsedLyrics[0].time > BRIDGE_THRESHOLD) {
         bridges.push({
           startTime: 0,
@@ -302,6 +334,7 @@ export default {
   },
   watch: {
     'settingsStore.settings.playback.showTranslation'(value) {
+      if (this.translationPreferenceDraft != null) return
       this.showTranslation = value ?? true
       this.styleCache.clear()
       this.handleLongLyric()
@@ -311,6 +344,7 @@ export default {
         this.startUpdateLoop() // 启动RAF循环
         this.lockBodyScroll()
       } else {
+        this.closeQualityMenu()
         this.resetLyricInteractions()
         this.cancelSeek()
         this.stopUpdateLoop() // 立即停止RAF循环，释放资源
@@ -336,6 +370,7 @@ export default {
       }
     },
     song() {
+      this.closeQualityMenu()
       this.coverFailed = false
       this.resetLyricInteractions()
       this.cancelSeek()
@@ -374,6 +409,7 @@ export default {
   },
   beforeUnmount() {
     this.isDisposed = true
+    this.closeQualityMenu()
     this.resetLyricInteractions()
     this.seekPreviewTime = null
     if (process.env.NODE_ENV === 'development') {
@@ -391,6 +427,7 @@ export default {
     }
     window.removeEventListener('blur', this.cancelLyricInteractions)
     window.removeEventListener('keydown', this.handleInteractionKeydown)
+    window.removeEventListener('pointerdown', this.dismissQualityMenu)
     
     // 清理所有缓存
     this.styleCache.clear()
@@ -421,11 +458,68 @@ export default {
     window.addEventListener('resize', this.handleWindowResize)
     window.addEventListener('blur', this.cancelLyricInteractions)
     window.addEventListener('keydown', this.handleInteractionKeydown)
+    window.addEventListener('pointerdown', this.dismissQualityMenu)
     
     // 初始化窗口尺寸适配
     this.onWindowResize()
   },
   methods: {
+    /** 菜单只修改音质偏好；勾选项与当前有效音源状态独立呈现。 */
+    openQualityMenu() {
+      if (this.isDisposed) return
+      contextMenuManager.registerMenu(this.closeQualityMenu)
+      this.qualityMenuPosition = { x: 0, y: 0 }
+      this.qualityMenuOpen = true
+      this.$nextTick(() => {
+        if (this.qualityMenuOpen && !this.isDisposed) {
+          this.positionQualityMenu()
+          this.$refs.qualityControl?.querySelector('[aria-checked="true"]')?.focus()
+        }
+      })
+    },
+    toggleQualityMenu() {
+      if (this.qualityMenuOpen) this.closeQualityMenu()
+      else this.openQualityMenu()
+    },
+    closeQualityMenu(restoreFocus = false) {
+      this.qualityMenuOpen = false
+      contextMenuManager.unregisterMenu(this.closeQualityMenu)
+      if (restoreFocus) this.$refs.qualityTrigger?.focus({ preventScroll: true })
+    },
+    /** 展开方向由布局决定，再夹紧实际边界，兼容窄矮窗口和多行歌曲信息。 */
+    positionQualityMenu() {
+      const bounds = this.$refs.qualityMenu?.getBoundingClientRect?.()
+      if (!bounds) return
+      this.qualityMenuPosition = {
+        x: Math.max(12 - bounds.left, Math.min(0, window.innerWidth - 12 - bounds.right)),
+        y: Math.max(12 - bounds.top, Math.min(0, window.innerHeight - 12 - bounds.bottom))
+      }
+    },
+    dismissQualityMenu(event) {
+      if (this.qualityMenuOpen && !this.$refs.qualityControl?.contains(event.target)) this.closeQualityMenu()
+    },
+    handleQualityFocusout(event) {
+      if (!this.$refs.qualityControl?.contains(event.relatedTarget)) this.closeQualityMenu()
+    },
+    handleQualityMenuKeydown(event) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        this.closeQualityMenu(true)
+        return
+      }
+      const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End']
+      if (!keys.includes(event.key)) return
+      event.preventDefault()
+      const options = [...(this.$refs.qualityControl?.querySelectorAll('[role="menuitemradio"]') || [])]
+      const index = options.indexOf(event.target)
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1
+        : (index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length
+      options[next]?.focus()
+    },
+    selectQuality(value) {
+      this.closeQualityMenu(true)
+      this.$emit('change-quality', value)
+    },
     /** 手动浏览冻结布局锚点，播放索引和逐字高亮继续按真实时间推进。 */
     getBrowseLinePosition(index) {
       return index + (this.browseBridgeAnchor != null && index > this.browseBridgeAnchor ? 1 : 0)
@@ -557,11 +651,13 @@ export default {
       this.browseBridgeAnchor = null
     },
     cancelLyricInteractions() {
+      this.closeQualityMenu()
       this.resetLyricInteractions()
       if (!this.isDisposed && this.visible && !this.pauseUpdates) this.syncDisplayedTime(true)
     },
     handleLyricEscape() {
-      if (this.lyricMenuVisible) this.closeLyricMenu()
+      if (this.qualityMenuOpen) this.closeQualityMenu(true)
+      else if (this.lyricMenuVisible) this.closeLyricMenu()
       else if (this.lyricPointer || this.browsePosition != null) this.cancelLyricInteractions()
       else this.closeLyricView()
     },
@@ -660,6 +756,7 @@ export default {
 
     /** 新歌及其异步歌词各自定位；不继承上一首的桥段、高亮或长句位移。 */
     resetTrackLyrics() {
+      bridgeAnimationFrames.delete(this)
       this.resetLyricInteractions()
       this.lyricLineRefs = {}
       this.scrollingLyricElement = null
@@ -716,6 +813,7 @@ export default {
       else if (isSeek || delta < -0.25 || delta > 1) this.lineTransitionDuration = 0.24
       else if (layoutChanged) this.lineTransitionDuration = 0.45
       this.syncLongLyric()
+      this.updateBridgeAnimation()
     },
     // RAF 驱动的持续更新循环（60fps）
     updateLoop() {
@@ -779,6 +877,7 @@ export default {
     
     // 停止更新循环
     stopUpdateLoop() {
+      bridgeAnimationFrames.delete(this)
       if (this.updateLoopRafId) {
         if (process.env.NODE_ENV === 'development') {
           logger.debug('LyricView', '🛑 停止歌词更新循环 - rafId:', this.updateLoopRafId)
@@ -806,19 +905,82 @@ export default {
       }
     },
 
-    /** 用主题颜色插值桥段进度，保留既有播放时间与比例计算。 */
-    getBridgeProgressColor() {
-      const progress = this.bridgeProgress
-      
-      if (progress > 50) {
-        // 50% 以上沿用既有黄绿混合比例。
-        const ratio = (100 - progress) / 50 // 1 -> 0
-        return `color-mix(in srgb, var(--lyric-bridge-yellow) ${(1 - ratio) * 100}%, var(--lyric-bridge-green))`
-      } else {
-        // 50% 以下沿用既有黄红混合比例。
-        const ratio = progress / 50 // 1 -> 0
-        return `color-mix(in srgb, var(--lyric-bridge-yellow) ${ratio * 100}%, var(--lyric-bridge-red))`
+    /** 从同一音频位置计算编舞；只读动画采样不写回整页响应式时间。 */
+    getBridgeMotion(time) {
+      if (!this.bridgeInfo) return { elapsed: 0, remaining: 0, unfold: 0, pulse: 0 }
+      const { startTime, endTime, duration } = this.bridgeInfo
+      const elapsed = Math.max(0, Math.min(duration, time - startTime))
+      const remaining = Math.max(0, endTime - time)
+      const smooth = value => {
+        const clamped = Math.max(0, Math.min(1, value))
+        return clamped * clamped * (3 - 2 * clamped)
       }
+      const unfold = smooth(elapsed / Math.min(0.8, duration * 0.25)) *
+        smooth(remaining / Math.min(2.4, duration * 0.3))
+      return { elapsed, remaining, unfold, pulse: (Math.sin(elapsed * 2.4) + 1) / 2 }
+    },
+
+    /** 21 点共用确定的播放时间，保持展开、波形流动与收拢在跳转前后一致。 */
+    getBridgeParticles({ elapsed, unfold }) {
+      return Array.from({ length: 21 }, (_, index) => {
+        const group = Math.floor(index / 7) - 1
+        const isCore = index % 7 === 3
+        const envelope = Math.sin((index + 1) / 22 * Math.PI)
+        const wave = (Math.sin(elapsed * 3.2 - index * 0.55) + 1) / 2
+        const drift = Math.sin(elapsed * 2.4 - group * 0.8)
+        const x = group * 18 * (1 - unfold) + (index - 10) * 7 * unfold
+        const y = drift * (1 - unfold) * 2
+        const scale = 1 + unfold * envelope * (1 + wave * 3.5)
+        const opacity = isCore ? 0.72 + wave * 0.28 : unfold * (0.3 + wave * 0.6)
+        return {
+          transform: `translate3d(${x.toFixed(3)}px, ${y.toFixed(3)}px, 0) scaleY(${scale.toFixed(3)})`,
+          opacity: opacity.toFixed(3)
+        }
+      })
+    },
+
+    /** 复用歌词 RAF，仅更新桥段 DOM；Vue 管理布局/显隐，不重写这些逐帧样式。 */
+    updateBridgeAnimation(element = this.$refs.bridgeIndicator) {
+      if (!element || !this.isBridgeActive || !this.bridgeInfo || this.isDisposed || !this.visible || this.pauseUpdates) return
+      let frame = bridgeAnimationFrames.get(this)
+      if (frame?.element !== element) {
+        frame = { element, particles: element.querySelectorAll('.bridge-particle'), aura: element.querySelector('.bridge-aura'),
+          media: window.matchMedia?.('(prefers-reduced-motion: reduce)'), time: null, reduced: null }
+        bridgeAnimationFrames.set(this, frame)
+      }
+      // matchMedia.matches 会跟随系统偏好变化，无需额外监听或动画时钟。
+      if (frame.media?.matches) {
+        if (!frame.reduced) element.style.setProperty('--bridge-color', 'var(--lyric-text)')
+        frame.reduced = true
+        frame.time = null
+        return
+      }
+      frame.reduced = false
+      const sampledTime = this.seekPreviewTime ?? this.previewTime ?? this.readPlaybackTime?.() ?? this.currentPlayTime
+      const time = Number.isFinite(sampledTime) ? sampledTime : this.currentPlayTime
+      if (frame.time === time && frame.bridge === this.bridgeInfo) return
+      frame.time = time
+      frame.bridge = this.bridgeInfo
+      const motion = this.getBridgeMotion(time)
+      const particles = this.getBridgeParticles(motion)
+      frame.particles.forEach((particle, index) => {
+        particle.style.transform = particles[index].transform
+        particle.style.opacity = particles[index].opacity
+      })
+      if (frame.aura) {
+        frame.aura.style.opacity = String(0.1 + motion.pulse * 0.08)
+        frame.aura.style.transform = `scale(${0.8 + motion.pulse * 0.2})`
+      }
+      const progress = motion.elapsed / this.bridgeInfo.duration * 100
+      element.style.setProperty('--bridge-color', `color-mix(in srgb, var(--lyric-text) 88%, ${this.getBridgeProgressColor(progress)})`)
+    },
+
+    /** 连续插值既有桥段主题色，作为光点的轻微染色，避免中点跳色。 */
+    getBridgeProgressColor(value = this.bridgeProgress) {
+      const progress = Math.max(0, Math.min(100, value))
+      return progress <= 50
+        ? `color-mix(in srgb, var(--lyric-bridge-green) ${100 - progress * 2}%, var(--lyric-bridge-yellow))`
+        : `color-mix(in srgb, var(--lyric-bridge-yellow) ${200 - progress * 2}%, var(--lyric-bridge-red))`
     },
 
     /** 桥段占用中心的一行，已唱完的前句留在其上方；屏外行保留位置以承接跨行跳转。 */
@@ -956,7 +1118,8 @@ export default {
         // 解码Base64字符串
         let decodedData
         try {
-          decodedData = atob(languageField)
+          const bytes = Uint8Array.from(atob(languageField), character => character.charCodeAt(0))
+          decodedData = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
           logger.trace('LyricView', 'Base64解码成功:', decodedData.substring(0, 200))
         } catch (e) {
           logger.trace('LyricView', 'Base64解码失败，尝试直接解析JSON:', e)
@@ -1120,11 +1283,8 @@ export default {
         logger.trace('LyricView', '🔍 开始解析翻译数据，数据长度:', languageField.length)
         this.translationData = this.parseTranslationData(languageField)
         if (this.translationData) {
-          this.hasTranslation = true
-          // 根据用户设置和歌曲类型决定是否显示翻译
-          const userSetting = this.settingsStore.settings?.playback?.showTranslation ?? true // 默认显示翻译
-          // 临时强制显示翻译用于测试
-          this.showTranslation = userSetting // 暂时不考虑语言检测，直接显示翻译
+          const userSetting = this.translationPreferenceDraft ?? this.settingsStore.settings?.playback?.showTranslation ?? true
+          this.showTranslation = userSetting
           logger.trace('LyricView', '✅ 成功解析翻译数据')
           logger.trace('LyricView', '  - 翻译版本:', this.translationData.version)
           logger.trace('LyricView', '  - 是否为非中文歌曲:', this.isNonChinese)
@@ -1230,9 +1390,10 @@ export default {
       logger.trace('LyricView', '前3行歌词:', this.parsedLyrics.slice(0, 3))
 
       // 处理翻译映射
-      if (this.hasTranslation && this.translationData) {
+      if (this.translationData) {
         this.mapTranslationToLyrics()
       }
+      this.hasTranslation = this.parsedLyrics.some(line => Boolean(line.translation))
     },
 
     // 将翻译数据映射到歌词行
@@ -1248,8 +1409,9 @@ export default {
 
         // 为每行歌词添加翻译
         this.parsedLyrics.forEach((lyricLine, index) => {
-          if (index < translation.length && translation[index] && translation[index][0]) {
-            lyricLine.translation = translation[index][0].trim()
+          const text = translation[index]?.[0]
+          if (typeof text === 'string' && text.trim()) {
+            lyricLine.translation = text.trim()
             logger.trace('LyricView', `第${index}行添加翻译:`, lyricLine.text, '->', lyricLine.translation)
           }
         })
@@ -1677,6 +1839,7 @@ export default {
 
     // 关闭歌词视图
     closeLyricView() {
+      this.closeQualityMenu()
       this.resetLyricInteractions()
       this.$emit('close')
     },
@@ -1707,9 +1870,20 @@ export default {
       if (!this.hasTranslation || this.isDisposed) return
       this.showTranslation = !this.showTranslation
       this.handleLongLyric()
+      await this.saveTranslationPreference()
+    },
+    /** 保存失败保留当前翻译显示并提供重试；旧请求不能覆盖新操作的反馈。 */
+    async saveTranslationPreference() {
+      const version = ++this.translationSaveVersion
+      const desired = this.showTranslation
+      this.translationPreferenceDraft = desired
+      this.translationMessage = ''
       try {
-        await this.settingsStore?.updateSettings?.({ playback: { showTranslation: this.showTranslation } })
+        await this.settingsStore?.updateSettings?.({ playback: { showTranslation: desired } })
+        if (!this.isDisposed && version === this.translationSaveVersion) this.translationPreferenceDraft = null
       } catch (error) {
+        if (this.isDisposed || version !== this.translationSaveVersion) return
+        this.translationMessage = '翻译偏好保存失败，请重试。'
         logger.warn('LyricView', '更新翻译设置失败', error)
       }
     },
@@ -1746,6 +1920,7 @@ export default {
 
     onWindowResize() {
       if (this.isDisposed) return
+      this.closeQualityMenu()
       this.viewportWidth = window.innerWidth
       this.viewportHeight = window.innerHeight
       this.styleCache.clear()

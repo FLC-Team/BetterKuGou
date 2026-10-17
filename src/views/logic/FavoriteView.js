@@ -1,3 +1,4 @@
+import { listMotion, setListMotionActive } from './listMotion.js'
 
 import { logger } from '../../utils/logger.js'
 import { getUserPlaylists, getPlaylistTracks } from '../../api/music.js'
@@ -5,6 +6,7 @@ import ArtworkCover from '../../components/common/ArtworkCover.vue'
 import SongBadges from '../../components/common/SongBadges.vue'
 import ArtistLinks from '../../components/common/ArtistLinks.vue'
 import ContextMenu from '../../components/common/ContextMenu.vue'
+import WindowedList from '../../components/common/WindowedList.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import { useSettingsStore } from '../../stores/settingsStore.js'
 import { filterSongs } from '../../utils/songMetadata.js'
@@ -16,12 +18,14 @@ import nextplayIcon from '../../assets/icons/nextplay.svg'
 
 export default {
   name: 'FavoriteView',
+  directives: { listMotion },
   emits: ['play', 'play-all', 'play-next', 'remove-from-playlist', 'search', 'navigate', 'favorites-changed'],
   components: {
     ArtworkCover,
     SongBadges,
     ArtistLinks,
-    ContextMenu
+    ContextMenu,
+    WindowedList
   },
   props: {
     currentSong: {
@@ -180,11 +184,13 @@ export default {
     this.loadFavorites()
   },
   activated() {
+    this.$nextTick(() => setListMotionActive(this.$refs?.songList?.$el, true))
     this.isActive = true
     if (this.loaded && !this.loadPromise && this.offlineCacheAvailable) this.touchPlaylistSnapshot()
     else this.loadFavorites()
   },
   deactivated() {
+    setListMotionActive(this.$refs?.songList?.$el, false)
     this.isActive = false
     this.closeContextMenu()
   },

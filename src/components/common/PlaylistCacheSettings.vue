@@ -1,5 +1,5 @@
 <template>
-  <div class="cache-settings">
+  <div class="cache-settings" :aria-busy="busy">
     <p class="cache-note">打开歌单时保存列表；首次播放时缓存音频、歌词和翻译，封面随加载保存。</p>
     <p v-if="!available" class="cache-note">离线缓存仅在桌面客户端中可用。</p>
     <fieldset :disabled="!available" class="cache-controls">
@@ -21,10 +21,11 @@
       <p class="cache-note">本账号 {{ state.playlists?.length || 0 }} 张歌单 · {{ cachedCount }} 首离线可用</p>
       <p class="cache-note">缓存目录：{{ state.cacheDirectory || '应用数据目录 / offline-playlists' }}（只读）</p>
       <div class="cache-actions"><button type="button" :disabled="busy || !state.userId" @click="runAction('retry')">重试未完成缓存</button><button type="button" :disabled="busy || !state.userId" @click="confirmClear = true">清理本账号缓存</button></div>
-      <div v-if="confirmClear" class="cache-confirm" role="group" aria-label="确认清理缓存"><p>清理本账号的音频、歌词和封面缓存，保留歌单列表；正在播放的文件会在释放后清理。</p><button type="button" :disabled="busy" @click="runAction('clear')">确认清理</button><button type="button" :disabled="busy" @click="confirmClear = false">取消</button></div>
+      <Transition name="ui-fade" @before-leave="$event.inert = true" @before-enter="$event.inert = false" @leave-cancelled="$event.inert = false"><div v-if="confirmClear" class="cache-confirm" role="group" aria-label="确认清理缓存"><p>清理本账号的音频、歌词和封面缓存，保留歌单列表；正在播放的文件会在释放后清理。</p><button type="button" :disabled="busy" @click="runAction('clear')">确认清理</button><button type="button" :disabled="busy" @click="confirmClear = false">取消</button></div></Transition>
     </div>
-    <p v-if="error || state.error?.message" class="cache-error" role="alert">{{ error || state.error?.message }}</p>
-    <p v-if="message" class="cache-note" role="status">{{ message }}</p>
+    <Transition name="ui-fade"><p v-if="busy" class="cache-note cache-working" role="status">正在处理缓存…</p></Transition>
+    <Transition name="ui-fade" mode="out-in"><p v-if="error || state.error?.message" :key="error || state.error?.message" class="cache-error" role="alert">{{ error || state.error?.message }}</p></Transition>
+    <Transition name="ui-fade" mode="out-in"><p v-if="message" :key="message" class="cache-note" role="status">{{ message }}</p></Transition>
   </div>
 </template>
 
@@ -65,7 +66,7 @@ function acceptState(next) {
 
 /** 所有缓存管理动作先排空设置草稿，避免使用尚未保存的容量或开关。 */
 async function runAction(method) {
-  if (!available || busy.value) return
+  if (!available || busy.value || (method === 'clear' && !confirmClear.value)) return
   busy.value = true
   error.value = ''
   message.value = ''
@@ -123,5 +124,11 @@ button { border: 1px solid var(--color-border); border-radius: 7px; padding: 9px
 button:hover { border-color: var(--color-primary); color: var(--color-primary); }
 button:disabled { opacity: .5; cursor: default; }
 .cache-error { margin-top: 12px; color: var(--color-error); line-height: 1.8; }
+.cache-switch span { transition: background-color .18s ease; }
+.cache-working::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 7px; border: 1px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: cache-working .7s linear infinite; }
+.cache-confirm { border-left: 2px solid var(--color-primary); padding-left: 14px; }
+.cache-actions button, .cache-confirm button { transition: border-color .16s ease, color .16s ease, scale .16s ease, opacity .16s ease; }
+@keyframes cache-working { to { rotate: 360deg; } }
+@media (prefers-reduced-motion: reduce) { .cache-working::before { animation: none; } .cache-switch span, .cache-switch span::after, button { transition: none; } }
 @container (max-width: 500px) { .cache-row { gap: 12px; } }
 </style>

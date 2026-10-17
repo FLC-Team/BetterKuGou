@@ -16,7 +16,8 @@
 - `auth.js` 请求超时为 10 秒，认证信息从 LocalStorage 读取。
 - `music.js` 为需要登录的请求附加已保存的酷狗认证信息。
 - `getLyric()` 先搜索候选歌词，再按 ID 与 accesskey 请求内容。
-- `getSongUrl(hash, album_id, album_audio_id, quality)` 提供播放器使用的旧版播放地址封装，普通音质限于字符串 128/320/flac/high，缺省或非法值回退 128；不请求试听，不将魔法音乐或蝰蛇音效作为普通音质。
+- `getSongUrl(hash, album_id, album_audio_id, quality, options)` 提供播放器使用的旧版播放地址封装，普通音质限于字符串 128/320/flac/high，缺省或非法值回退 128；不请求试听，不将魔法音乐或蝰蛇音效作为普通音质。
+- `getSongDetail(hash, options)` 和 `getSongUrl` 的可选 `options.signal` 直接传给 Axios；切歌取消时终止旧 HTTP 请求，省略该选项保持原调用行为。
 - `findArtistByName(name)` 只查询被选中的单个姓名，按 Unicode、空白和大小写规范化后精确匹配搜索结果，并要求有效歌手 ID；无匹配返回 null，请求或响应格式失败继续拒绝 Promise，由歌手页面显示重试入口。
 
 ## 关键保障
@@ -25,7 +26,7 @@
 - 音乐请求以 WeakMap 保存发出时的账号身份；旧账号迟到的认证失效响应仍拒绝该请求，但不登出当前新账号。
 - 歌曲 `hash` 是播放、队列定位与封面查询的重要标识。
 - 保留现有端点、请求字段和业务状态判定，不将 HTTP 成功等同于业务成功。
-- 异常通过 logger 记录并继续拒绝 Promise，不在封装层吞掉失败。
+- 异常通过 logger 记录并继续拒绝 Promise，不在封装层吞掉失败；预期的 Axios 请求取消只继续拒绝，不记录错误或触发认证失效。
 - Token、密码、Cookie、二维码密钥和个人信息不得进入日志。
 
 ## 运行

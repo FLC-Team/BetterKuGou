@@ -12,6 +12,8 @@ import { useSettingsStore } from '../../stores/settingsStore.js'
 import { PLAYBACK_QUALITY_OPTIONS, normalizePlaybackQuality, readPlaybackQuality } from '../../utils/playbackQuality.js'
 import { getPlaylistCacheAPI, waitForPlaylistCacheSession, getPlaylistCacheSessionVersion } from '../../utils/playlistCache.js'
 import { cloneDeep } from '../../utils/objectUtils.js'
+import { parseDesktopLyrics } from '../../utils/desktopLyrics.js'
+import { getSongArtists, getSongSearchKeyword } from '../../utils/songMetadata.js'
 
 // 动态导入 SVG 图标
 import playlistIcon from '../../assets/icons/playlist.svg'
@@ -135,9 +137,11 @@ export default {
       isReplacingQualitySource: false,
       pendingSongOptions: null,
       loadingSongTarget: null,
+      loadingSongOptions: null,
       loadingSongTransition: 'select',
       metadataWaitCancel: null,
       songWaitCancel: null,
+      songAbortController: null,
       audioSourceVersion: 0,
       playbackStopVersion: 0,
       songRequestId: 0,
@@ -153,7 +157,7 @@ export default {
     },
     qualityStatus() {
       if (this.loadingQualityChange || this.pendingSongOptions?.qualityChange) return '正在切换…'
-      return `当前 ${this.currentQuality?.label || '待确认'}`
+      return this.currentQuality?.confirmed ? `实际音质 · ${this.currentQuality.label}` : '实际音质暂未确认'
     },
     qualityFeedback() {
       return [this.qualityMessage, this.qualitySaveMessage].filter(Boolean).join(' ')
@@ -306,19 +310,6 @@ export default {
         // 注意：不在这里通知父组件，避免与 loadSong 中的通知重复触发
         // 父组件同步由 loadSong 成功后统一通过 'song-changed' 事件进行
       }
-    },
-    // 监听当前歌曲变化，同步到系统托盘
-    currentSong: {
-      handler(newSong) {
-        if (newSong && window.electronAPI && window.electronAPI.updateTrack) {
-          const trackInfo = {
-            title: newSong.name || newSong.filename || '未知歌曲',
-            cover: newSong.cover ? newSong.cover.replace('{size}', '400') : null
-          }
-          window.electronAPI.updateTrack(trackInfo)
-        }
-      },
-      immediate: true
     }
   },
   mounted() {
@@ -371,6 +362,7 @@ export default {
     })
   },
   beforeUnmount() {
+    this.clearDesktopPlayback()
     this.isDisposed = true
     this.playbackStopVersion++
     this.seekPreviewTime = null
@@ -378,10 +370,13 @@ export default {
     this.isComponentReady = false
     this.pendingSong = null
     this.pendingSongOptions = null
+    this.replacingPlaybackSnapshot = null
+    this.loadingSongOptions = null
     this.pendingSongTransition = 'select'
     this.pendingLyricView = false
     this.songRequestId++
     this.songWaitCancel?.()
+    this.songAbortController?.abort()
     this.qualityRequestVersion++
     this.metadataWaitCancel?.()
     this.audioSourceVersion++
@@ -530,6 +525,14 @@ export default {
       }).finally(() => { if (this.cachedLyricData === data) this.cachedLyricData = null })
     },
 
+    /** 只读动画时钟绕过界面进度节流；换源和回滚期间不泄漏临时音源的零时间。 */
+    getAnimationPlaybackTime() {
+      const audio = this.$refs.audioPlayer
+      if (this.isDisposed || this.isLoadingSong || this.isReplacingQualitySource || this.replacingPlaybackSnapshot ||
+          !audio || !Number.isFinite(audio.currentTime)) return this.currentTime
+      return Math.max(0, audio.currentTime)
+    },
+
     /** 仅采集已确认歌曲；替换音源期间沿用替换前的状态，避免临时零值污染会话。 */
     getPlaybackSnapshot() {
       const audio = this.$refs.audioPlayer
@@ -559,6 +562,7 @@ export default {
       this.pendingSongOptions = options
       this.songRequestId++
       this.songWaitCancel?.()
+      this.songAbortController?.abort()
       if (!options.qualityChange) this.lyricRequestId++
       this.metadataWaitCancel?.()
       return this.drainPendingSong()
@@ -581,7 +585,7 @@ export default {
       return !this.isDisposed && requestId === this.songRequestId
     },
 
-    /** 播放成功后提交歌曲；失败或过期时先恢复已提交音源，再处理最新选歌。 */
+    /** 播放成功后提交歌曲；恢复旧源可被最新选歌抢占，确认快照贯穿连续切换。 */
     async loadSong(song, transition = 'select', options = {}) {
       const audioEl = this.$refs.audioPlayer
       if (!song?.hash || this.isDisposed || !audioEl || this.isLoadingSong) return false
@@ -596,14 +600,18 @@ export default {
       this.isLoadingSong = true
       this.loadingSongHash = song.hash
       this.loadingSongTarget = song
+      this.loadingSongOptions = options
       this.loadingSongTransition = transition
       this.loadingQualityChange = qualityChange
       if (qualityChange) this.qualityMessage = ''
       const requestId = ++this.songRequestId
+      const controller = new AbortController()
+      this.songAbortController = controller
       let sourceVersion = this.audioSourceVersion
       const ownsSource = () => !this.isDisposed && this.$refs.audioPlayer === audioEl &&
         this.audioSourceVersion === sourceVersion
       let previousPlayback = null
+      let playbackRestored = false
       let committed = false
       let playAttempted = false
       let failed = false
@@ -655,25 +663,28 @@ export default {
           const songIndex = this.playlist.findIndex(item => item?.hash === song.hash)
           if (songIndex !== -1) this.currentIndex = songIndex
           if (options.navigation && this.song?.hash !== song.hash) this.$emit('song-changed', this.currentSong)
+          committed = true
           return true
         }
 
         if (!qualityChange) this.lyricRequestId++
         let audioDetail = song
-        let urlResponse = getPlaylistCacheAPI()?.getSource ? await readCache(Boolean(options.cachedNetworkFallback)) : null
+        let urlResponse = getPlaylistCacheAPI()?.getSource && !options.refreshCachedSource
+          ? await readCache(Boolean(options.cachedNetworkFallback)) : null
         if (!this.isCurrentSongRequest(requestId)) return false
         if (!urlResponse && options.cachedNetworkFallback) throw new Error('在线音源连接中断，尚无可用离线缓存')
         if (!urlResponse) {
           try {
             if (!song.album_audio_id) {
-              const detailResponse = await this.waitForSongOperation(getSongDetail(song.hash))
+              const detailResponse = await this.waitForSongOperation(getSongDetail(song.hash, { signal: controller.signal }))
               if (!this.isCurrentSongRequest(requestId)) return false
               if (detailResponse?.status === 1 && detailResponse.data?.length > 0) {
                 audioDetail = { ...song, ...detailResponse.data[0] }
               }
             }
             urlResponse = await this.waitForSongOperation(getSongUrl(
-              audioDetail.hash, audioDetail.album_id || 0, audioDetail.album_audio_id || 0, requestedQuality
+              audioDetail.hash, audioDetail.album_id || 0, audioDetail.album_audio_id || 0, requestedQuality,
+              { signal: controller.signal }
             ))
           } catch (error) {
             if (!this.isCurrentSongRequest(requestId)) return false
@@ -694,7 +705,7 @@ export default {
         let playUrl = readPlayUrl(urlResponse)
 
         // 地址请求期间旧歌仍会播放，在替换前保存其最新位置和播放状态。
-        previousPlayback = {
+        previousPlayback = this.replacingPlaybackSnapshot || {
           source: this.loadedSongHash === this.currentSong?.hash ? audioEl.getAttribute('src') : null,
           leaseId: this.cacheSourceLeaseId,
           hash: this.loadedSongHash,
@@ -710,6 +721,8 @@ export default {
           sourceVersion = ++this.audioSourceVersion
           this.cacheSourceLeaseId = candidateLease
           audioEl.src = playUrl
+          // Chromium 会保留旧源尚未就绪时的默认 seek；新曲不能继承回滚位置。
+          audioEl.currentTime = 0
           if (qualityChange || restoreState) {
             audioEl.pause()
             const ready = await this.waitForAudioReady(audioEl, () => this.isCurrentSongRequest(requestId) && ownsSource())
@@ -765,6 +778,7 @@ export default {
         this.cachedLyricData = null
         this.currentLyricsFromCache = false
         this.currentTime = audioEl.currentTime
+        this.syncDesktopTrack(audioDetail)
         this.updateMediaSession(audioDetail)
         this.checkFavoriteStatus()
         if (this.playMode === 'shuffle' && !this.playedHistory.includes(this.currentIndex)) {
@@ -783,6 +797,9 @@ export default {
         return false
       } finally {
         cacheLookupActive = false
+        controller.abort()
+        if (this.songAbortController === controller) this.songAbortController = null
+        previousPlayback ||= this.replacingPlaybackSnapshot
         // 请求代次只决定是否提交；音源代次保证停止/卸载后旧任务不能恢复播放。
         if (!committed && previousPlayback && ownsSource()) {
           audioEl.pause()
@@ -795,9 +812,23 @@ export default {
             this.duration = previousPlayback.duration
             try {
               audioEl.currentTime = previousPlayback.time
-              if (previousPlayback.playing) await this.waitForSongOperation(audioEl.play(), audioEl, false)
+              const restoredSnapshot = this.replacingPlaybackSnapshot
+              const confirmRestoration = () => {
+                playbackRestored = true
+                // 等待已被抢占也要确认原源恢复；后继请求应采样其最新进度和暂停状态。
+                if (ownsSource() && this.replacingPlaybackSnapshot === restoredSnapshot) {
+                  this.replacingPlaybackSnapshot = null
+                }
+              }
+              if (previousPlayback.playing) {
+                const resumed = Promise.resolve(audioEl.play()).then(confirmRestoration)
+                const restoration = this.waitForSongOperation(resumed, audioEl)
+                // 新请求可能在恢复等待注册前已到达，不能再等旧源缓冲完成。
+                if (this.pendingSong) this.songWaitCancel?.()
+                await restoration
+              } else confirmRestoration()
             } catch (restoreError) {
-              if (ownsSource()) {
+              if (ownsSource() && !this.pendingSong) {
                 audioEl.pause()
                 if (qualityChange) this.qualityMessage = '音质切换失败，原音源恢复播放也失败，请重试或重新选歌。'
                 logger.error('MusicPlayer', '恢复上一首歌曲失败:', restoreError)
@@ -819,26 +850,26 @@ export default {
             this.currentSong && this.song?.hash === song.hash && this.currentSong.hash !== song.hash) {
           this.$emit('song-changed', this.currentSong)
         }
-        if (!committed && ownsSource() && this.isCurrentSongRequest(requestId) && !this.pendingSong &&
+        if ((!committed || replaying) && ownsSource() && this.isCurrentSongRequest(requestId) && !this.pendingSong &&
             this.currentSong && this.loadedSongHash === this.currentSong.hash && !this.currentLyrics) {
           this.loadLyric(this.currentSong)
         }
         this.isLoadingSong = false
-        this.replacingPlaybackSnapshot = null
+        this.replacingPlaybackSnapshot = !committed && !playbackRestored && this.pendingSong && ownsSource() ? previousPlayback : null
         this.loadingQualityChange = false
         this.isReplacingQualitySource = false
         if (options.restartFromBeginning && ownsSource() && this.isCurrentSongRequest(requestId)) {
           this.currentTime = audioEl.currentTime
           this.updatePositionState()
-          window.electronAPI?.updatePlaybackTime?.(this.currentTime * 1000)
           this.$emit('playback-state-changed')
         }
         if (qualityChange && ownsSource()) {
           this.updatePositionState()
-          window.electronAPI?.updatePlaybackTime?.(this.currentTime * 1000)
         }
+        if (ownsSource()) this.syncDesktopTime(true)
         this.loadingSongHash = null
         this.loadingSongTarget = null
+        this.loadingSongOptions = null
         if ((committed || replaying && !failed) && this.isCurrentSongRequest(requestId) && ownsSource()) this.cachePlayedSong()
         if (failed && options.navigation && this.isCurrentSongRequest(requestId) && !this.pendingSong &&
             options.navigation.stopVersion === this.playbackStopVersion) {
@@ -860,7 +891,7 @@ export default {
     },
 
     /** 限制普通加载与播放等待；新选歌可取消，停止/卸载也会释放恢复中的等待。 */
-    waitForSongOperation(operation, audioEl = null, cancelOnSelection = true) {
+    waitForSongOperation(operation, audioEl = null) {
       const sourceVersion = this.audioSourceVersion
       return new Promise((resolve, reject) => {
         let settled = false
@@ -878,7 +909,7 @@ export default {
         const onMediaError = () => finish(undefined, this.createPlaybackMediaError(audioEl, '音频无法加载，请重试或选择其他歌曲'))
         const timer = setTimeout(() => finish(undefined, this.createPlaybackMediaError(audioEl, '歌曲加载超时，请重试或选择其他歌曲')), 15000)
         this.pendingTimers.set(timer, cancel)
-        if (cancelOnSelection) this.songWaitCancel = cancel
+        this.songWaitCancel = cancel
         audioEl?.addEventListener?.('error', onMediaError)
         Promise.resolve(operation).then(value => {
           // 已取消的 play 可能迟到；清空音源后不得重新进入播放状态。
@@ -905,9 +936,15 @@ export default {
       })
       const target = this.pendingSong || this.loadingSongTarget || this.currentSong || this.song
       if (!target?.hash) return Promise.resolve(false)
+      const targetOptions = this.pendingSong ? this.pendingSongOptions
+        : this.loadingSongTarget ? this.loadingSongOptions : null
       const transition = this.pendingSong ? this.pendingSongTransition
         : this.loadingSongTarget ? this.loadingSongTransition : this.trackTransition
-      return this.requestSong(target, transition, { quality,
+      // 再选正在使用的缓存档位时允许联网重试，避免服务降级的缓存永久占据该偏好。
+      const confirmedLease = this.replacingPlaybackSnapshot ? this.replacingPlaybackSnapshot.leaseId : this.cacheSourceLeaseId
+      const refreshCachedSource = Boolean(target.hash === this.currentSong?.hash && this.loadedSongHash === target.hash &&
+        confirmedLease && this.loadedQualityPreference === quality && !targetOptions?.cachedNetworkFallback)
+      return this.requestSong(target, transition, { ...targetOptions, quality, refreshCachedSource,
         qualityChange: target.hash === this.currentSong?.hash && this.loadedSongHash === target.hash })
     },
 
@@ -973,6 +1010,7 @@ export default {
       this.playbackStopVersion++
       this.songRequestId++
       this.songWaitCancel?.()
+      this.songAbortController?.abort()
       this.metadataWaitCancel?.()
       this.clearPendingTimers()
       this.audioSourceVersion++
@@ -980,6 +1018,8 @@ export default {
       this.lyricViewRequestId++
       this.pendingSong = null
       this.pendingSongOptions = null
+      this.loadingSongOptions = null
+      this.replacingPlaybackSnapshot = null
       this.pendingSongTransition = 'select'
       this.trackTransition = 'select'
       this.pendingLyricView = false
@@ -1010,6 +1050,7 @@ export default {
       this.shuffledPlaylist = []
       this.playOrderHistory = []
       this.historyPointer = -1
+      this.clearDesktopPlayback()
     },
 
     // 显示错误提示（非弹窗）
@@ -1127,7 +1168,8 @@ export default {
             // 如果没有解码内容，尝试使用原始content（可能是base64编码）
             try {
               // 尝试base64解码
-              const decoded = atob(lyricResponse.content)
+              const bytes = Uint8Array.from(atob(lyricResponse.content), character => character.charCodeAt(0))
+              const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
               this.currentLyrics = decoded
               this.isLyricPlaceholder = !decoded.trim()
               if (process.env.NODE_ENV === 'development') {
@@ -1227,7 +1269,7 @@ export default {
         
         if (!lrcContent) {
           logger.trace('MusicPlayer', '歌词内容为空，发送空数组')
-          window.electronAPI.updateLyrics([])
+          window.electronAPI.updateLyrics([], this.loadedSongHash)
           return
         }
 
@@ -1236,225 +1278,53 @@ export default {
         
         logger.trace('MusicPlayer', '🎵 解析完成，发送', parsedLyrics.length, '行歌词到桌面')
         logger.trace('MusicPlayer', '🎵 前3行歌词预览:', parsedLyrics.slice(0, 3))
-        window.electronAPI.updateLyrics(parsedLyrics)
+        window.electronAPI.updateLyrics(parsedLyrics, this.loadedSongHash)
+        this.syncDesktopTime(true)
       } catch (error) {
         logger.error('MusicPlayer', '❌ 发送歌词到桌面歌词窗口失败:', error)
       }
     },
 
-    // 解析歌词内容为桌面歌词格式
+    // 桌面窗口使用毫秒时间轴，原始译文与文本由纯解析器统一保留。
     parseLyricsForDesktop(lrcContent, rawLyricData = null) {
-      if (!lrcContent) return []
-
-      // 清理BOM和多余的空白字符
-      let cleanContent = lrcContent.replace(/^\ufeff/, '') // 移除BOM
-      cleanContent = cleanContent.trim()
-      
-      // 处理不同的换行符
-      const lines = cleanContent.split(/\r\n|\n|\r/).filter(line => line.trim())
-      const result = []
-      
-      logger.trace('MusicPlayer', '🎵 桌面歌词解析 - 总行数:', lines.length)
-      logger.trace('MusicPlayer', '🎵 桌面歌词解析 - 前5行:', lines.slice(0, 5))
-      
-      // 检测歌词格式
-      const hasKrcFormat = lines.some(line => /^\[\d+,\d+\]/.test(line.trim()))
-      const hasLrcFormat = lines.some(line => /^\[\d{1,2}:\d{2}/.test(line.trim()))
-      
-      logger.trace('MusicPlayer', '🎵 歌词格式检测 - KRC格式:', hasKrcFormat, 'LRC格式:', hasLrcFormat)
-      
-      if (hasKrcFormat) {
-        // 解析KRC格式歌词
-        return this.parseKrcLyrics(lines)
-      } else if (hasLrcFormat) {
-        // 解析LRC格式歌词
-        return this.parseLrcLyrics(lines)
-      } else {
-        logger.trace('MusicPlayer', '🎵 未识别的歌词格式')
-        return []
-      }
+      return parseDesktopLyrics(lrcContent, rawLyricData)
     },
 
-    // 解析KRC格式歌词（支持卡拉OK逐字效果）
-    parseKrcLyrics(lines) {
-      const result = []
-      
-      for (let i = 0; i < lines.length; i++) {
-        const trimmedLine = lines[i].trim()
-        if (!trimmedLine) continue
-        
-        // 跳过元数据行
-        if (trimmedLine.match(/^\[(?:ar|ti|al|by|offset|id|length|re|ve|language)[:]/i)) {
-          logger.trace('MusicPlayer', '🎵 跳过KRC元数据行:', trimmedLine.substring(0, 50))
-          continue
-        }
-        
-        // KRC格式: [开始时间,持续时间]<字时间信息>歌词内容
-        const krcMatch = trimmedLine.match(/^\[(\d+),(\d+)\](.*)/)
-        if (!krcMatch) {
-          logger.trace('MusicPlayer', '🎵 跳过非KRC格式行:', trimmedLine.substring(0, 50))
-          continue
-        }
-        
-        const lineStartTime = parseInt(krcMatch[1]) // 行开始时间（毫秒）
-        const lineDuration = parseInt(krcMatch[2])   // 行持续时间（毫秒）
-        const content = krcMatch[3]              // 歌词内容部分
-        
-        logger.trace('MusicPlayer', '🎵 处理KRC行:', {
-          lineStartTime: lineStartTime + 'ms',
-          lineDuration: lineDuration + 'ms',
-          content: content.substring(0, 50)
-        })
-        
-        // 解析逐字时间信息和文本
-        const wordData = this.parseKrcWordTimings(content, lineStartTime)
-        
-        if (wordData.words.length > 0) {
-          const lyricObj = {
-            time: lineStartTime,
-            text: wordData.fullText,
-            words: wordData.words, // 逐字时间信息
-            duration: lineDuration,
-            isKrc: true // 标记为KRC格式，支持卡拉OK效果
-          }
-          
-          result.push(lyricObj)
-          logger.trace('MusicPlayer', '🎵 KRC解析结果:', {
-            time: lineStartTime,
-            text: wordData.fullText,
-            wordsCount: wordData.words.length
-          })
-        }
-      }
-      
-      // 按时间排序
-      result.sort((a, b) => a.time - b.time)
-      
-      logger.trace('MusicPlayer', '🎵 KRC桌面歌词解析结果:', {
-        totalLines: result.length,
-        firstFew: result.slice(0, 3),
-        lastFew: result.slice(-3)
+    /** Only confirmed songs publish identity; metadata updates keep their existing timeline. */
+    syncDesktopTrack(detail = this.currentSong) {
+      if (!this.currentSong?.hash || this.loadedSongHash !== this.currentSong.hash) return
+      const song = { ...this.currentSong, ...detail }
+      const cover = song.cover || song.img || song.album_cover || null
+      window.electronAPI?.updateTrack?.({
+        trackId: this.loadedSongHash,
+        title: getSongSearchKeyword(song) || '未知歌曲',
+        artist: getSongArtists(song).map(artist => artist.name).join('、') || '未知歌手',
+        cover: typeof cover === 'string' ? cover.replace('{size}', '400') : null
       })
-      
-      return result
     },
 
-    // 解析KRC逐字时间信息
-    parseKrcWordTimings(content, lineStartTime) {
-      const words = []
-      let fullText = ''
-      
-      // 正则表达式匹配 <时间偏移,持续时间,类型>文字 的模式
-      const wordPattern = /<(\d+),(\d+)(?:,\d+)?>(.*?)(?=<|\s*$)/g
-      let match
-      
-      while ((match = wordPattern.exec(content)) !== null) {
-        const timeOffset = parseInt(match[1])     // 时间偏移（毫秒）
-        const duration = parseInt(match[2])       // 持续时间（毫秒）
-        let text = match[3]                       // 文字内容（保留原始空格）
-        
-        if (text) {
-          const wordObj = {
-            word: text, // 保持与全屏歌词一致的字段名
-            startTime: timeOffset, // 相对时间偏移
-            endTime: timeOffset + duration, // 相对结束时间
-            duration: duration
-          }
-          
-          words.push(wordObj)
-          fullText += text
-        }
-      }
-      
-      // 如果没有匹配到逐字信息，尝试提取纯文本
-      if (words.length === 0) {
-        const plainText = content
-          .replace(/<\d+,\d+(?:,\d+)?>/g, '') // 移除时间标签
-          .replace(/<\/?\w+>/g, '')           // 移除其他HTML标签
-          .trim()
-        
-        if (plainText) {
-          fullText = plainText
-          // 创建一个整行的word对象
-          words.push({
-            word: plainText,
-            startTime: 0,
-            endTime: 0,
-            duration: 0
-          })
-        }
-      }
-      
-      return {
-        words: words,
-        fullText: fullText
-      }
-    },
-
-    // 解析LRC格式歌词
-    parseLrcLyrics(lines) {
-      const result = []
-      const timeRegex = /\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]/g
-      
-      for (let i = 0; i < lines.length; i++) {
-        const trimmedLine = lines[i].trim()
-        if (!trimmedLine) continue
-        
-        // 跳过元数据行
-        if (trimmedLine.match(/^\[(?:ar|ti|al|by|offset|id|length|re|ve|language)[:]/i)) {
-          logger.trace('MusicPlayer', '🎵 跳过LRC元数据行:', trimmedLine.substring(0, 50))
-          continue
-        }
-        
-        // 检查是否包含时间标签
-        const hasTimeTag = /\[\d{1,2}:\d{2}/.test(trimmedLine)
-        if (!hasTimeTag) {
-          logger.trace('MusicPlayer', '🎵 跳过无时间标签的LRC行:', trimmedLine.substring(0, 50))
-          continue
-        }
-        
-        logger.trace('MusicPlayer', '🎵 处理LRC歌词行:', trimmedLine.substring(0, 100))
-        
-        const timeMatches = []
-        
-        // 重置正则表达式的lastIndex
-        timeRegex.lastIndex = 0
-        let match
-        
-        // 找到所有时间标签
-        while ((match = timeRegex.exec(trimmedLine)) !== null) {
-          const minutes = parseInt(match[1])
-          const seconds = parseInt(match[2])
-          const millisecondsStr = match[3] || '0'
-          const milliseconds = parseInt(millisecondsStr.padEnd(3, '0'))
-          const timeInMs = minutes * 60000 + seconds * 1000 + milliseconds
-          timeMatches.push(timeInMs)
-        }
-        
-        // 移除时间标签，获取纯歌词文本
-        const text = trimmedLine.replace(/\[\d{1,2}:\d{2}(?:\.\d{1,3})?\]/g, '').trim()
-        
-        // 为每个时间标签创建歌词对象
-        for (const timeInMs of timeMatches) {
-          const lyricObj = {
-            time: timeInMs,
-            text: text || '♪'
-          }
-          result.push(lyricObj)
-        }
-      }
-      
-      // 按时间排序
-      result.sort((a, b) => a.time - b.time)
-      
-      logger.trace('MusicPlayer', '🎵 LRC桌面歌词解析结果:', {
-        totalLines: result.length,
-        firstFew: result.slice(0, 3)
+    /** Continuous playback is throttled; seeks, pauses and source commits always send their final position. */
+    syncDesktopTime(force = false) {
+      const audio = this.$refs.audioPlayer
+      if (this.isDisposed || this.isReplacingQualitySource || this.replacingPlaybackSnapshot ||
+          !this.loadedSongHash || this.loadedSongHash !== this.currentSong?.hash || !audio?.getAttribute('src') ||
+          !Number.isFinite(audio.currentTime)) return
+      const now = Date.now()
+      if (!force && this.lastDesktopTimeUpdate != null && now - this.lastDesktopTimeUpdate < 150) return
+      this.lastDesktopTimeUpdate = now
+      const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : this.duration
+      window.electronAPI?.updatePlaybackTime?.(Math.max(0, audio.currentTime) * 1000, {
+        trackId: this.loadedSongHash,
+        duration: Number.isFinite(duration) && duration > 0 ? duration * 1000 : 0
       })
-      
-      return result
     },
-    
+
+    /** A null track clears the main-process snapshot and any open or subsequently reopened desktop lyrics. */
+    clearDesktopPlayback() {
+      this.lastDesktopTimeUpdate = null
+      window.electronAPI?.updateTrack?.(null)
+    },
+
     // 播放/暂停
     togglePlay() {
       const audioEl = this.$refs.audioPlayer
@@ -1462,6 +1332,10 @@ export default {
       if (this.isDisposed || !audioEl || !audioEl.getAttribute('src')) {
         logger.warn('MusicPlayer', '没有设置音频源')
         return
+      }
+      // 原源仍在恢复时也保留用户主动的播放/暂停意图，不能被后继失败回滚覆盖。
+      if (this.replacingPlaybackSnapshot?.source === audioEl.getAttribute('src')) {
+        this.replacingPlaybackSnapshot.playing = !this.isPlaying
       }
       
       if (this.isPlaying) {
@@ -1627,7 +1501,6 @@ export default {
           if (!nextSong || !nextSong.hash) {
             logger.warn('MusicPlayer', '选中的歌曲无效，跳过:', nextSong)
             attempts++
-            await this.waitForDelay(300)
             continue
           }
           
@@ -1639,8 +1512,6 @@ export default {
           }
           
           logger.warn('MusicPlayer', '上一曲加载失败，尝试下一首...')
-          // 添加短暂延迟，避免过快切换
-          await this.waitForDelay(500)
           attempts++
         }
         
@@ -1667,11 +1538,11 @@ export default {
     
     // 下一曲
     async playNext(source = 'next') {
-      if (this.playlist.length === 0) return
+      if (this.isDisposed || this.playlist.length === 0) return
       // 按钮事件与系统控制都归入手动下一首；自动续播保留独立过渡。
       const transition = source === 'auto' ? 'auto' : 'next'
       
-      if (this.isSwitchingSong || this.isLoadingSong) return this.queueNavigation(1, transition)
+      if (this.isSwitchingSong || this.isLoadingSong || this.pendingSong) return this.queueNavigation(1, transition)
       
       // 设置切歌锁，使用更轻量的锁机制
       this.isSwitchingSong = true
@@ -1807,7 +1678,6 @@ export default {
         if (!nextSong || !nextSong.hash) {
           logger.warn('MusicPlayer', '选中的歌曲无效，跳过:', nextSong)
           attempts++
-          await this.waitForDelay(300)
           continue
         }
         
@@ -1824,8 +1694,6 @@ export default {
         }
         
         logger.warn('MusicPlayer', '下一曲加载失败，尝试下一首...')
-        // 添加短暂延迟，避免过快切换
-        await this.waitForDelay(500)
         attempts++
       }
       
@@ -1978,6 +1846,7 @@ export default {
       if (window.electronAPI && window.electronAPI.updatePlaybackState) {
         window.electronAPI.updatePlaybackState(true)
       }
+      this.syncDesktopTime(true)
     },
     
     // 音频暂停事件
@@ -1993,6 +1862,7 @@ export default {
       if (window.electronAPI && window.electronAPI.updatePlaybackState) {
         window.electronAPI.updatePlaybackState(false)
       }
+      this.syncDesktopTime(true)
     },
     
     // 播放模式切换
@@ -2168,6 +2038,7 @@ export default {
       audioEl.currentTime = target
       this.currentTime = target
       this.updatePositionState()
+      this.syncDesktopTime(true)
       logger.trace('MusicPlayer', '跳转歌曲进度', { time: target })
     },
 
@@ -2412,15 +2283,7 @@ export default {
         this.currentTime = audioEl.currentTime
         this.duration = audioEl.duration || 0
         
-        // 节流发送播放时间到桌面歌词窗口（每150ms最多发送一次，减少闪烁）
-        if (window.electronAPI && window.electronAPI.updatePlaybackTime) {
-          const now = Date.now()
-          if (!this.lastDesktopTimeUpdate || now - this.lastDesktopTimeUpdate >= 150) {
-            this.lastDesktopTimeUpdate = now
-            // 转换为毫秒并发送
-            window.electronAPI.updatePlaybackTime(audioEl.currentTime * 1000)
-          }
-        }
+        this.syncDesktopTime(audioEl.paused || audioEl.seeking)
         
         // 定期更新 MediaSession 位置状态（每秒更新一次，避免过于频繁）
         if ('mediaSession' in navigator && this.isPlaying) {
@@ -2437,6 +2300,7 @@ export default {
     handleSeeked() {
       if (this.isDisposed || this.isLoadingSong || this.isSwitchingSong) return
       this.handleTimeUpdate()
+      this.syncDesktopTime(true)
       this.$emit('playback-state-changed')
     },
     

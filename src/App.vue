@@ -1,9 +1,10 @@
 <script setup>
 import { logger } from './utils/logger.js'
 
-import { ref, computed, defineAsyncComponent, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ref, computed, h, defineAsyncComponent, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { TitleBar, Sidebar, MusicPlayer } from './components/index.js'
 import HomeView from './views/HomeView.vue'
+import PageLoadingView from './views/PageLoadingView.vue'
 import { clearLoginInfo, getLoginInfo, isLoggedIn } from './api/auth.js'
 import { getUserPlaylists, KUGOU_AUTH_EXPIRED_EVENT } from './api/music.js'
 import { useSettingsStore } from './stores/settingsStore.js'
@@ -13,9 +14,13 @@ import { initializePlaylistCacheSession, getPlaylistCacheAPI, callPlaylistCache 
 import ThemeRecovery from './components/common/ThemeRecovery.vue'
 
 /** 非首页界面首次使用时加载，保留原组件名供 KeepAlive 缓存。 */
-function createLazyView(name, loader) {
+function createLazyView(name, loader, options = {}) {
   return defineAsyncComponent({
     loader,
+    loadingComponent: options.floating
+      ? { name: 'FloatingPageLoadingView', render: () => h(PageLoadingView, { floating: true }) }
+      : PageLoadingView,
+    delay: 120,
     onError(error, _retry, fail) {
       logger.error('App', `加载${name}界面失败`, error)
       fail()
@@ -32,7 +37,7 @@ const RankDetailView = createLazyView('排行榜', () => import('./views/RankDet
 const SearchView = createLazyView('搜索', () => import('./views/SearchView.vue'))
 const ArtistView = createLazyView('歌手', () => import('./views/ArtistView.vue'))
 const AlbumDetailView = createLazyView('专辑', () => import('./views/AlbumDetailView.vue'))
-const ThemeStudio = createLazyView('外观编辑器', () => import('./components/common/ThemeStudio.vue'))
+const ThemeStudio = createLazyView('外观编辑器', () => import('./components/common/ThemeStudio.vue'), { floating: true })
 
 const themeStudioOpen = ref(false)
 const settingsViewRef = ref(null)
@@ -1379,12 +1384,13 @@ function performMemoryCleanup() {
 
 <template>
   <Teleport to="body">
-    <div v-if="preparingInstall" class="install-preparation" role="status" aria-live="polite">
+    <Transition name="ui-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><div v-if="preparingInstall" class="install-preparation" role="status" aria-live="polite">
       <div class="install-preparation-message">
+        <span class="loading-spinner" aria-hidden="true"></span>
         <p>正在保存，准备更新</p>
         <span>保存完成后将关闭 BetterKuGou，请稍候。</span>
       </div>
-    </div>
+    </div></Transition>
   </Teleport>
   <div class="app-container" :class="{ 'has-player': hasPlayer, 'has-floating-player': hasPlayer && settings.custom?.playerStyle === 'netease' }">
     <TitleBar

@@ -47,7 +47,7 @@ function loadLogin(api = {}) {
   })
   vm.runInContext(source, sandbox)
   const options = sandbox.module.exports
-  const view = options.data()
+  const view = { ...options.data(), $nextTick: () => Promise.resolve() }
   for (const [name, method] of Object.entries(options.methods)) view[name] = method.bind(view)
   view.$emit = (...args) => emitted.push(args)
   return {

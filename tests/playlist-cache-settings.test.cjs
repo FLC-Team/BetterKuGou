@@ -3,6 +3,8 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const vue = require('vue')
+// CSS transitions are exercised in Electron; this host tests the actual state/action ordering.
+const motionVue = { ...vue, Transition: { setup(_props, { slots }) { return () => slots.default?.()[0] } } }
 const { parse, compileScript } = require('@vue/compiler-sfc')
 
 const filename = path.join(__dirname, '../src/components/common/PlaylistCacheSettings.vue')
@@ -22,7 +24,7 @@ function mount(t, options = {}) {
     async clear() { calls.push('clear'); return { ...snapshot, revision: 5, playlists: [], usedBytes: 0 } },
     async retry() { calls.push('retry'); return options.actionResult || { ...snapshot, revision: 5 } }
   }
-  const Component = new Function('Vue', 'window', 'logger', compiled)(vue, { electronAPI: { playlistCache: api } }, { warn() {} })
+  const Component = new Function('Vue', 'window', 'logger', compiled)(motionVue, { electronAPI: { playlistCache: api } }, { warn() {} })
   const node = (type, text = '') => ({ type, text, props: {}, children: [], parent: null })
   const renderer = vue.createRenderer({
     createElement: node, createText: value => node('text', value), createComment: () => node('comment'),

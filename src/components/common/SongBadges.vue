@@ -19,4 +19,7 @@ export default {
 <style scoped>
 .song-badges { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; vertical-align: middle; }
 .song-badge { display: inline-block; padding: 1px 4px; border: 1px solid currentColor; border-radius: 3px; color: var(--color-primary); font-size: 9px; font-weight: 650; line-height: 1.35; letter-spacing: .3px; white-space: nowrap; }
+.song-badge { animation: badge-appear .2s ease-out both; }
+@keyframes badge-appear { from { opacity: 0; scale: .9; } to { opacity: 1; scale: 1; } }
+@media (prefers-reduced-motion: reduce) { .song-badge { animation: none; } }
 </style>

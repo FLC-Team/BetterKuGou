@@ -1,7 +1,7 @@
 <template>
   <div class="playlist-drawer" :class="{ 'show': visible }" @click.self="closeDrawer">
     <!-- 抽屉内容 -->
-    <div ref="drawerContent" class="drawer-content" :inert="!visible" :aria-hidden="!visible" @click.stop @keydown.esc.stop="closeDrawer">
+    <Transition name="drawer-panel" appear @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')"><div v-if="visible" ref="drawerContent" class="drawer-content" :inert="!visible" :aria-hidden="!visible" @click.stop @keydown.esc.stop="closeDrawer">
       <!-- 头部 -->
       <div class="drawer-header">
         <h3>播放列表</h3>
@@ -14,7 +14,7 @@
       </div>
 
       <!-- 播放列表 -->
-      <div v-if="visible" class="playlist-content">
+      <div class="playlist-content">
         <TransitionGroup 
           name="playlist-item" 
           tag="div" 
@@ -89,11 +89,11 @@
           {{ showClearConfirm ? '确认清除' : '清空列表' }}
         </button>
       </div>
-    </div>
+    </div></Transition>
 
-    <button v-if="!visible" ref="restoreButton" type="button" class="drawer-restore-button" aria-label="展开播放列表" title="展开播放列表" aria-expanded="false" @click="$emit('open')">
+    <Transition name="drawer-restore" @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')"><button v-if="!visible" ref="restoreButton" type="button" class="drawer-restore-button" aria-label="展开播放列表" title="展开播放列表" aria-expanded="false" @click="$emit('open')">
       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 5-7 7 7 7" /></svg>
-    </button>
+    </button></Transition>
 
     <!-- 右键菜单 -->
     <ContextMenu
@@ -432,12 +432,13 @@ export default {
   z-index: 1000;
   pointer-events: none;
   background: transparent;
+  transition: background-color 0.3s ease;
 }
 
 .playlist-drawer.show {
   pointer-events: auto;
   background: var(--playlist-overlay); /* 半透明遮罩背景 */
-  animation: fadeIn 0.3s ease;
+
 }
 
 @keyframes fadeIn {
@@ -459,13 +460,14 @@ export default {
   border-right: none;
   display: flex;
   flex-direction: column;
-  transform: translateX(100%);
-  transition: transform 0.3s ease;
-}
-
-.playlist-drawer.show .drawer-content {
   transform: translateX(0);
 }
+
+.drawer-panel-enter-active, .drawer-panel-leave-active { transition: transform 0.3s ease; }
+.drawer-panel-enter-from, .drawer-panel-leave-to { transform: translateX(100%); }
+.drawer-panel-leave-active { pointer-events: none; }
+.drawer-restore-enter-active, .drawer-restore-leave-active { transition: opacity 180ms ease, translate 180ms ease; }
+.drawer-restore-enter-from, .drawer-restore-leave-to { opacity: 0; translate: 100% 0; }
 
 .drawer-restore-button {
   position: fixed;
@@ -485,13 +487,14 @@ export default {
   box-shadow: var(--shadow-sidebar);
   pointer-events: auto;
   cursor: pointer;
+  transition: color 150ms ease, background-color 150ms ease, scale 100ms ease;
 }
 .drawer-restore-button:hover { color: var(--color-primary); }
 .drawer-restore-button:focus-visible, .close-btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -3px; }
 
 @media (prefers-reduced-motion: reduce) {
-  .drawer-content { transition: none; }
-  .playlist-drawer.show { animation: none; }
+  .playlist-drawer, .drawer-content, .drawer-panel-enter-active, .drawer-panel-leave-active, .drawer-restore-enter-active, .drawer-restore-leave-active { transition: none; }
+  .playlist-drawer *, .playlist-item-enter-active, .playlist-item-leave-active, .playlist-item-move { animation: none !important; transition-duration: 0s !important; }
 }
 
 /* 头部 */

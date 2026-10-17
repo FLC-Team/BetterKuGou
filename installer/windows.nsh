@@ -37,6 +37,14 @@ FunctionEnd
 !define MUI_CUSTOMFUNCTION_ABORT BKUserAbort
 
 Var BKPage
+Var BKMotionEnabled
+Var BKPageMotionPage
+Var BKPageMotionStart
+Var BKPageMotionX
+Var BKScopePosition
+Var BKScopeTarget
+Var BKScopeLevel
+Var BKScopeReady
 Var BKTitle
 Var BKSubtitle
 Var BKSubtitleControl
@@ -99,6 +107,16 @@ Var BKLicenseText
 Var BKImage
 Var BKProgressImage
 Var BKProgressControls
+Var BKProgressTitle
+Var BKProgressSubtitle
+Var BKProgressStep
+Var BKProgressBrandStep
+Var BKInstallAnimation
+Var BKAnimationParent
+Var BKAnimationKind
+Var BKAnimationTheme
+Var BKAnimationDpi
+Var BKSuccessMotionPage
 Var BKDrag
 Var BKPathInput
 Var BKDone
@@ -205,6 +223,11 @@ Var BKParseHadPre
   File /oname=$PLUGINSDIR\bk-notes.txt "${PROJECT_DIR}\updata_log.md"
   File /oname=$PLUGINSDIR\bk-logo-light.bmp "${PROJECT_DIR}\installer\assets\logo-light.bmp"
   File /oname=$PLUGINSDIR\bk-logo-dark.bmp "${PROJECT_DIR}\installer\assets\logo-dark.bmp"
+  ; Silent RLE8 clips are decoded by Windows, without codecs or NSIS callbacks.
+  !insertmacro BKMotionAssets 96
+  !insertmacro BKMotionAssets 120
+  !insertmacro BKMotionAssets 144
+  !insertmacro BKMotionAssets 192
   StrCpy $BKFile "$PLUGINSDIR\bk-license.txt"
   Call BKReadUtf8
   StrCpy $BKLicenseText $0
@@ -253,6 +276,7 @@ Var BKParseHadPre
 !macro customPageAfterChangeDir
   Page custom BKPreparePage BKPrepareLeave
   !define MUI_PAGE_CUSTOMFUNCTION_SHOW BKProgressShow
+  !define MUI_PAGE_CUSTOMFUNCTION_LEAVE BKProgressLeave
 !macroend
 
 !macro customFinishPage

@@ -75,7 +75,8 @@ function environment(options = {}) {
     setTimeout: time.setTimeout, clearTimeout: time.clearTimeout,
     requestAnimationFrame(callback) { const id = ++frameId; frames.set(id, callback); return id },
     cancelAnimationFrame(id) { frames.delete(id) },
-    atob: value => Buffer.from(value, 'base64').toString('utf8')
+    TextDecoder,
+    atob: value => Buffer.from(value, 'base64').toString('binary')
   }
   vm.createContext(sandbox)
   vm.runInContext(source, sandbox, { filename: 'LyricView.js' })
@@ -412,10 +413,17 @@ test('the production template exposes keyboard seek, the return button, copy fee
   })
   const seeks = []
   const searches = []
+  const qualities = []
+  let qualityRetries = 0
   const container = node('root')
   const app = renderer.createApp({ ...env.component, render }, {
     visible: true, lyricsInteractive: true, lyrics: '[00:00.00]first\n[00:10.00]second', duration: 20,
-    song: { hash: 'A', name: 'song A' }, onSeek: value => seeks.push(value), onSearch: value => searches.push(value)
+    song: { hash: 'A', name: 'song A' }, onSeek: value => seeks.push(value), onSearch: value => searches.push(value),
+    qualityOptions: [
+      { value: '128', label: '标准 128 kbps', name: '标准', detail: '128 kbps', shortLabel: '128K' },
+      { value: '320', label: '高品 320 kbps', name: '高品', detail: '320 kbps', shortLabel: '320K' }
+    ], qualityPreference: '320', qualityStatus: '实际音质 · 128 kbps',
+    onChangeQuality: value => qualities.push(value), qualityMessage: '音质切换失败', onRetryQuality: () => qualityRetries++
   })
   app.config.warnHandler = () => {}
   const lyric = app.mount(container)
@@ -442,4 +450,117 @@ test('the production template exposes keyboard seek, the return button, copy fee
   await lyric.copyLyricText('first')
   await vue.nextTick()
   assert.equal(all().find(element => element.props.class === 'lyric-copy-feedback').text, '已复制歌词')
+  const trigger = all().find(element => element.props['aria-haspopup'] === 'menu')
+  assert.equal(trigger.props['aria-expanded'], false)
+  assert.match(trigger.props['aria-label'], /高品 320 kbps.*实际音质 · 128 kbps/)
+  trigger.props.onClick()
+  await vue.nextTick()
+  const options = all().filter(element => element.props.role === 'menuitemradio')
+  assert.deepEqual(options.map(element => element.props['aria-checked']), [false, true])
+  assert.equal(all().some(element => element.type === 'select'), false)
+  options[1].props.onClick()
+  await vue.nextTick()
+  assert.deepEqual(qualities, ['320'])
+  assert.equal(trigger.props['aria-expanded'], false)
+  let translationRetries = 0
+  lyric.translationMessage = '翻译偏好保存失败'
+  lyric.saveTranslationPreference = () => translationRetries++
+  await vue.nextTick()
+  const feedbacks = all().filter(element => element.props.class === 'lyric-tool-feedback')
+  assert.equal(feedbacks.length, 2)
+  for (const feedback of feedbacks) feedback.children.find(element => element.type === 'button').props.onClick()
+  assert.equal(qualityRetries, 1)
+  assert.equal(translationRetries, 1)
+})
+
+test('translation decoding preserves UTF-8 and only mapped nonempty translations enable the switch', t => {
+  const { lyric } = fixture(t)
+  const language = content => Buffer.from(JSON.stringify({ version: 1, content }), 'utf8').toString('base64')
+  lyric.parseLyrics('[00:00.00]hello', { language: language([{ type: 1, lyricContent: [['你好，世界 🌙']] }]) })
+  assert.equal(lyric.parsedLyrics[0].translation, '你好，世界 🌙')
+  assert.equal(lyric.hasTranslation, true)
+  for (const content of [
+    [{ type: 0, lyricContent: [['hello']] }],
+    [{ type: 1, lyricContent: [] }],
+    [{ type: 1, lyricContent: [['   ']] }],
+    [{ type: 1, lyricContent: [[42]] }]
+  ]) {
+    lyric.parseLyrics('[00:00.00]hello', { language: language(content) })
+    assert.equal(lyric.hasTranslation, false)
+  }
+})
+
+test('translation save failure retains the latest display intent across rollback and can retry', async t => {
+  const { lyric, component } = fixture(t)
+  const writes = []
+  lyric.hasTranslation = true
+  lyric.showTranslation = true
+  lyric.settingsStore.updateSettings = patch => new Promise((resolve, reject) => writes.push({ patch, resolve, reject }))
+  const hiding = lyric.toggleTranslation()
+  const showing = lyric.toggleTranslation()
+  component.watch['settingsStore.settings.playback.showTranslation'].call(lyric, false)
+  assert.equal(lyric.showTranslation, true)
+  writes[0].reject(new Error('first write failed'))
+  await hiding
+  assert.equal(lyric.translationMessage, '')
+  writes[1].reject(new Error('latest write failed'))
+  await showing
+  assert.match(lyric.translationMessage, /保存失败/)
+  assert.equal(lyric.translationPreferenceDraft, true)
+  assert.equal(lyric.showTranslation, true)
+  const retry = lyric.saveTranslationPreference()
+  assert.equal(writes[2].patch.playback.showTranslation, true)
+  writes[2].resolve()
+  await retry
+  assert.equal(lyric.translationMessage, '')
+  assert.equal(lyric.translationPreferenceDraft, null)
+  component.watch['settingsStore.settings.playback.showTranslation'].call(lyric, false)
+  assert.equal(lyric.showTranslation, false)
+})
+
+test('quality menus support keyboard movement, Escape, outside clicks and context-menu exclusivity', async t => {
+  const { lyric, menuManager, emitted } = fixture(t)
+  let focused = null
+  const options = ['128', '320', 'flac', 'high'].map(value => ({ value, focus() { focused = value } }))
+  const trigger = { focus() { focused = 'trigger' } }
+  lyric.$refs.qualityTrigger = trigger
+  lyric.$refs.qualityControl = {
+    querySelector: () => options[1], querySelectorAll: () => options,
+    contains: target => target === trigger || options.includes(target)
+  }
+  let previousMenuClosed = false
+  menuManager.registerMenu(() => { previousMenuClosed = true })
+  lyric.openQualityMenu()
+  await vue.nextTick()
+  assert.equal(previousMenuClosed, true)
+  assert.equal(focused, '320')
+  lyric.handleQualityMenuKeydown({ key: 'ArrowUp', target: options[0], preventDefault() {} })
+  assert.equal(focused, 'high')
+  lyric.handleQualityMenuKeydown({ key: 'Home', target: options[3], preventDefault() {} })
+  assert.equal(focused, '128')
+  lyric.handleQualityMenuKeydown({ key: 'Escape', preventDefault() {} })
+  assert.equal(lyric.qualityMenuOpen, false)
+  assert.equal(focused, 'trigger')
+  assert.equal(emitted.length, 0)
+  lyric.openQualityMenu()
+  lyric.dismissQualityMenu({ target: {} })
+  assert.equal(lyric.qualityMenuOpen, false)
+  assert.equal(menuManager.activeMenuCloser, null)
+})
+
+test('quality menus clamp their measured edges into compact viewports and close when resized', t => {
+  const { lyric, window } = fixture(t)
+  window.innerWidth = 520
+  window.innerHeight = 480
+  lyric.$refs.qualityMenu = { getBoundingClientRect: () => ({ top: 264, bottom: 517, left: 109, right: 347 }) }
+  lyric.positionQualityMenu()
+  assert.equal(lyric.qualityMenuPosition.x, 0)
+  assert.equal(lyric.qualityMenuPosition.y, -49)
+  lyric.$refs.qualityMenu = { getBoundingClientRect: () => ({ top: -27, bottom: 226, left: -10, right: 228 }) }
+  lyric.positionQualityMenu()
+  assert.equal(lyric.qualityMenuPosition.x, 22)
+  assert.equal(lyric.qualityMenuPosition.y, 39)
+  lyric.qualityMenuOpen = true
+  lyric.onWindowResize()
+  assert.equal(lyric.qualityMenuOpen, false)
 })

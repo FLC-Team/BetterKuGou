@@ -34,9 +34,10 @@ function loadFavorites({ props = {}, api = {}, cache = {} } = {}) {
   const source = fs.readFileSync(path.join(__dirname, '../src/views/logic/FavoriteView.js'), 'utf8')
     .replace(/^import\b[^\n]+$/gm, '')
     .replace('export default', 'module.exports =')
-  const sandbox = vm.createContext({
+  const sandbox = vm.createContext({ listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},
     module: { exports: {} },
     ContextMenu: {},
+    WindowedList: {},
     ArtworkCover: {},
     SongBadges: {},
     ArtistLinks: {},

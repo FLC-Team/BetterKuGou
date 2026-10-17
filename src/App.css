@@ -10,6 +10,7 @@
 }
 
 .install-preparation-message {
+  max-width: calc(100vw - 40px);
   padding: 30px 36px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
@@ -18,7 +19,7 @@
 }
 
 .install-preparation-message p { margin: 0 0 10px; font-size: 20px; font-weight: 600; }
-.install-preparation-message span { color: var(--color-text-secondary); font-size: 13px; line-height: 1.8; }
+.install-preparation-message > span:not(.loading-spinner) { color: var(--color-text-secondary); font-size: 13px; line-height: 1.8; }
 
 .app-container {
   height: 100vh;
@@ -69,8 +70,8 @@
   padding-bottom: var(--page-player-space, 0px);
   scrollbar-gutter: stable;
 }
-.page-switch-enter-active { transition: opacity 180ms ease, transform 180ms ease; }
-.page-switch-leave-active { transition: opacity 120ms ease; pointer-events: none; }
+.page-switch-enter-active { transition: opacity 180ms ease, transform 180ms ease, scale var(--ui-motion-fast) var(--ui-motion-ease); }
+.page-switch-leave-active { transition: opacity 120ms ease, scale var(--ui-motion-fast) var(--ui-motion-ease); pointer-events: none; }
 .page-switch-enter-from { opacity: 0; transform: translateY(8px); }
 .page-switch-leave-to { opacity: 0; }
 
@@ -230,3 +231,5 @@
   text-align: center;
   padding: var(--spacing-xl);
 }
+
+.install-preparation-message .loading-spinner { display: block; margin-bottom: 18px; }

@@ -158,6 +158,9 @@ FunctionEnd
   !insertmacro ${LABEL} 26 244 178 56 "找到喜欢的旋律，$\r$\n留住自己的节奏。" $BKFont $BKMuted $BKBrandBg
   !insertmacro ${LABEL} 26 334 172 1 "" $BKFont $BKText $BKBorder
   !insertmacro ${LABEL} 26 354 172 20 "$BKStepText" $BKSmallFont $BKAccent $BKBrandBg
+  !if "${LABEL}" == "BKRootLabel"
+    StrCpy $BKProgressBrandStep $0
+  !endif
   !insertmacro ${LABEL} 26 384 172 20 "${VERSION}" $BKSmallFont $BKMuted $BKBrandBg
   ; Background last: native siblings clip it beneath every foreground control.
   !insertmacro ${LABEL} 0 0 224 500 "" $BKFont $BKText $BKBrandBg
@@ -167,6 +170,13 @@ FunctionEnd
   StrCpy $BKButtonHandle ${HANDLE}
   StrCpy $BKButtonRole "${ROLE}"
   Call BKPaintButton
+!macroend
+
+!macro BKMotionAssets DPI
+  File /oname=$PLUGINSDIR\install-light-${DPI}.avi "${PROJECT_DIR}\installer\assets\install-light-${DPI}.avi"
+  File /oname=$PLUGINSDIR\install-dark-${DPI}.avi "${PROJECT_DIR}\installer\assets\install-dark-${DPI}.avi"
+  File /oname=$PLUGINSDIR\success-light-${DPI}.avi "${PROJECT_DIR}\installer\assets\success-light-${DPI}.avi"
+  File /oname=$PLUGINSDIR\success-dark-${DPI}.avi "${PROJECT_DIR}\installer\assets\success-dark-${DPI}.avi"
 !macroend
 
 Function BKGuiInit
@@ -425,7 +435,259 @@ Function BKDragClick
   ${EndIf}
 FunctionEnd
 
+; Native controls keep their checked/focus state; only their opaque palette is interpolated.
+!macro BKScopePalette RADIO PANEL DESCRIPTION BORDER LIGHT_BG DARK_BG LIGHT_BORDER DARK_BORDER
+  ${If} $BKHighContrast != 0
+    SetCtlColors ${RADIO} SYSCLR:8 SYSCLR:5
+    SetCtlColors ${PANEL} SYSCLR:8 SYSCLR:5
+    SetCtlColors ${DESCRIPTION} SYSCLR:8 SYSCLR:5
+    SetCtlColors ${BORDER} SYSCLR:8 SYSCLR:5
+  ${ElseIf} $BKDark == 1
+    SetCtlColors ${RADIO} F5F1F7 ${DARK_BG}
+    SetCtlColors ${PANEL} F5F1F7 ${DARK_BG}
+    SetCtlColors ${DESCRIPTION} B5ACBD ${DARK_BG}
+    SetCtlColors ${BORDER} F5F1F7 ${DARK_BORDER}
+  ${Else}
+    SetCtlColors ${RADIO} 28242C ${LIGHT_BG}
+    SetCtlColors ${PANEL} 28242C ${LIGHT_BG}
+    SetCtlColors ${DESCRIPTION} 756D7A ${LIGHT_BG}
+    SetCtlColors ${BORDER} 28242C ${LIGHT_BORDER}
+  ${EndIf}
+!macroend
+
+; SetCtlColors requires compile-time RGB literals, so the short tween has eight palette steps.
+!macro BKScopeCardColors RADIO PANEL DESCRIPTION BORDER LEVEL
+  ${If} ${LEVEL} == 0
+    !insertmacro BKScopePalette ${RADIO} ${PANEL} ${DESCRIPTION} ${BORDER} FFFFFF 2C2832 E6E0E9 47404F
+  ${ElseIf} ${LEVEL} == 1
+    !insertmacro BKScopePalette ${RADIO} ${PANEL} ${DESCRIPTION} ${BORDER} FDFCFE 2E2934 D8D0DE 574E61
+  ${ElseIf} ${LEVEL} == 2
+    !insertmacro BKScopePalette ${RADIO} ${PANEL} ${DESCRIPTION} ${BORDER} FCFAFD 2F2A36 CAC0D3 675D73
+  ${ElseIf} ${LEVEL} == 3
+    !insertmacro BKScopePalette ${RADIO} ${PANEL} ${DESCRIPTION} ${BORDER} FAF7FC 312B38 BCB0C7 776B85
+  ${ElseIf} ${LEVEL} == 4
+    !insertmacro BKScopePalette ${RADIO} ${PANEL} ${DESCRIPTION} ${BORDER} F8F5FB 332C3B AFA0BC 887997
+  ${ElseIf} ${LEVEL} == 5
+    !insertmacro BKScopePalette ${RADIO} ${PANEL} ${DESCRIPTION} ${BORDER} F6F2FA 342D3D A18FB1 9887A8
+  ${ElseIf} ${LEVEL} == 6
+    !insertmacro BKScopePalette ${RADIO} ${PANEL} ${DESCRIPTION} ${BORDER} F5EFF9 362E3F 937FA6 A896BA
+  ${ElseIf} ${LEVEL} == 7
+    !insertmacro BKScopePalette ${RADIO} ${PANEL} ${DESCRIPTION} ${BORDER} F3EDF8 372F41 856F9A B8A4CC
+  ${ElseIf} ${LEVEL} == 8
+    !insertmacro BKScopePalette ${RADIO} ${PANEL} ${DESCRIPTION} ${BORDER} F1EAF7 393043 775F8F C8B2DE
+  ${EndIf}
+!macroend
+
+; Honor Windows' client-area animation preference and high contrast without changing installation state.
+Function BKMotionAllowed
+  Push $0
+  StrCpy $BKMotionEnabled 0
+  ${If} $BKHighContrast == 0
+    System::Call 'user32::SystemParametersInfoW(i 0x1042, i 0, *i .r0, i 0)i.s'
+    Pop $BKMotionEnabled
+    ${If} $0 == 0
+      StrCpy $BKMotionEnabled 0
+    ${EndIf}
+  ${EndIf}
+  Pop $0
+FunctionEnd
+
+; Timers belong only to the currently displayed custom page; no sleeps or input blocking.
+Function BKStopMotion
+  Push $0
+  Call BKStopAnimation
+  GetFunctionAddress $0 BKPageMotionTick
+  nsDialogs::KillTimer $0
+  GetFunctionAddress $0 BKScopeMotionTick
+  nsDialogs::KillTimer $0
+  StrCpy $BKPageMotionPage ""
+  Pop $0
+FunctionEnd
+
+; SysAnimate32 owns playback entirely in native code while NSIS extracts files
+; on its worker. Never call NSIS bytecode from a UI timer during installation.
+; The caller positions this input-transparent control after it has opened.
+Function BKCreateAnimation
+  Call BKStopAnimation
+  ${If} $BKHighContrast != 0
+    Return
+  ${EndIf}
+  StrCpy $BKAnimationTheme light
+  ${If} $BKDark == 1
+    StrCpy $BKAnimationTheme dark
+  ${EndIf}
+  StrCpy $BKAnimationDpi 96
+  ${If} $BKScale >= 192
+    StrCpy $BKAnimationDpi 192
+  ${ElseIf} $BKScale >= 144
+    StrCpy $BKAnimationDpi 144
+  ${ElseIf} $BKScale >= 120
+    StrCpy $BKAnimationDpi 120
+  ${EndIf}
+  System::Call 'comctl32::InitCommonControls()'
+  ; ACS_CENTER, WS_CHILD, WS_VISIBLE and WS_CLIPSIBLINGS; no auto-play or focus.
+  System::Call 'user32::CreateWindowExW(i 0, w "SysAnimate32", w "", i 0x54000001, i 0, i 0, i 0, i 0, p $BKAnimationParent, p 0, p 0, p 0)p.s'
+  Pop $BKInstallAnimation
+  ${If} $BKInstallAnimation == 0
+    Return
+  ${EndIf}
+  ${If} $BKAnimationKind == success
+    !insertmacro BKSetColors $BKInstallAnimation $BKAccent $BKSurface
+  ${Else}
+    !insertmacro BKSetColors $BKInstallAnimation $BKAccent $BKBg
+  ${EndIf}
+  ; ACM_OPENW accepts only our packaged, local, silent clip.
+  SendMessage $BKInstallAnimation 0x467 0 "STR:$PLUGINSDIR\$BKAnimationKind-$BKAnimationTheme-$BKAnimationDpi.avi" $0
+  ${If} $0 == 0
+    Call BKStopAnimation
+    Return
+  ${EndIf}
+  Call BKMotionAllowed
+  ${If} $BKMotionEnabled == 0
+    ${If} $BKAnimationKind == success
+      ; Animate_Seek(last): retain a clear completed check without movement.
+      SendMessage $BKInstallAnimation 0x465 1 0x000E000E
+    ${Else}
+      SendMessage $BKInstallAnimation 0x465 1 0
+    ${EndIf}
+  ${ElseIf} $BKAnimationKind == success
+    ; A hidden nsDialogs parent can consume a short clip before its first
+    ; visible message loop. Start once from that custom page, after Show.
+    SendMessage $BKInstallAnimation 0x465 1 0
+    StrCpy $BKSuccessMotionPage $BKAnimationParent
+    GetFunctionAddress $0 BKStartSuccessAnimation
+    nsDialogs::CreateTimer $0 16
+  ${Else}
+    SendMessage $BKInstallAnimation 0x465 -1 0x00310000
+  ${EndIf}
+FunctionEnd
+
+; Close both the clip and HWND on page change, failure and early window exit.
+; Closing the native control releases its decoder, internal timer and buffers.
+Function BKStopAnimation
+  Push $0
+  GetFunctionAddress $0 BKStartSuccessAnimation
+  nsDialogs::KillTimer $0
+  StrCpy $BKSuccessMotionPage ""
+  ${If} $BKInstallAnimation != ""
+  ${AndIf} $BKInstallAnimation != 0
+    SendMessage $BKInstallAnimation 0x466 0 0
+    SendMessage $BKInstallAnimation 0x467 0 0
+    System::Call 'user32::DestroyWindow(p $BKInstallAnimation)'
+  ${EndIf}
+  StrCpy $BKInstallAnimation ""
+  Pop $0
+FunctionEnd
+
+; Only a completed custom page schedules this one-shot callback. The extraction
+; worker has finished; installation itself never registers script callbacks.
+Function BKStartSuccessAnimation
+  Push $0
+  System::Call 'user32::IsWindow(p $BKInstallAnimation)i.r0'
+  ${If} $0 != 0
+  ${AndIf} $BKSuccessMotionPage == $BKPage
+  ${AndIf} $BKAnimationKind == success
+    ; The custom page can already be shown while its outer owner is still
+    ; hidden (for example immediately after elevation). Wait for visibility.
+    System::Call 'user32::IsWindowVisible(p $BKInstallAnimation)i.r0'
+    ${If} $0 == 0
+      Pop $0
+      Return
+    ${EndIf}
+    GetFunctionAddress $0 BKStartSuccessAnimation
+    nsDialogs::KillTimer $0
+    System::Call 'user32::RedrawWindow(p $BKInstallAnimation, p 0, p 0, i 0x105)'
+    Call BKMotionAllowed
+    ${If} $BKMotionEnabled == 0
+      SendMessage $BKInstallAnimation 0x465 1 0x000E000E
+    ${Else}
+      SendMessage $BKInstallAnimation 0x465 1 0x000E0000
+    ${EndIf}
+  ${Else}
+    GetFunctionAddress $0 BKStartSuccessAnimation
+    nsDialogs::KillTimer $0
+  ${EndIf}
+  StrCpy $BKSuccessMotionPage ""
+  Pop $0
+FunctionEnd
+
+Function BKStartPageMotion
+  Call BKMotionAllowed
+  ${If} $BKMotionEnabled == 0
+    Return
+  ${EndIf}
+  StrCpy $BKPageMotionPage $BKPage
+  System::Call 'kernel32::GetTickCount()i.s'
+  Pop $BKPageMotionStart
+  !insertmacro BKMove $BKPage 14 0 760 424
+  GetFunctionAddress $0 BKPageMotionTick
+  nsDialogs::CreateTimer $0 16
+FunctionEnd
+
+Function BKPageMotionTick
+  Push $0
+  Push $1
+  Call BKMotionAllowed
+  System::Call 'user32::IsWindow(p $BKPageMotionPage)i.r0'
+  ${If} $0 == 0
+  ${OrIf} $BKPageMotionPage != $BKPage
+    GetFunctionAddress $0 BKPageMotionTick
+    nsDialogs::KillTimer $0
+  ${Else}
+    System::Call 'kernel32::GetTickCount()i.r0'
+    IntOp $0 $0 - $BKPageMotionStart
+    ${If} $0 >= 180
+    ${OrIf} $0 < 0
+    ${OrIf} $BKMotionEnabled == 0
+      StrCpy $BKPageMotionX 0
+      GetFunctionAddress $0 BKPageMotionTick
+      nsDialogs::KillTimer $0
+    ${Else}
+      IntOp $0 180 - $0
+      IntOp $1 $0 * $0
+      IntOp $1 $1 * 14
+      IntOp $BKPageMotionX $1 / 32400
+    ${EndIf}
+    !insertmacro BKMove $BKPage $BKPageMotionX 0 760 424
+  ${EndIf}
+  Pop $1
+  Pop $0
+FunctionEnd
+
+Function BKPaintScopeMotion
+  !insertmacro BKScopeCardColors $BKAllUsers $BKScopeAllPanel $BKScopeAllDescription $BKScopeAllBorder $BKScopePosition
+  IntOp $BKScopeLevel 8 - $BKScopePosition
+  !insertmacro BKScopeCardColors $BKCurrentUser $BKScopeCurrentPanel $BKScopeCurrentDescription $BKScopeCurrentBorder $BKScopeLevel
+  System::Call 'user32::InvalidateRect(p $BKPage, p 0, i 1)'
+FunctionEnd
+
+Function BKScopeMotionTick
+  Push $0
+  Call BKMotionAllowed
+  System::Call 'user32::IsWindow(p $BKAllUsers)i.r0'
+  ${If} $0 == 0
+    GetFunctionAddress $0 BKScopeMotionTick
+    nsDialogs::KillTimer $0
+  ${Else}
+    ${If} $BKMotionEnabled == 0
+      StrCpy $BKScopePosition $BKScopeTarget
+    ${ElseIf} $BKScopePosition < $BKScopeTarget
+      IntOp $BKScopePosition $BKScopePosition + 1
+    ${ElseIf} $BKScopePosition > $BKScopeTarget
+      IntOp $BKScopePosition $BKScopePosition - 1
+    ${EndIf}
+    Call BKPaintScopeMotion
+    ${If} $BKScopePosition == $BKScopeTarget
+      GetFunctionAddress $0 BKScopeMotionTick
+      nsDialogs::KillTimer $0
+    ${EndIf}
+  ${EndIf}
+  Pop $0
+FunctionEnd
+
 Function BKCommonPage
+  Call BKStopMotion
+  StrCpy $BKScopeReady 0
   ; Child controls from the preceding page no longer own these bitmaps.
   ${If} $BKCloseBitmap != ""
     System::Call 'gdi32::DeleteObject(p $BKCloseBitmap)'
@@ -493,6 +755,7 @@ Function BKHeading
 FunctionEnd
 
 Function BKScopePage
+  StrCpy $BKScopeReady 0
   ${If} $BKExisting == 1
     Abort
   ${EndIf}
@@ -541,7 +804,9 @@ Function BKScopePage
   SendMessage $BKCancel ${WM_SETTEXT} 0 "STR:取消"
   SendMessage $BKBack ${WM_SETTEXT} 0 "STR:上一步"
   Call BKPrimary
+  Call BKStartPageMotion
   nsDialogs::Show
+  Call BKStopMotion
 FunctionEnd
 
 ; Card backgrounds and descriptions select the same native radios, including
@@ -566,27 +831,27 @@ FunctionEnd
 
 Function BKScopeChanged
   Pop $0
-  !insertmacro BKChoiceColors $BKCurrentUser $BKSurface
-  !insertmacro BKChoiceColors $BKAllUsers $BKSurface
-  !insertmacro BKSetColors $BKScopeCurrentDescription $BKMuted $BKSurface
-  !insertmacro BKSetColors $BKScopeAllDescription $BKMuted $BKSurface
-  !insertmacro BKSetColors $BKScopeCurrentPanel $BKText $BKSurface
-  !insertmacro BKSetColors $BKScopeAllPanel $BKText $BKSurface
-  !insertmacro BKSetColors $BKScopeCurrentBorder $BKText $BKBorder
-  !insertmacro BKSetColors $BKScopeAllBorder $BKText $BKBorder
-  ${NSD_GetState} $BKCurrentUser $0
-  ${If} $0 == ${BST_CHECKED}
-    !insertmacro BKChoiceColors $BKCurrentUser $BKSelected
-    !insertmacro BKSetColors $BKScopeCurrentDescription $BKMuted $BKSelected
-    !insertmacro BKSetColors $BKScopeCurrentPanel $BKText $BKSelected
-    !insertmacro BKSetColors $BKScopeCurrentBorder $BKText $BKAccent
-  ${Else}
-    !insertmacro BKChoiceColors $BKAllUsers $BKSelected
-    !insertmacro BKSetColors $BKScopeAllDescription $BKMuted $BKSelected
-    !insertmacro BKSetColors $BKScopeAllPanel $BKText $BKSelected
-    !insertmacro BKSetColors $BKScopeAllBorder $BKText $BKAccent
+  ; Checked state changes immediately for native keyboard and accessibility clients.
+  ${If} $BKScopeReady != 1
+    !insertmacro BKChoiceColors $BKCurrentUser $BKSurface
+    !insertmacro BKChoiceColors $BKAllUsers $BKSurface
   ${EndIf}
-  System::Call 'user32::InvalidateRect(p $BKPage, p 0, i 1)'
+  ${NSD_GetState} $BKAllUsers $0
+  StrCpy $BKScopeTarget 0
+  ${If} $0 == ${BST_CHECKED}
+    StrCpy $BKScopeTarget 8
+  ${EndIf}
+  Call BKMotionAllowed
+  ${If} $BKScopeReady != 1
+  ${OrIf} $BKMotionEnabled == 0
+    StrCpy $BKScopePosition $BKScopeTarget
+    Call BKPaintScopeMotion
+  ${Else}
+    ; Reversal starts at the current color, so rapid clicks never replay stale frames.
+    GetFunctionAddress $0 BKScopeMotionTick
+    nsDialogs::CreateTimer $0 20
+  ${EndIf}
+  StrCpy $BKScopeReady 1
 FunctionEnd
 
 Function BKScopeLeave
@@ -708,7 +973,9 @@ Function BKPreparePage
     ${EndIf}
   ${EndIf}
   Call BKPrimary
+  Call BKStartPageMotion
   nsDialogs::Show
+  Call BKStopMotion
 FunctionEnd
 
 Function BKPrepareLeave
@@ -782,6 +1049,7 @@ FunctionEnd
 ; Retain MUI's extraction progress bar. Its value is controlled by the real
 ; install engine, never by a cosmetic timer or made-up percentage.
 Function BKProgressShow
+  Call BKStopMotion
   StrCpy $BKBusy 1
   StrCpy $BKStepText "03 / 正在安装"
   ${If} $BKExisting == 1
@@ -812,7 +1080,7 @@ Function BKProgressShow
   GetDlgItem $0 $HWNDPARENT 1256
   ShowWindow $0 0
   FindWindow $BKPage "#32770" "" $HWNDPARENT
-  !insertmacro BKMove $BKPage 268 208 448 198
+  !insertmacro BKMove $BKPage 268 286 448 128
   SendMessage $BKPage ${WM_SETFONT} $BKFont 0
   StrCpy $BKProgressControls ""
   System::Call 'user32::CreateWindowExW(i 0, w "STATIC", w "", i 0x5400000E, i 0, i 0, i 0, i 0, p $HWNDPARENT, p 0, p 0, p 0)p.r0'
@@ -827,16 +1095,23 @@ Function BKProgressShow
   SendMessage $0 ${STM_SETIMAGE} 0 $BKProgressImage
   !insertmacro BKBrand BKRootLabel
   !insertmacro BKRootLabel 268 70 448 22 "$BKStepText" $BKSmallFont $BKAccent $BKBg
+  StrCpy $BKProgressStep $0
   !insertmacro BKRootLabel 266 98 452 42 "正在$BKAction" $BKTitleFont $BKText $BKBg
+  StrCpy $BKProgressTitle $0
   !insertmacro BKRootLabel 268 145 448 44 "音乐即将就绪，请稍候。" $BKFont $BKMuted $BKBg
+  StrCpy $BKProgressSubtitle $0
+  StrCpy $BKAnimationParent $HWNDPARENT
+  StrCpy $BKAnimationKind install
+  Call BKCreateAnimation
+  !insertmacro BKMove $BKInstallAnimation 268 194 448 76
   !insertmacro BKSetColors $BKPage $BKText $BKBg
   GetDlgItem $0 $BKPage 1006
   SendMessage $0 ${WM_SETTEXT} 0 "STR:正在写入 BetterKuGou 应用文件…"
   SendMessage $0 ${WM_SETFONT} $BKFont 1
-  !insertmacro BKMove $0 0 0 448 44
+  !insertmacro BKMove $0 0 0 448 32
   !insertmacro BKSetColors $0 $BKText $BKBg
   GetDlgItem $0 $BKPage 1004
-  !insertmacro BKMove $0 0 58 448 8
+  !insertmacro BKMove $0 0 44 448 8
   ${If} $BKHighContrast == 0
     System::Call 'uxtheme::SetWindowTheme(p r0, w "", w "")'
     Push $0
@@ -850,7 +1125,7 @@ Function BKProgressShow
   ${EndIf}
   ; Keep failure details inside the available area even after SetDetailsView.
   GetDlgItem $0 $BKPage 1016
-  !insertmacro BKMove $0 0 80 448 112
+  !insertmacro BKMove $0 0 64 448 64
   SendMessage $0 ${WM_SETFONT} $BKSmallFont 1
   !insertmacro BKSetColors $0 $BKText $BKBg
   Push $0
@@ -867,11 +1142,38 @@ Function BKProgressShow
   StrCpy $0 $4
   ShowWindow $0 0
   GetDlgItem $0 $BKPage 1027
-  !insertmacro BKMove $0 0 80 124 28
+  !insertmacro BKMove $0 0 64 124 28
   ShowWindow $0 0
 FunctionEnd
 
+; MUI calls InstFiles LEAVE as soon as its worker finishes, including Abort.
+; .onInstFailed alone runs only after Cancel and cannot stop a failure loop.
+Function BKProgressLeave
+  Call BKStopAnimation
+  IfAbort 0 bkProgressComplete
+  StrCpy $BKBusy 0
+  SendMessage $BKProgressStep ${WM_SETTEXT} 0 "STR:安装未完成"
+  SendMessage $BKProgressBrandStep ${WM_SETTEXT} 0 "STR:安装未完成"
+  SendMessage $BKProgressTitle ${WM_SETTEXT} 0 "STR:安装未完成"
+  SendMessage $BKProgressSubtitle ${WM_SETTEXT} 0 "STR:请查看下方详情，关闭后可重新运行安装包。"
+  EnableWindow $BKCancel 1
+  ShowWindow $BKCancel 1
+  SendMessage $BKCancel ${WM_SETTEXT} 0 "STR:关闭"
+  !insertmacro BKButton $BKCancel quiet
+  ; Failure details reclaim the decoration's space and remain scrollable.
+  !insertmacro BKMove $BKPage 268 208 448 198
+  GetDlgItem $0 $BKPage 1006
+  !insertmacro BKMove $0 0 0 448 44
+  GetDlgItem $0 $BKPage 1004
+  !insertmacro BKMove $0 0 58 448 8
+  GetDlgItem $0 $BKPage 1016
+  !insertmacro BKMove $0 0 80 448 112
+  SetDetailsView show
+  bkProgressComplete:
+FunctionEnd
+
 Function .onInstFailed
+  Call BKStopAnimation
   StrCpy $BKBusy 0
   EnableWindow $BKCancel 1
   ShowWindow $BKCancel 1
@@ -882,6 +1184,7 @@ Function .onInstFailed
 FunctionEnd
 
 Function .onGUIEnd
+  Call BKStopMotion
   Call BKDestroyProgress
   ${If} $BKImage != ""
     System::Call 'gdi32::DeleteObject(p $BKImage)'
@@ -930,8 +1233,14 @@ Function BKFinishPage
     StrCpy $BKSubtitle "请关闭程序后重新运行安装包。"
   ${EndIf}
   Call BKHeading
-  !insertmacro BKLabel 286 217 412 26 "BetterKuGou" $BKStrongFont $BKText $BKSurface
-  !insertmacro BKLabel 286 253 412 22 "${VERSION}  ·  Windows" $BKSmallFont $BKMuted $BKSurface
+  ${If} $BKDone == 1
+    StrCpy $BKAnimationParent $BKPage
+    StrCpy $BKAnimationKind success
+    Call BKCreateAnimation
+    !insertmacro BKMove $BKInstallAnimation 620 214 80 80
+  ${EndIf}
+  !insertmacro BKLabel 286 217 320 26 "BetterKuGou" $BKStrongFont $BKText $BKSurface
+  !insertmacro BKLabel 286 253 320 22 "${VERSION}  ·  Windows" $BKSmallFont $BKMuted $BKSurface
   !insertmacro BKLabel 286 289 412 50 "$INSTDIR" $BKSmallFont $BKMuted $BKSurface
   !insertmacro BKLabel 268 198 448 156 "" $BKFont $BKText $BKSurface
   !insertmacro BKLabel 268 374 448 22 "设置、主题和播放记录，继续陪伴你。" $BKSmallFont $BKMuted $BKBg
@@ -942,16 +1251,23 @@ Function BKFinishPage
     SendMessage $BKCancel ${WM_SETTEXT} 0 "STR:关闭"
   ${EndIf}
   Call BKPrimary
+  Call BKStartPageMotion
   nsDialogs::Show
+  Call BKStopMotion
 FunctionEnd
 
 Function BKDestroyProgress
+  Call BKStopAnimation
   StrCpy $BKTokenSource $BKProgressControls
   StrCpy $BKTokenNumber 1
   bkDestroyProgressLoop:
   Call BKReadIdentifier
   ${If} $BKToken == ""
     StrCpy $BKProgressControls ""
+    ${If} $BKProgressImage != ""
+      System::Call 'gdi32::DeleteObject(p $BKProgressImage)'
+      StrCpy $BKProgressImage ""
+    ${EndIf}
     Return
   ${EndIf}
   System::Call 'user32::DestroyWindow(p $BKToken)'

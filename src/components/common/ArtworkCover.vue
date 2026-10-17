@@ -1,8 +1,8 @@
 <template>
-  <img v-if="imageOnly" v-show="!failed" :src="displaySource || undefined" :data-artwork-generation="sourceGeneration" :data-artwork-source="displaySource" :data-artwork-original="source" :alt="label" :loading="loading" @load="handleLoad" @error="handleError" />
-  <span v-else class="artwork-cover" :aria-label="label || undefined" :role="label ? 'img' : undefined" :aria-hidden="label ? undefined : true">
+  <img v-if="imageOnly" v-show="!failed" :data-artwork-loaded="loaded" :src="displaySource || undefined" :data-artwork-generation="sourceGeneration" :data-artwork-source="displaySource" :data-artwork-original="source" :alt="label" :loading="loading" @load="handleLoad" @error="handleError" />
+  <span v-else class="artwork-cover" :class="{ 'is-loaded': loaded, 'is-failed': failed }" :aria-label="label || undefined" :role="label ? 'img' : undefined" :aria-hidden="label ? undefined : true">
     <span class="artwork-fallback" aria-hidden="true"><span>{{ mark }}</span></span>
-    <img v-if="displaySource && !failed" :key="displaySource" :src="displaySource" :data-artwork-generation="sourceGeneration" :data-artwork-source="displaySource" alt="" :loading="loading" @load="handleLoad" @error="handleError" />
+    <img v-if="displaySource && !failed" :key="sourceGeneration + ':' + displaySource" class="artwork-image" :class="{ 'is-loaded': loaded }" :src="displaySource" :data-artwork-generation="sourceGeneration" :data-artwork-source="displaySource" alt="" :loading="loading" @load="handleLoad" @error="handleError" />
   </span>
 </template>
 
@@ -21,6 +21,7 @@ const props = defineProps({
 const emit = defineEmits(['error'])
 const source = computed(() => typeof props.src === 'string' ? props.src.replace('{size}', '400') : '')
 const failed = ref(false)
+const loaded = ref(false)
 const displaySource = ref('')
 const sourceGeneration = ref(0)
 let artworkLeaseId = null
@@ -39,6 +40,7 @@ watch(source, async url => {
   releaseArtworkLease(artworkLeaseId)
   artworkLeaseId = null
   failed.value = false
+  loaded.value = false
   displaySource.value = ''
   if (!url) return
   let cached = null
@@ -54,13 +56,18 @@ watch(source, async url => {
 }, { immediate: true })
 
 function isCurrentImage(event) {
-  return !disposed && Number(event?.target?.dataset?.artworkGeneration) === sourceGeneration.value &&
-    event?.target?.dataset?.artworkSource === displaySource.value &&
-    (!event.target.currentSrc || event.target.currentSrc === displaySource.value)
+  if (disposed || Number(event?.target?.dataset?.artworkGeneration) !== sourceGeneration.value ||
+    event?.target?.dataset?.artworkSource !== displaySource.value) return false
+  if (!event.target.currentSrc) return true
+  try {
+    return event.target.currentSrc === new URL(displaySource.value, event.target.ownerDocument?.baseURI).href
+  } catch { return event.target.currentSrc === displaySource.value }
 }
 
 function handleLoad(event) {
-  if (!isCurrentImage(event) || !source.value || displaySource.value !== source.value) return
+  if (!isCurrentImage(event)) return
+  loaded.value = true
+  if (!source.value || displaySource.value !== source.value) return
   // 不替换已经显示的网络图片，避免下载完成后重复解码和触发 load。
   callPlaylistCache('cacheArtwork', source.value).then(cached => {
     releaseArtworkLease(cached?.leaseId)
@@ -69,6 +76,7 @@ function handleLoad(event) {
 
 function handleError(event) {
   if (!isCurrentImage(event)) return
+  loaded.value = false
   if (displaySource.value !== source.value) {
     releaseArtworkLease(artworkLeaseId)
     artworkLeaseId = null
@@ -90,6 +98,16 @@ onBeforeUnmount(() => {
 <style scoped>
 .artwork-cover { display: block; position: relative; isolation: isolate; overflow: hidden; background: color-mix(in srgb, var(--color-primary) 9%, var(--color-background-light)); }
 .artwork-cover > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.artwork-image { opacity: 0; transition: opacity .24s ease; }
+.artwork-image.is-loaded { opacity: 1; }
+img[data-artwork-loaded="false"] { opacity: 0; }
+img[data-artwork-loaded="true"] { animation: artwork-reveal .24s ease-out; }
+@keyframes artwork-reveal { from { opacity: 0; } }
+.artwork-fallback { transition: opacity .24s ease, scale .24s ease; }
+.is-loaded > .artwork-fallback { opacity: 0; scale: .94; }
+.is-failed > .artwork-fallback { animation: artwork-fallback-in .22s ease-out; }
+@keyframes artwork-fallback-in { from { opacity: .3; scale: .94; } to { opacity: 1; scale: 1; } }
+@media (prefers-reduced-motion: reduce) { .artwork-image, .artwork-fallback, img[data-artwork-loaded] { transition: none; animation: none !important; } }
 .artwork-fallback { position: absolute; inset: 0; display: grid; place-items: center; color: var(--color-primary); }
 .artwork-fallback::before, .artwork-fallback::after { content: ''; position: absolute; width: 68%; height: 68%; border: 1px solid currentColor; border-radius: 50%; opacity: .2; }
 .artwork-fallback::after { width: 46%; height: 46%; opacity: .15; }

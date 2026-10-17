@@ -188,6 +188,7 @@ function loadApp(electronAPI = {}, overrides = {}) {
   const cacheHelpers = loadModule('src/utils/playlistCache.js', { window: appWindow },
     ['initializePlaylistCacheSession', 'getPlaylistCacheAPI', 'callPlaylistCache'])
   const sandbox = vm.createContext({
+    PageLoadingView: { name: 'PageLoadingView', render: () => vue.h('div', 'loading') },
     ...vue,
     ...loadUtils(),
     console: quietConsole,
@@ -558,7 +559,7 @@ test('titlebar renders an accessible back button that follows history availabili
     compilerOptions: { mode: 'function', hoistStatic: false }
   })
   assert.deepEqual(compiled.errors, [])
-  const render = new Function('Vue', compiled.code)({ ...vue, vModelText: {} })
+  const render = new Function('Vue', compiled.code)({ ...vue, Transition: { setup(_props, { slots }) { return () => slots.default?.()[0] } }, vModelText: {} })
   const makeNode = (type, text = '') => ({ type, text, props: {}, children: [], parent: null })
   const renderer = vue.createRenderer({
     createElement: makeNode,

@@ -10,7 +10,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve))
 function createArtist(t, hotRequest = () => Promise.reject(new Error('temporary hot-song failure'))) {
   const requests = []
   const failures = []
-  const sandbox = {
+  const sandbox = { listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},
     ArtworkCover: {},
     SongBadges: {},
     ArtistLinks: {},
@@ -115,7 +115,7 @@ function createHome(t, songs = []) {
     requests[type].push({ args, resolve, reject })
     return promise
   }
-  const sandbox = {
+  const sandbox = { listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},
     SongBadges: {},
     ArtworkCover: {},
     ArtistLinks: {},

@@ -16,7 +16,8 @@
 - 当前版本的设置也按默认值补全缺失分组，保留已保存的用户选择。
 - 主题包列表保存在 `custom.themePackages`，选择的包 ID 使用原 `custom.theme`；旧配置自动补全空列表，不迁移或删除已有配色。
 - `custom.themeAdjustmentId` 仅标识设置页创建的个性主题包；精调保留原包并复用该 ID 更新，不创建另一套主题来源。
-- `desktopLyrics` 默认 fontSize=medium、theme=classic、locked=false；双端补全旧配置，只接收 small/medium/large、classic/gradient/minimal 与布尔锁定。歌词翻译 showTranslation 默认 true，非布尔导入值回退默认，合法 false 保留。
+- `desktopLyrics` 默认 fontSize=medium、theme=classic、locked=false、bounds=null；双端补全旧配置，只接收 small/medium/large、classic/gradient/minimal 与布尔锁定。bounds 仅保留有限的 x/y/width/height 并取整，位置限定 ±100000、宽 420–8192、高 180–4096，实际显示时由主进程夹紧至屏幕工作区。
+- `playback.showTranslation` 默认 true，非布尔导入值回退默认，合法 false 保留；设置页、全屏与桌面歌词共用此偏好，不在 desktopLyrics 建立重复开关。
 - `playback.quality` 默认字符串 128；双端仅接收 128/320/flac/high，补全旧配置，非法导入值回退 128。它表示所选音质偏好，当前音源的真实格式和码率由播放器独立维护。
 - `software.updates` 默认 `{ autoCheck: true, autoDownload: false, channel: 'stable' }`；双端补全旧配置，布尔开关严格校验、渠道限定 stable/beta，移除未知字段及任何自动安装开关。更新服务只消费保存成功的设置，检查结果、进度和本机安装包路径不进入本 store。
 - 离线缓存复用 download 分组：offlinePlaylistCacheEnabled 默认 true；cacheSizeIndex 默认 0，限定 0–5；concurrentDownloads 默认 3，限定 1–10。双端按同一规则补全与校验，不将缓存资源、凭证或进度存入设置。
@@ -42,9 +43,9 @@
 
 | 配置 | 实际消费与设置入口 |
 | --- | --- |
-| playback.fullscreenLyrics / enqueueFullPlaylist / showTranslation | App 自动歌词、列表入队和 LyricView 翻译；设置“播放与歌词”，翻译也可在全屏歌词内切换。 |
+| playback.fullscreenLyrics / enqueueFullPlaylist / showTranslation | App 自动歌词、列表入队以及全屏/桌面歌词翻译；设置“播放与歌词”，翻译也可在两种歌词工具栏内切换。 |
 | playback.quality | 播放器请求的普通音质偏好；底栏与全屏歌词快速切换当前歌，设置“播放与歌词”选择后续歌曲偏好。 |
-| desktopLyrics.fontSize / theme / locked | 独立歌词窗口字号、配色和锁定；设置与窗口现有工具栏双向同步，锁定在设置中恢复。 |
+| desktopLyrics.fontSize / theme / locked / bounds | 独立歌词窗口字号、配色、原生锁定穿透及位置尺寸；设置与窗口工具栏同步，位置由主进程保存；托盘/设置支持解锁和找回。 |
 | custom.playerStyle / theme / customTheme / themePackages | 播放栏布局、完整主题及旧三色配色；设置“外观与主题”，精调只编辑已有消费的视觉令牌。 |
 | shortcuts.enableGlobal / keys | App 与主进程快捷键；设置“快捷键”，注册探测只检查可用性。 |
 | software.autoLaunch / minimizeToTray / restorePlaylist / restorePlaybackState / defaultPage | 系统启动、关闭、会话恢复和启动页；设置“启动与应用”。 |

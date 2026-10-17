@@ -97,7 +97,11 @@ function ensureSchema(settings) {
   normalized.desktopLyrics = {
     fontSize: ['small', 'medium', 'large'].includes(desktop.fontSize) ? desktop.fontSize : 'medium',
     theme: ['classic', 'gradient', 'minimal'].includes(desktop.theme) ? desktop.theme : 'classic',
-    locked: typeof desktop.locked === 'boolean' ? desktop.locked : false
+    locked: typeof desktop.locked === 'boolean' ? desktop.locked : false,
+    bounds: desktop.bounds && ['x', 'y', 'width', 'height'].every(key => Number.isFinite(desktop.bounds[key]))
+      ? { x: Math.round(Math.max(-100000, Math.min(100000, desktop.bounds.x))), y: Math.round(Math.max(-100000, Math.min(100000, desktop.bounds.y))),
+          width: Math.round(Math.max(420, Math.min(8192, desktop.bounds.width))), height: Math.round(Math.max(180, Math.min(4096, desktop.bounds.height))) }
+      : null
   }
   if (!isPlainObject(normalized.software)) normalized.software = cloneDeep(defaultsCache.software)
   const updates = isPlainObject(normalized.software.updates) ? normalized.software.updates : {}
@@ -177,7 +181,8 @@ function createDefaults(app) {
     desktopLyrics: {
       fontSize: 'medium',
       theme: 'classic',
-      locked: false
+      locked: false,
+      bounds: null
     },
     download: {
       offlinePlaylistCacheEnabled: true,

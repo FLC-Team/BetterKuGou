@@ -20,6 +20,11 @@ export default {
       id: this.artistId || null,
       artist: null,
       followed: false,
+      followPending: false,
+      followMessage: '',
+      followError: false,
+      songsError: '',
+      albumsError: '',
       activeTab: 'hot',
       // 热门歌曲直接取单曲接口 sort=hot 前10
       hotSongs: [],
@@ -154,9 +159,11 @@ export default {
     async loadMore() {
       if (this.isPageActive === false || this.isDisposed || !this.hasMore || this.loadingMore) return
       this.loadingMore = true
+      this.songsError = ''
       try {
         const res = await getArtistAudios(this.id, this.page, this.pagesize, 'new')
         if (this.isDisposed) return
+        if (res?.status !== undefined && Number(res.status) !== 1) throw new Error('加载单曲失败，请重试')
         const list = res?.data?.lists || res?.data?.info || res?.data || res?.lists || []
         const normalized = this.normalizeAudioList(list)
         if (Array.isArray(normalized) && normalized.length > 0) {
@@ -168,6 +175,7 @@ export default {
         }
       } catch (error) {
         if (this.isDisposed) return
+        this.songsError = '加载单曲失败，请重试'
         logger.error('ArtistView', '加载歌手分页曲目失败', error)
       } finally {
         if (!this.isDisposed) this.loadingMore = false
@@ -411,10 +419,12 @@ export default {
     async loadAlbums() {
       if (this.isPageActive === false || this.isDisposed || this.albumsLoading) return
       this.albumsLoading = true
+      this.albumsError = ''
       try {
         logger.trace('ArtistView', '📀 [ArtistView] 加载专辑，歌手ID:', this.id, '页码:', this.albumsPage)
         const res = await getArtistAlbums(this.id, this.albumsPage, 30, 'new')
         if (this.isDisposed) return
+        if (res?.status !== undefined && Number(res.status) !== 1) throw new Error('加载专辑失败，请重试')
         logger.trace('ArtistView', '📀 [ArtistView] 专辑API响应:', res)
         
         const list = res?.data?.lists || res?.data?.albums || res?.data || []
@@ -430,21 +440,34 @@ export default {
         // 为新增的这批专辑回填封面
         this.$nextTick(() => this.patchAlbumCovers(list))
         this.albumsPage += 1
+      } catch (error) {
+        if (this.isDisposed) return
+        this.albumsError = '加载专辑失败，请重试'
+        logger.error('ArtistView', '加载歌手专辑失败', error)
       } finally {
         if (!this.isDisposed) this.albumsLoading = false
       }
     },
+    /** 同一次关注请求完成前禁止重复提交，失败保留真实关注状态。 */
     async toggleFollow() {
+      if (this.followPending || this.isDisposed || !this.id) return
+      const wasFollowed = this.followed
+      this.followPending = true
+      this.followMessage = ''
+      this.followError = false
       try {
-        if (this.followed) {
-          await unfollowArtist(this.id)
-          this.followed = false
-        } else {
-          await followArtist(this.id)
-          this.followed = true
-        }
-      } catch (e) {
-        logger.error('ArtistView', '切换关注失败:', e)
+        const response = await (wasFollowed ? unfollowArtist(this.id) : followArtist(this.id))
+        if (this.isDisposed) return
+        if (response?.status !== undefined && Number(response.status) !== 1) throw new Error('关注操作未成功')
+        this.followed = !wasFollowed
+        this.followMessage = this.followed ? '已关注这位歌手' : '已取消关注'
+      } catch (error) {
+        if (this.isDisposed) return
+        this.followError = true
+        this.followMessage = '更新关注失败，请检查登录状态后重试'
+        logger.error('ArtistView', '切换关注失败', { artistId: this.id }, error)
+      } finally {
+        if (!this.isDisposed) this.followPending = false
       }
     },
     formatNumber(n) {

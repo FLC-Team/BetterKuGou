@@ -9,7 +9,9 @@
 - `logo.png`：网页 favicon、应用界面、加载页及托盘的公共 Logo。
 - `logo.ico`：Windows 安装包及卸载器图标。
 
-本目录没有子目录。SVG 操作图标由 `src/assets/icons/` 维护。
+## 直接子目录
+
+- `taskbar/`：Windows 任务栏预览的原生 PNG 播放按钮，从已有播放 SVG 派生。渲染界面 SVG 操作图标仍由 `src/assets/icons/` 维护。
 
 ## 保障
 

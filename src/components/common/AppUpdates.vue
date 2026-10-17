@@ -1,5 +1,5 @@
 <template>
-  <section class="app-updates" aria-labelledby="app-updates-heading">
+  <section ref="updatesRoot" class="app-updates" aria-labelledby="app-updates-heading">
     <header class="updates-heading">
       <div><p class="updates-eyebrow">KEEP THE MUSIC GOING</p><h3 id="app-updates-heading">应用更新</h3><p class="updates-description">检查新版本，按你的节奏更新。</p></div>
       <img class="updates-brand" src="/logo.png" alt="" width="40" height="40">
@@ -10,44 +10,44 @@
         <div class="current-version"><span class="version-label">当前版本</span><strong>v{{ state.currentVersion }}</strong><span class="version-product">BetterKuGou</span></div>
         <div class="updates-summary">
           <div class="updates-state-line"><span class="version-label">{{ state.release ? '可用版本' : '更新状态' }}</span><span class="updates-channel">{{ channelLabel }}</span></div>
-          <h4 class="updates-version">{{ available ? statusTitle : '桌面客户端专属' }}</h4>
+          <Transition name="ui-fade" mode="out-in"><h4 :key="available ? statusTitle : 'browser'" class="updates-version">{{ available ? statusTitle : '桌面客户端专属' }}</h4></Transition>
           <p v-if="available" class="updates-status" role="status" aria-live="polite"><span class="status-dot" :class="{ 'is-active': isBusy }" aria-hidden="true"></span>{{ statusText }}</p>
           <p v-else class="updates-note">检查和下载更新仅在桌面客户端中可用。</p>
         </div>
       </div>
 
       <template v-if="available">
-        <p v-if="actionError || state.error" class="updates-error" role="alert">{{ actionError || errorText(state.error) }}</p>
-        <p v-if="actionMessage" class="updates-feedback" role="status">{{ actionMessage }}</p>
+        <Transition name="ui-fade" mode="out-in"><p v-if="actionError || state.error" :key="actionError || errorText(state.error)" class="updates-error" role="alert">{{ actionError || errorText(state.error) }}</p></Transition>
+        <Transition name="ui-fade" mode="out-in"><p v-if="actionMessage" :key="actionMessage" class="updates-feedback" role="status">{{ actionMessage }}</p></Transition>
 
-        <div v-if="state.status === 'downloading'" class="updates-progress">
+        <Transition name="updates-expand"><div v-if="state.status === 'downloading'" class="updates-stage"><div class="updates-stage-inner"><div class="updates-progress">
           <div class="progress-heading"><span>下载进度</span><strong>{{ hasDownloadProgress ? downloadPercent.toFixed(1) + '%' : '准备下载…' }}</strong></div>
           <progress :value="hasDownloadProgress ? downloadPercent : undefined" max="100" aria-label="更新包下载进度"></progress>
           <div class="progress-details"><span>{{ formatBytes(state.progress?.received) }} / {{ formatBytes(state.progress?.total) }}</span><span>可以离开此页，下载会在后台继续。</span></div>
-        </div>
+        </div></div></div></Transition>
 
         <div v-if="assets.length > 1" class="asset-choice"><label for="update-asset">安装包格式</label><select id="update-asset" v-model="chosenAssetId" :disabled="isBusy || !!actionPending"><option v-for="asset in assets" :key="asset.id" :value="String(asset.id)">{{ assetLabel(asset) }}</option></select></div>
         <p v-else-if="assets.length === 1 && !state.downloaded" class="asset-detail">{{ assetLabel(assets[0]) }}</p>
         <p v-else-if="state.release && !assets.length" class="updates-note asset-empty">此版本没有适用于当前系统和架构的安装包，可在发布页查看。</p>
 
-        <div v-if="state.downloaded" class="downloaded-file"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8zM14 3v5h5M9 13h6M9 17h4" /></svg><div><span class="downloaded-label">更新包已下载</span><strong>{{ state.downloaded.name }}</strong><p>{{ canInstall ? '点击手动安装并确认后才会打开安装包。' : '请打开所在文件夹，自行处理安装包。' }}</p></div></div>
+        <Transition name="updates-expand"><div v-if="state.downloaded" class="updates-stage"><div class="updates-stage-inner"><div class="downloaded-file"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1-1V8zM14 3v5h5M9 13h6M9 17h4" /></svg><div><span class="downloaded-label">更新包已下载</span><strong>{{ state.downloaded.name }}</strong><p>{{ canInstall ? '点击手动安装并确认后才会打开安装包。' : '请打开所在文件夹，自行处理安装包。' }}</p></div></div></div></div></Transition>
 
-        <div class="updates-actions">
-          <button type="button" :class="['update-button', { 'is-primary': !canDownload && !canInstall && !isBusy }]" @click="checkForUpdates" :disabled="isBusy || !!actionPending">{{ state.status === 'checking' ? '正在检查…' : '检查更新' }}</button>
-          <button v-if="canDownload" type="button" class="update-button is-primary" @click="downloadUpdate" :disabled="isBusy || !!actionPending || !selectedAsset">下载更新包</button>
-          <button v-if="isBusy" type="button" class="update-button" @click="cancelUpdate" :disabled="cancelPending">取消</button>
-          <button v-if="state.downloaded" type="button" class="update-button" @click="revealDownload" :disabled="!!actionPending">打开所在文件夹</button>
-          <button v-if="canInstall" type="button" class="update-button is-primary" @click="installUpdate" :disabled="!!actionPending">{{ actionPending === 'requestInstall' ? '等待确认…' : '手动安装' }}</button>
-        </div>
+        <TransitionGroup name="ui-list" tag="div" class="updates-actions" @before-leave="$event.inert = true" @before-enter="$event.inert = false" @leave-cancelled="$event.inert = false">
+          <button key="check" type="button" :class="['update-button', { 'is-primary': !canDownload && !canInstall && !isBusy }]" @click="checkForUpdates" :disabled="isBusy || !!actionPending">{{ state.status === 'checking' ? '正在检查…' : '检查更新' }}</button>
+          <button v-if="canDownload" key="download" type="button" class="update-button is-primary" @click="downloadUpdate" :disabled="isBusy || !!actionPending || !selectedAsset">下载更新包</button>
+          <button v-if="isBusy" key="cancel" type="button" class="update-button" @click="cancelUpdate" :disabled="cancelPending">取消</button>
+          <button v-if="state.downloaded" key="reveal" type="button" class="update-button" @click="revealDownload" :disabled="!!actionPending">打开所在文件夹</button>
+          <button v-if="canInstall" key="install" type="button" class="update-button is-primary" @click="installUpdate" :disabled="!!actionPending">{{ actionPending === 'requestInstall' ? '等待确认…' : '手动安装' }}</button>
+        </TransitionGroup>
         <div class="updates-metadata"><span v-if="state.checkedAt">上次检查：{{ checkedAtLabel }}</span><span v-if="sourceLabel">{{ sourceLabel }}</span></div>
       </template>
     </div>
 
-    <article v-if="available && state.release" class="update-release" aria-labelledby="release-notes-heading">
+    <Transition name="ui-fade" @before-leave="$event.inert = true" @before-enter="$event.inert = false" @leave-cancelled="$event.inert = false"><article v-if="available && state.release" :key="state.release.id" class="update-release" aria-labelledby="release-notes-heading">
       <header class="release-heading"><div><p class="updates-eyebrow">WHAT’S NEW</p><h4 id="release-notes-heading">{{ state.release.name || '新版本' }}</h4><span v-if="publishedAtLabel" class="release-date">{{ publishedAtLabel }} 发布</span></div><button type="button" class="updates-link" @click="openReleasePage" :disabled="!!actionPending">查看发布页 ↗</button></header>
       <details v-if="state.release.notes" :key="state.release.id" class="release-notes" open><summary>更新说明<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg></summary><div class="release-notes-body" tabindex="0" aria-label="版本更新说明"><p>{{ state.release.notes }}</p></div></details>
       <p v-else class="updates-note">此版本暂未提供更新说明。</p>
-    </article>
+    </article></Transition>
 
     <fieldset class="updates-preferences" :disabled="!available">
       <legend>更新偏好</legend>
@@ -70,9 +70,10 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import packageInfo from '../../../package.json'
 import { logger } from '../../utils/logger.js'
+import { createDetailsMotion } from './detailsMotion.js'
 
 const props = defineProps({
   modelValue: { type: Object, default: () => ({ autoCheck: true, autoDownload: false, channel: 'stable' }) },
@@ -90,6 +91,16 @@ const actionMessage = ref('')
 const chosenAssetId = ref('')
 let unsubscribe = null
 let disposed = false
+const updatesRoot = ref(null)
+let disclosureMotions = []
+function bindDisclosures() {
+  if (disposed || !updatesRoot.value?.querySelectorAll) return
+  disclosureMotions.forEach(motion => motion.dispose())
+  disclosureMotions = Array.from(updatesRoot.value.querySelectorAll('details'), element => createDetailsMotion(element))
+}
+watch(() => state.value.release?.id, () => nextTick(bindDisclosures))
+onMounted(bindDisclosures)
+onBeforeUnmount(() => disclosureMotions.forEach(motion => motion.dispose()))
 
 const isBusy = computed(() => ['checking', 'downloading'].includes(state.value.status))
 const assets = computed(() => state.value.release?.assets || [])

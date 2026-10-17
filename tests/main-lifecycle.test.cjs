@@ -5,9 +5,11 @@ const path = require('node:path')
 const vm = require('node:vm')
 const { EventEmitter } = require('node:events')
 
-function loadMain({ uninitialized = false } = {}) {
+function loadMain({ uninitialized = false, platform = 'linux', packaged = false, toolbarResult = true, missingIcon = false } = {}) {
   const windows = []
   const timers = new Map()
+  const iconPaths = []
+  const warnings = []
   let timerId = 0
   let stopCalls = 0
   let startCalls = 0
@@ -17,8 +19,10 @@ function loadMain({ uninitialized = false } = {}) {
   const backendGate = new Promise(resolve => { releaseBackend = resolve })
   let releaseStop
   const stopGate = new Promise(resolve => { releaseStop = resolve })
+  let signalBackendStop
+  const backendStopStarted = new Promise(resolve => { signalBackendStop = resolve })
   const app = new EventEmitter()
-  app.isPackaged = false
+  app.isPackaged = packaged
   app.commandLine = { appendSwitch() {} }
   app.whenReady = () => readyGate
   app.getPath = () => '/user-data'
@@ -34,6 +38,9 @@ function loadMain({ uninitialized = false } = {}) {
       this.destroyed = false
       this.showCalls = 0
       this.sent = []
+      this.thumbarCalls = []
+      this.thumbarButtons = null
+      this.thumbarResult = toolbarResult
       this.webContents = Object.assign(new EventEmitter(), {
         send: (...args) => this.sent.push(args), mainFrame: {},
         openDevTools() {}, session: { clearCache: async () => {} }
@@ -44,9 +51,20 @@ function loadMain({ uninitialized = false } = {}) {
     loadURL() { return Promise.resolve() }
     loadFile() { return Promise.resolve() }
     hide() { this.hidden = true }
-    show() { this.showCalls += 1 }
+    show() { this.showCalls += 1; this.emit('show') }
     focus() {}
+    getBounds() { return { x: this.options.x, y: this.options.y, width: this.options.width, height: this.options.height } }
+    setBounds(bounds) { Object.assign(this.options, bounds) }
     close() { this.destroyed = true; this.emit('closed') }
+    setThumbarButtons(buttons) {
+      this.thumbarCalls.push(buttons)
+      // Electron 32 accepts an empty flag list for enabled buttons; "enabled" rejects registration.
+      const supportedFlags = new Set(['disabled', 'dismissonclick', 'nobackground', 'hidden', 'noninteractive'])
+      if (buttons.some(button => (button.flags || []).some(flag => !supportedFlags.has(flag)))) return false
+      if (this.thumbarResult instanceof Error) throw this.thumbarResult
+      if (this.thumbarResult) this.thumbarButtons = buttons
+      return this.thumbarResult
+    }
   }
   Window.getAllWindows = () => windows.filter(window => !window.destroyed)
   const handlers = new Map()
@@ -55,11 +73,16 @@ function loadMain({ uninitialized = false } = {}) {
     app, BrowserWindow: Window,
     ipcMain,
     globalShortcut: { unregisterAll() {} }, dialog: {}, shell: {},
-    nativeImage: { createFromPath: () => ({ isEmpty: () => true }) },
+    nativeImage: { createFromPath: filename => {
+      iconPaths.push(filename)
+      const image = { path: filename, isEmpty: () => missingIcon, resize: () => image }
+      return image
+    } },
     Tray: class extends EventEmitter { setContextMenu() {} setToolTip() {} destroy() {} },
     Menu: { buildFromTemplate: value => value }
   }
   const silent = Object.fromEntries(['log', 'debug', 'info', 'warn', 'error', 'trace'].map(method => [method, () => {}]))
+  silent.warn = (...args) => warnings.push(args)
   const context = vm.createContext({
     require(name) {
       if (name === 'electron') return electron
@@ -68,7 +91,7 @@ function loadMain({ uninitialized = false } = {}) {
       if (name === './services/updateService') return { createUpdateService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/backendService') return { createBackendService: () => ({
         start() { startCalls += 1 }, waitUntilReady: () => backendGate,
-        stop: () => { stopCalls += 1; return stopGate }
+        stop: () => { stopCalls += 1; signalBackendStop(); return stopGate }
       }) }
       if (name === './settingsStore') return {
         initSettingsStore: async () => {}, ensureCacheDirectory: async () => {},
@@ -79,7 +102,7 @@ function loadMain({ uninitialized = false } = {}) {
       return require(name)
     },
     __dirname: path.join(__dirname, '../electron'),
-    process: { platform: 'linux', resourcesPath: '/resources', env: {}, memoryUsage: process.memoryUsage },
+    process: { platform, resourcesPath: '/resources', env: { BK_SKIP_CHCP: '1' }, memoryUsage: process.memoryUsage },
     console: silent, global: {},
     setTimeout(callback, delay) { timers.set(++timerId, { callback, delay }); return timerId },
     clearTimeout(id) { timers.delete(id) },
@@ -87,8 +110,8 @@ function loadMain({ uninitialized = false } = {}) {
     clearInterval(id) { timers.delete(id) }
   })
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../electron/main.js'), 'utf8'), context)
-  const api = vm.runInContext('({ createWindow, createLoadingWindow, createDesktopLyricWindow, performApplicationCleanup, startMemoryCleanup, stopMemoryCleanup, broadcastPlayerControl })', context)
-  return { api, app, windows, timers, releaseStop, releaseReady, releaseBackend, ipcMain, handlers,
+  const api = vm.runInContext('({ createWindow, createLoadingWindow, createDesktopLyricWindow, performApplicationCleanup, startMemoryCleanup, stopMemoryCleanup, broadcastPlayerControl, updateTaskbarButtons, notifyInstallPreparation })', context)
+  return { api, app, windows, timers, releaseStop, releaseReady, releaseBackend, backendStopStarted, ipcMain, handlers, iconPaths, warnings,
     stopCalls: () => stopCalls, startCalls: () => startCalls }
 }
 
@@ -136,6 +159,40 @@ test('a readiness message during exit cannot reopen a hidden startup window', as
   await cleanup
 })
 
+test('desktop playback availability follows main reload, readiness, crash and install preparation', () => {
+  const fixture = loadMain()
+  fixture.api.createWindow()
+  const main = fixture.windows[0]
+  const desktop = fixture.api.createDesktopLyricWindow()
+  desktop.emit('ready-to-show')
+  const event = mainEvent(main)
+  const latest = () => desktop.sent.filter(([channel]) => channel === 'desktop-lyric:playback-update').at(-1)[1]
+  fixture.ipcMain.emit('player:track-update', event, { trackId: 'song', title: 'Song' })
+  assert.equal(latest().available, false)
+  fixture.ipcMain.emit('renderer:ready', event)
+  assert.equal(latest().available, true)
+  fixture.ipcMain.emit('player:playback-state', event, 'playing')
+  main.webContents.emit('did-start-navigation', {}, 'app://reload', false, true)
+  assert.equal(latest().available, false)
+  assert.equal(latest().playing, false)
+  fixture.ipcMain.emit('renderer:ready', event)
+  assert.equal(latest().available, true)
+  fixture.api.notifyInstallPreparation({ requestId: 'one', phase: 'prepare' })
+  assert.equal(latest().available, false)
+  fixture.api.notifyInstallPreparation({ requestId: 'one', phase: 'canceled' })
+  assert.equal(latest().available, true)
+  main.webContents.emit('render-process-gone', {}, { reason: 'crashed' })
+  assert.equal(latest().available, false)
+  fixture.ipcMain.emit('renderer:ready', event)
+  assert.equal(latest().available, true)
+  main.close()
+  assert.equal(latest().available, false)
+  assert.equal(latest().playing, false)
+  desktop.close()
+  fixture.api.stopMemoryCleanup()
+  assert.equal(fixture.timers.size, 0)
+})
+
 test('explicit quit allows the main window to close despite minimize-to-tray', async () => {
   const fixture = loadMain()
   fixture.api.createWindow()
@@ -156,7 +213,7 @@ test('concurrent before-quit waits for one complete backend cleanup', async () =
   const event = { preventDefault: () => { prevented += 1 } }
   const first = handler(event)
   const second = handler(event)
-  await Promise.resolve()
+  await fixture.backendStopStarted
   assert.equal(prevented, 2)
   assert.equal(fixture.stopCalls(), 1)
   assert.equal(fixture.app.quitCalls, 0)
@@ -177,10 +234,15 @@ test('every renderer window uses the isolated preload and memory cleanup timers 
     assert.equal(window.options.webPreferences.contextIsolation, true)
     assert.ok(window.options.webPreferences.preload.endsWith('preload.js'))
   }
+  const windowTimers = new Map(fixture.timers)
   fixture.api.startMemoryCleanup()
   fixture.api.startMemoryCleanup()
-  assert.equal(fixture.timers.size, 1)
+  assert.equal(fixture.timers.size, windowTimers.size + 1)
+  const memoryTimer = [...fixture.timers].find(([id]) => !windowTimers.has(id))
+  assert.equal(memoryTimer[1].delay, 30 * 60 * 1000)
   fixture.api.stopMemoryCleanup()
+  assert.deepEqual(fixture.timers, windowTimers, 'stopping memory cleanup preserves unrelated window readiness timers')
+  fixture.windows.at(-1).close()
   assert.equal(fixture.timers.size, 0)
 })
 
@@ -192,4 +254,214 @@ test('closing the last window during failed startup cleanup never reads uninitia
   await assert.doesNotReject(fixture.app.listeners('window-all-closed')[0]())
   fixture.releaseStop()
   await cleanup
+})
+
+function mainEvent(window) {
+  return { sender: window.webContents, senderFrame: window.webContents.mainFrame }
+}
+
+function latestTaskbar(window) {
+  const buttons = window.thumbarButtons
+  assert.equal(buttons?.length, 3, 'Windows preview must expose exactly three transport buttons')
+  return buttons
+}
+
+function assertTaskbarEnabled(window, enabled) {
+  for (const button of latestTaskbar(window)) {
+    assert.equal(button.flags?.includes('disabled') === true, !enabled)
+  }
+}
+
+function playerActions(window) {
+  return window.sent.filter(([channel]) => channel === 'player:control').map(([, action]) => action)
+}
+
+test('Windows thumbnail controls wait for renderer readiness and reuse the existing player channel', () => {
+  const fixture = loadMain({ platform: 'win32' })
+  fixture.api.createWindow()
+  const main = fixture.windows[0]
+  main.emit('ready-to-show')
+  assertTaskbarEnabled(main, false)
+  const initial = latestTaskbar(main)
+  assert.deepEqual(Array.from(initial, button => button.tooltip), ['上一首', '播放', '下一首'])
+  initial.forEach(button => button.click())
+  assert.deepEqual(playerActions(main), [])
+
+  fixture.ipcMain.emit('renderer:ready', mainEvent(main))
+  assertTaskbarEnabled(main, true)
+  assert.deepEqual(playerActions(main), [], 'disabled startup clicks must not be replayed after mount')
+  latestTaskbar(main).forEach(button => button.click())
+  assert.deepEqual(playerActions(main), ['prev', 'play', 'next'])
+})
+
+test('taskbar pause icons follow playback and retained callbacks read the latest state', () => {
+  const fixture = loadMain({ platform: 'win32' })
+  fixture.api.createWindow()
+  const main = fixture.windows[0]
+  fixture.ipcMain.emit('renderer:ready', mainEvent(main))
+  const playButton = latestTaskbar(main)[1]
+  assert.ok(playButton.icon.path.endsWith(path.join('taskbar', 'play.png')))
+
+  fixture.ipcMain.emit('player:playback-state', mainEvent(main), 'playing')
+  const pauseButton = latestTaskbar(main)[1]
+  assert.equal(pauseButton.tooltip, '暂停')
+  assert.ok(pauseButton.icon.path.endsWith(path.join('taskbar', 'pause.png')))
+  playButton.click()
+  assert.deepEqual(playerActions(main), ['pause'])
+
+  fixture.ipcMain.emit('player:playback-state', mainEvent(main), 'paused')
+  assert.equal(latestTaskbar(main)[1].tooltip, '播放')
+  pauseButton.click()
+  assert.deepEqual(playerActions(main), ['pause', 'play'])
+})
+
+test('reloads and renderer crashes disable old taskbar callbacks until the new renderer is ready', () => {
+  for (const [eventName, eventArgs] of [
+    ['did-start-navigation', [{}, 'app://index.html', false, true]],
+    ['render-process-gone', [{}, { reason: 'crashed' }]]
+  ]) {
+    const fixture = loadMain({ platform: 'win32' })
+    fixture.api.createWindow()
+    const main = fixture.windows[0]
+    fixture.ipcMain.emit('renderer:ready', mainEvent(main))
+    fixture.ipcMain.emit('player:playback-state', mainEvent(main), 'playing')
+    const oldButtons = latestTaskbar(main)
+    main.webContents.emit(eventName, ...eventArgs)
+    assertTaskbarEnabled(main, false)
+    assert.equal(latestTaskbar(main)[1].tooltip, '播放')
+    oldButtons.forEach(button => button.click())
+    assert.deepEqual(playerActions(main), [])
+
+    fixture.ipcMain.emit('renderer:ready', mainEvent(main))
+    assertTaskbarEnabled(main, true)
+    assert.deepEqual(playerActions(main), [])
+    latestTaskbar(main)[2].click()
+    assert.deepEqual(playerActions(main), ['next'])
+  }
+})
+
+test('subframe and same-document navigation preserve taskbar readiness and playback state', () => {
+  for (const [isInPlace, isMainFrame] of [[false, false], [true, true]]) {
+    const fixture = loadMain({ platform: 'win32' })
+    fixture.api.createWindow()
+    const main = fixture.windows[0]
+    fixture.ipcMain.emit('renderer:ready', mainEvent(main))
+    fixture.ipcMain.emit('player:playback-state', mainEvent(main), 'playing')
+    const callsBeforeNavigation = main.thumbarCalls.length
+    main.webContents.emit('did-start-navigation', {}, 'app://index.html#section', isInPlace, isMainFrame)
+    assert.equal(main.thumbarCalls.length, callsBeforeNavigation)
+    assertTaskbarEnabled(main, true)
+    assert.equal(latestTaskbar(main)[1].tooltip, '暂停')
+    latestTaskbar(main)[1].click()
+    assert.deepEqual(playerActions(main), ['pause'])
+  }
+})
+
+test('closed window taskbar callbacks cannot control a replacement main window', () => {
+  const fixture = loadMain({ platform: 'win32' })
+  fixture.api.createWindow()
+  const previous = fixture.windows[0]
+  fixture.ipcMain.emit('renderer:ready', mainEvent(previous))
+  fixture.ipcMain.emit('player:playback-state', mainEvent(previous), 'playing')
+  const oldButtons = latestTaskbar(previous)
+  previous.close()
+  fixture.api.createWindow()
+  const replacement = fixture.windows[1]
+  replacement.emit('ready-to-show')
+  assertTaskbarEnabled(replacement, false)
+  assert.equal(latestTaskbar(replacement)[1].tooltip, '播放')
+  fixture.ipcMain.emit('renderer:ready', mainEvent(replacement))
+  oldButtons.forEach(button => button.click())
+  assert.deepEqual(playerActions(replacement), [])
+  latestTaskbar(replacement)[0].click()
+  assert.deepEqual(playerActions(replacement), ['prev'])
+})
+
+test('installation preparation and application shutdown disable taskbar actions including retained callbacks', async () => {
+  const fixture = loadMain({ platform: 'win32' })
+  fixture.api.createWindow()
+  const main = fixture.windows[0]
+  fixture.ipcMain.emit('renderer:ready', mainEvent(main))
+  const oldButtons = latestTaskbar(main)
+  assert.equal(fixture.api.notifyInstallPreparation({ requestId: 'taskbar-test', phase: 'prepare' }), true)
+  assertTaskbarEnabled(main, false)
+  oldButtons.forEach(button => button.click())
+  assert.deepEqual(playerActions(main), [])
+  fixture.api.notifyInstallPreparation({ requestId: 'taskbar-test', phase: 'canceled' })
+  assertTaskbarEnabled(main, true)
+  latestTaskbar(main)[2].click()
+  assert.deepEqual(playerActions(main), ['next'])
+
+  const cleanup = fixture.api.performApplicationCleanup()
+  assertTaskbarEnabled(main, false)
+  oldButtons.forEach(button => button.click())
+  assert.deepEqual(playerActions(main), ['next'])
+  fixture.releaseStop()
+  await cleanup
+})
+
+test('non-Windows platforms do not create native taskbar controls or load their icons', () => {
+  for (const platform of ['linux', 'darwin']) {
+    const fixture = loadMain({ platform })
+    fixture.api.createWindow()
+    const main = fixture.windows[0]
+    main.emit('ready-to-show')
+    fixture.ipcMain.emit('renderer:ready', mainEvent(main))
+    fixture.ipcMain.emit('player:playback-state', mainEvent(main), 'playing')
+    main.emit('show')
+    assert.equal(main.thumbarCalls.length, 0)
+    assert.equal(fixture.iconPaths.length, 0)
+  }
+})
+
+test('native taskbar failures are recoverable and a later window show retries registration', () => {
+  for (const toolbarResult of [false, new Error('Explorer taskbar temporarily unavailable')]) {
+    const fixture = loadMain({ platform: 'win32', toolbarResult })
+    assert.doesNotThrow(() => fixture.api.createWindow())
+    const main = fixture.windows[0]
+    assert.doesNotThrow(() => {
+      main.emit('ready-to-show')
+      fixture.ipcMain.emit('renderer:ready', mainEvent(main))
+    })
+    assert.ok(fixture.warnings.length > 0)
+    const failedAttempts = main.thumbarCalls.length
+    main.thumbarResult = true
+    main.emit('show')
+    assert.ok(main.thumbarCalls.length > failedAttempts)
+    assertTaskbarEnabled(main, true)
+    latestTaskbar(main)[2].click()
+    assert.deepEqual(playerActions(main), ['next'])
+  }
+})
+
+test('missing taskbar resources do not interrupt window readiness or ordinary playback controls', () => {
+  const fixture = loadMain({ platform: 'win32', missingIcon: true })
+  assert.doesNotThrow(() => fixture.api.createWindow())
+  const main = fixture.windows[0]
+  assert.doesNotThrow(() => {
+    main.emit('ready-to-show')
+    fixture.ipcMain.emit('renderer:ready', mainEvent(main))
+    fixture.api.broadcastPlayerControl('next')
+  })
+  assert.equal(main.showCalls, 1)
+  assert.ok(fixture.warnings.length > 0)
+  assert.deepEqual(playerActions(main), ['next'])
+})
+
+test('taskbar icons use packaged public resources and are cached across playback changes', () => {
+  for (const packaged of [false, true]) {
+    const fixture = loadMain({ platform: 'win32', packaged })
+    fixture.api.createWindow()
+    const main = fixture.windows[0]
+    main.emit('ready-to-show')
+    fixture.ipcMain.emit('renderer:ready', mainEvent(main))
+    fixture.ipcMain.emit('player:playback-state', mainEvent(main), 'playing')
+    const directory = path.join(__dirname, '..', packaged ? 'dist' : 'public', 'taskbar')
+    const expected = ['previous', 'play', 'pause', 'next'].map(name => path.join(directory, `${name}.png`)).sort()
+    assert.deepEqual([...fixture.iconPaths].sort(), expected)
+    fixture.ipcMain.emit('player:playback-state', mainEvent(main), 'paused')
+    fixture.ipcMain.emit('player:playback-state', mainEvent(main), 'playing')
+    main.emit('show')
+    assert.deepEqual([...fixture.iconPaths].sort(), expected, 'transport state changes reuse native images')
+  }
 })

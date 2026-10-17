@@ -13,10 +13,10 @@
       <main class="settings-main" ref="settingsMain" aria-label="应用设置">
         <header class="settings-intro">
           <div><p class="eyebrow">PREFERENCES / 偏好设置</p><h1>让音乐，更合你意。</h1><p class="intro-description">从聆听习惯到界面细节，找到舒服的节奏。</p></div>
-          <span class="save-status" role="status" aria-live="polite">{{ saveStatusText }}</span>
+          <span class="save-status" :class="'is-' + saveState" role="status" aria-live="polite"><Transition name="ui-fade" mode="out-in"><span :key="saveState">{{ saveStatusText }}</span></Transition></span>
         </header>
-        <div v-if="settingsSaveError" class="settings-notice is-error" role="alert"><span>{{ settingsSaveError }}</span><button type="button" class="outline-btn" @click="flushEditableSettings">重试保存</button></div>
-        <p v-if="actionMessage" class="settings-notice" role="status">{{ actionMessage }}</p>
+        <Transition name="ui-fade" @before-leave="$event.inert = true" @before-enter="$event.inert = false" @leave-cancelled="$event.inert = false"><div v-if="settingsSaveError" class="settings-notice is-error" role="alert"><span>{{ settingsSaveError }}</span><button type="button" class="outline-btn" @click="flushEditableSettings">重试保存</button></div></Transition>
+        <Transition name="ui-fade" mode="out-in"><p v-if="actionMessage" :key="actionMessage" class="settings-notice" role="status">{{ actionMessage }}</p></Transition>
 
         <section class="settings-section" id="playback-section" :ref="sectionRefs.playback" data-section="playback" aria-labelledby="playback-heading">
           <header class="section-header"><span class="section-number">01</span><div><h2 id="playback-heading">播放与歌词</h2><p>留住每次聆听时，你熟悉的习惯。</p></div></header>
@@ -26,10 +26,10 @@
             <label class="setting-switch"><input :id="'playback-' + option.id" type="checkbox" v-model="localSettings.playback[option.id]" :aria-describedby="'playback-' + option.id + '-desc'"><span class="slider"></span></label>
           </div>
           <div class="setting-group">
-            <div class="group-heading"><div><h3>桌面歌词</h3><p class="setting-desc">独立悬浮在桌面上，字体与样式会在下次打开时保留。</p></div><button type="button" class="outline-btn" @click="showDesktopLyrics" :disabled="!desktopLyricsAvailable">打开桌面歌词</button></div>
+            <div class="group-heading"><div><h3>桌面歌词</h3><p class="setting-desc">悬浮显示当前歌词，拖动调整位置，右下角手柄调整大小；关闭后保留位置、尺寸和样式。</p></div><div class="setting-actions"><button type="button" class="outline-btn" @click="showDesktopLyrics" :disabled="!desktopLyricsAvailable || desktopActionPending">{{ desktopActionPending ? '处理中…' : '打开桌面歌词' }}</button><button type="button" class="outline-btn" @click="resetDesktopLyrics" :disabled="!desktopLyricsAvailable || desktopActionPending">找回并解锁</button></div></div>
             <div class="setting-item"><div class="setting-info"><label class="setting-label" for="desktop-size">歌词大小</label><p class="setting-desc">小 / 中 / 大，默认为中。</p></div><select id="desktop-size" class="setting-select" v-model="localSettings.desktopLyrics.fontSize"><option value="small">小</option><option value="medium">中（默认）</option><option value="large">大</option></select></div>
             <div class="setting-item"><div class="setting-info"><label class="setting-label" for="desktop-theme">歌词样式</label><p class="setting-desc">保留桌面歌词原有的三种配色。</p></div><select id="desktop-theme" class="setting-select" v-model="localSettings.desktopLyrics.theme"><option value="classic">经典（默认）</option><option value="gradient">渐变</option><option value="minimal">简约</option></select></div>
-            <div class="setting-item"><div class="setting-info"><label class="setting-label" for="desktop-lock">锁定桌面歌词</label><p class="setting-desc" id="desktop-lock-desc">隐藏悬浮工具栏，避免拖动；可随时在这里关闭锁定。</p></div><label class="setting-switch"><input id="desktop-lock" type="checkbox" v-model="localSettings.desktopLyrics.locked" aria-describedby="desktop-lock-desc"><span class="slider"></span></label></div>
+            <div class="setting-item"><div class="setting-info"><label class="setting-label" for="desktop-lock">锁定桌面歌词</label><p class="setting-desc" id="desktop-lock-desc">仅显示歌词，鼠标可穿透操作下方窗口；可在这里或托盘菜单解锁。</p></div><label class="setting-switch"><input id="desktop-lock" type="checkbox" v-model="localSettings.desktopLyrics.locked" aria-describedby="desktop-lock-desc"><span class="slider"></span></label></div>
             <p v-if="!desktopLyricsAvailable" class="note-text">桌面歌词窗口仅在桌面客户端中可用。</p>
           </div>
         </section>
@@ -38,14 +38,14 @@
           <header class="section-header"><span class="section-number">02</span><div><h2 id="custom-heading">外观与主题</h2><p>熟悉的布局，加一点属于你的个性。</p></div></header>
           <fieldset class="setting-item setting-item--column"><legend class="setting-label">播放器样式</legend><p class="setting-desc">在底部显示经典播放栏，或轻盈的悬浮胶囊。</p><div class="radio-group"><label class="radio-option"><input type="radio" value="default" v-model="localSettings.custom.playerStyle"><span class="radio-option__display">经典播放栏<span>BetterKuGou 默认</span></span></label><label class="radio-option"><input type="radio" value="netease" v-model="localSettings.custom.playerStyle"><span class="radio-option__display">悬浮胶囊<span>网易云样式</span></span></label></div></fieldset>
           <div class="setting-group"><h3>主题与配色</h3><ThemePackages v-model="localSettings.custom" /></div>
-          <div v-if="localSettings.custom.theme === 'custom'" class="custom-color-panel"><label v-for="color in customColors" :key="color.id" class="color-setting"><span>{{ color.label }}</span><input type="color" v-model="localSettings.custom.customTheme[color.id]"></label></div>
+          <Transition name="ui-fade" @before-leave="$event.inert = true" @before-enter="$event.inert = false" @leave-cancelled="$event.inert = false"><div v-if="localSettings.custom.theme === 'custom'" class="custom-color-panel"><label v-for="color in customColors" :key="color.id" class="color-setting"><span>{{ color.label }}</span><input type="color" v-model="localSettings.custom.customTheme[color.id]"></label></div></Transition>
           <ThemeAdjustments v-model="localSettings.custom" @open-studio="openThemeStudio" />
         </section>
 
         <section class="settings-section" id="shortcuts-section" :ref="sectionRefs.shortcuts" data-section="shortcuts" aria-labelledby="shortcuts-heading">
           <header class="section-header"><span class="section-number">03</span><div><h2 id="shortcuts-heading">快捷键</h2><p>让常用操作，离你再近一点。</p></div></header>
           <div class="setting-item"><div class="setting-info"><label class="setting-label" for="enable-global">启用全局快捷键</label><p class="setting-desc" id="enable-global-desc">切换到其他应用后，也能控制音乐播放。</p></div><label class="setting-switch"><input id="enable-global" type="checkbox" v-model="localSettings.shortcuts.enableGlobal" aria-describedby="enable-global-desc"><span class="slider"></span></label></div>
-          <div class="shortcut-grid"><div v-for="shortcut in shortcutList" :key="shortcut.id" class="shortcut-card" :class="{ 'is-editing': editingShortcut === shortcut.id, 'has-error': shortcutErrors[shortcut.id] }"><div class="shortcut-info"><div class="shortcut-label">{{ shortcut.label }}</div><div class="shortcut-desc">{{ shortcut.description }}</div></div><div class="shortcut-key-wrapper"><button type="button" class="shortcut-key" :aria-label="shortcut.label + '快捷键：' + formatShortcutKey(localSettings.shortcuts.keys[shortcut.id])" @click="startEditingShortcut(shortcut.id)"><span v-if="editingShortcut === shortcut.id" class="recording">按下按键…</span><span v-else>{{ formatShortcutKey(localSettings.shortcuts.keys[shortcut.id]) }}</span></button><button v-if="localSettings.shortcuts.keys[shortcut.id] && localSettings.shortcuts.keys[shortcut.id] !== 'Escape'" type="button" class="clear-shortcut-btn" :aria-label="'清除' + shortcut.label + '快捷键'" @click="clearShortcut(shortcut.id)">×</button></div><p v-if="shortcutErrors[shortcut.id]" class="shortcut-error" role="alert">{{ shortcutErrors[shortcut.id] }}</p></div></div>
+          <div class="shortcut-grid"><div v-for="shortcut in shortcutList" :key="shortcut.id" class="shortcut-card" :class="{ 'is-editing': editingShortcut === shortcut.id, 'has-error': shortcutErrors[shortcut.id] }"><div class="shortcut-info"><div class="shortcut-label">{{ shortcut.label }}</div><div class="shortcut-desc">{{ shortcut.description }}</div></div><div class="shortcut-key-wrapper"><button type="button" class="shortcut-key" :aria-label="shortcut.label + '快捷键：' + formatShortcutKey(localSettings.shortcuts.keys[shortcut.id])" :aria-pressed="editingShortcut === shortcut.id" @click="startEditingShortcut(shortcut.id)"><Transition name="ui-fade" mode="out-in"><span v-if="editingShortcut === shortcut.id" key="recording" class="recording">按下按键…</span><span v-else :key="localSettings.shortcuts.keys[shortcut.id]">{{ formatShortcutKey(localSettings.shortcuts.keys[shortcut.id]) }}</span></Transition></button><Transition name="ui-pop"><button v-if="localSettings.shortcuts.keys[shortcut.id] && localSettings.shortcuts.keys[shortcut.id] !== 'Escape'" type="button" class="clear-shortcut-btn" :aria-label="'清除' + shortcut.label + '快捷键'" @click="clearShortcut(shortcut.id)">×</button></Transition></div><Transition name="ui-fade"><p v-if="shortcutErrors[shortcut.id]" class="shortcut-error" role="alert">{{ shortcutErrors[shortcut.id] }}</p></Transition></div></div>
           <p class="note-text">点击按键后输入新组合；按 Esc 清除绑定。相同组合不能重复绑定。</p>
         </section>
 
@@ -54,7 +54,7 @@
           <div v-for="option in softwareOptions" :key="option.id" class="setting-item"><div class="setting-info"><label class="setting-label" :for="'software-' + option.id">{{ option.label }}</label><p class="setting-desc" :id="'software-' + option.id + '-desc'">{{ option.description }}</p></div><label class="setting-switch"><input :id="'software-' + option.id" type="checkbox" v-model="localSettings.software[option.id]" :aria-describedby="'software-' + option.id + '-desc'"><span class="slider"></span></label></div>
           <div class="setting-item"><div class="setting-info"><label class="setting-label" for="default-page">启动页面</label><p class="setting-desc">默认打开推荐；收藏页需要登录账号。</p></div><select id="default-page" class="setting-select" v-model="localSettings.software.defaultPage"><option value="home">推荐首页</option><option value="favorites">我的收藏</option></select></div>
           <AppUpdates v-model="localSettings.software.updates" :before-action="flushEditableSettings" @current-version="appVersion = $event" />
-          <div class="setting-group"><div class="group-heading"><div><h3>备份与迁移</h3><p class="setting-desc">导入或导出完整设置。分享配色请使用上方的主题包。</p></div></div><div class="setting-actions"><button class="outline-btn" type="button" @click="handleExportSettings" :disabled="isExporting || isImporting">{{ isExporting ? '导出中…' : '导出设置' }}</button><button class="outline-btn" type="button" @click="handleImportSettings" :disabled="isImporting || isExporting">{{ isImporting ? '导入中…' : '导入设置' }}</button></div></div>
+          <div class="setting-group"><div class="group-heading"><div><h3>备份与迁移</h3><p class="setting-desc">导入或导出完整设置。分享配色请使用上方的主题包。</p></div></div><div class="setting-actions"><button class="outline-btn" :class="{ 'is-busy': isExporting }" :aria-busy="isExporting" type="button" @click="handleExportSettings" :disabled="isExporting || isImporting">{{ isExporting ? '导出中…' : '导出设置' }}</button><button class="outline-btn" :class="{ 'is-busy': isImporting }" :aria-busy="isImporting" type="button" @click="handleImportSettings" :disabled="isImporting || isExporting">{{ isImporting ? '导入中…' : '导入设置' }}</button></div></div>
           <div class="about-links"><button type="button" @click="openFeedbackUrl">反馈与建议 ↗</button><button type="button" @click="openLicenseUrl">使用协议 ↗</button><button type="button" @click="openProjectUrl">项目主页 ↗</button></div>
         </section>
 
@@ -102,7 +102,7 @@ const editableGroups = ['playback', 'download', 'custom', 'shortcuts', 'software
 const playbackOptions = [
   { id: 'fullscreenLyrics', label: '播放时自动打开全屏歌词', description: '每次开始播放，自动进入全屏歌词界面。' },
   { id: 'enqueueFullPlaylist', label: '播放时加入整个歌单', description: '点播歌单中的歌曲时，将同歌单的全部曲目加入播放列表。' },
-  { id: 'showTranslation', label: '显示歌词翻译', description: '歌曲提供翻译时，在原文下显示；也可在全屏歌词中切换。' }
+  { id: 'showTranslation', label: '显示歌词翻译', description: '歌曲提供翻译时，在原文下显示；全屏和桌面歌词共用此偏好，也可在各自工具栏切换。' }
 ]
 const softwareOptions = [
   { id: 'autoLaunch', label: '开机自启动', description: '登录系统时自动运行 BetterKuGou。' },
@@ -112,6 +112,7 @@ const softwareOptions = [
 ]
 const customColors = [{ id: 'primary', label: '主题色' }, { id: 'hover', label: '悬浮强调色' }, { id: 'background', label: '背景色' }]
 const desktopLyricsAvailable = Boolean(window.electronAPI?.desktopLyric?.show)
+const desktopActionPending = ref(false)
 
 const activeSection = ref('playback')
 const settingsMain = ref(null)
@@ -136,6 +137,12 @@ const shortcutList = ref([
 
 const editingShortcut = ref(null)
 const shortcutErrors = ref({})
+const shortcutErrorTimers = new Map()
+function showShortcutError(id, message) {
+  clearTimeout(shortcutErrorTimers.get(id))
+  shortcutErrors.value[id] = message
+  shortcutErrorTimers.set(id, setTimeout(() => { delete shortcutErrors.value[id]; shortcutErrorTimers.delete(id) }, 3000))
+}
 
 const {
   settings,
@@ -322,13 +329,33 @@ function flushPendingOnBlur(event) {
 }
 
 async function showDesktopLyrics() {
-  if (!await flushEditableSettings()) return
+  if (desktopActionPending.value) return
+  desktopActionPending.value = true
   try {
+    if (!await flushEditableSettings()) return
     if (!await window.electronAPI.desktopLyric.show()) throw new Error('Desktop lyrics window did not open')
-    actionMessage.value = '桌面歌词已打开。锁定后可在此页关闭锁定。'
+    actionMessage.value = '桌面歌词已打开。锁定后可在此页或托盘解锁。'
   } catch (error) {
     actionMessage.value = '无法打开桌面歌词，请稍后重试。'
     logger.error('SettingsView', '打开桌面歌词失败', error)
+  } finally {
+    desktopActionPending.value = false
+  }
+}
+
+/** 找回移出屏幕的歌词，同时恢复可操作状态；先保存页面中尚未提交的偏好。 */
+async function resetDesktopLyrics() {
+  if (desktopActionPending.value) return
+  desktopActionPending.value = true
+  try {
+    if (!await flushEditableSettings()) return
+    if (!await window.electronAPI.desktopLyric.resetPosition()) throw new Error('Desktop lyrics recovery failed')
+    actionMessage.value = '桌面歌词已回到主屏幕下方并解锁。'
+  } catch (error) {
+    actionMessage.value = '找回桌面歌词失败，请重试。'
+    logger.error('SettingsView', '找回桌面歌词失败', error)
+  } finally {
+    desktopActionPending.value = false
   }
 }
 
@@ -523,10 +550,7 @@ async function handleShortcutKeyDown(event) {
   )
   
   if (conflict) {
-    shortcutErrors.value[editingShortcut.value] = `与"${conflict.label}"冲突`
-    setTimeout(() => {
-      delete shortcutErrors.value[shortcutId]
-    }, 3000)
+    showShortcutError(shortcutId, `与"${conflict.label}"冲突`)
     stopEditingShortcut()
     return
   }
@@ -536,10 +560,7 @@ async function handleShortcutKeyDown(event) {
     const registered = await tryRegisterGlobalShortcut(shortcutKey)
     if (editingShortcut.value !== shortcutId) return
     if (!registered) {
-      shortcutErrors.value[editingShortcut.value] = '无法注册此快捷键'
-      setTimeout(() => {
-        delete shortcutErrors.value[shortcutId]
-      }, 3000)
+      showShortcutError(shortcutId, '无法注册此快捷键')
       stopEditingShortcut()
       return
     }
@@ -686,6 +707,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   teardownScrollTracking()
   stopEditingShortcut() // 清理快捷键编辑监听器
+  for (const timer of shortcutErrorTimers.values()) clearTimeout(timer)
+  shortcutErrorTimers.clear()
   if (saveTimer) {
     clearTimeout(saveTimer)
     saveTimer = null

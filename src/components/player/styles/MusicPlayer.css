@@ -672,3 +672,20 @@
     transform: none;
   }
 }
+/* Glyphs overlap in a fixed grid so rapid state changes never move controls. */
+.control-state-stage { display: grid; place-items: center; }
+.control-state-icon { grid-area: 1 / 1; display: inline-flex; align-items: center; justify-content: center; }
+.control-state-enter-active, .control-state-leave-active { transition: opacity 140ms ease, transform 180ms cubic-bezier(0.22, 1, 0.36, 1); }
+.control-state-enter-from { opacity: 0; transform: scale(0.65) rotate(-12deg); }
+.control-state-leave-to { opacity: 0; transform: scale(0.65) rotate(12deg); }
+.control-state-leave-active { pointer-events: none; }
+.control-btn, .icon-btn { transition: color 150ms ease, background-color 150ms ease, scale 100ms ease; }
+.control-btn:active:not(:disabled), .icon-btn:active:not(:disabled) { scale: 0.9; }
+.player-feedback-enter-active, .player-feedback-leave-active { transition: opacity 180ms ease, translate 180ms ease; }
+.player-feedback-enter-from, .player-feedback-leave-to { opacity: 0; translate: 0 6px; }
+.quality-feedback button:disabled { opacity: 0.6; cursor: wait; }
+@media (prefers-reduced-motion: reduce) {
+  .control-state-enter-active, .control-state-leave-active, .control-btn, .icon-btn,
+  .player-feedback-enter-active, .player-feedback-leave-active { transition: none; }
+  .control-btn:active, .icon-btn:active { scale: 1; }
+}

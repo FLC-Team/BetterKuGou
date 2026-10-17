@@ -76,7 +76,7 @@ function loadFavorite({ props = {}, cache = {}, tracks, legacy = {} } = {}) {
   const storage = new Map(Object.entries({ kugou_userid: 'A', kugou_token: 'example-token', ...legacy }))
   const calls = []
   const trackCalls = []
-  const sandbox = vm.createContext({
+  const sandbox = vm.createContext({ listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},
     module: { exports: {} }, logger,
     cloneDeep,
     window: { electronAPI: { playlistCache: {} } },
@@ -88,14 +88,14 @@ function loadFavorite({ props = {}, cache = {}, tracks, legacy = {} } = {}) {
     callPlaylistCache: async (method, ...args) => { calls.push([method, ...args]); return cache[method]?.(...args) ?? null },
     getUserPlaylists: async () => ({ status: 1, data: { info: [{ id: 10, name: '我喜欢的音乐' }] } }),
     getPlaylistTracks: (...args) => { trackCalls.push(args); return tracks?.(...args) ?? Promise.resolve({ status: 1, data: { songs: [], count: 0 } }) },
-    ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, ContextMenu: {}, nextplayIcon: '',
+    ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, ContextMenu: {}, WindowedList: {}, nextplayIcon: '',
     contextMenuManager: { unregisterMenu() {} }, filterSongs: songs => songs,
     clearTimeout, setTimeout
   })
   vm.runInContext(stripImports(read('src/views/logic/FavoriteView.js')).replace('export default', 'module.exports ='), sandbox)
   const options = sandbox.module.exports
   const view = { ...options.data(), playlistId: 10, playlistName: '晚间歌单', userPlaylists: null,
-    playlistsLoaded: true, playlistCacheState: null, settings: { playback: {} }, ...props, $emit() {} }
+    playlistsLoaded: true, playlistCacheState: null, settings: { playback: {} }, ...props, $refs: {}, $nextTick: callback => Promise.resolve().then(callback), $emit() {} }
   for (const [name, method] of Object.entries(options.methods)) view[name] = method.bind(view)
   for (const [name, getter] of Object.entries(options.computed)) Object.defineProperty(view, name, { get: () => getter.call(view) })
   return { view, calls, trackCalls, storage, activate: () => options.activated.call(view), unmount: () => options.beforeUnmount.call(view) }
@@ -249,7 +249,7 @@ function loadArtworkComponent(cache) {
   const script = compileScript(descriptor, { id: 'cover-cache' })
   const calls = []
   const released = []
-  const sandbox = vm.createContext({ ...vue, logger, module: { exports: {} },
+  const sandbox = vm.createContext({ listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},  ...vue, logger, module: { exports: {} },
     callPlaylistCache: async (method, ...args) => { calls.push([method, ...args]); return cache[method]?.(...args) ?? null },
     getPlaylistCacheAPI: () => ({ releaseSource: async id => released.push(id) })
   })
@@ -282,7 +282,7 @@ function mountMusicPage(t, name, data, props, cache) {
   const { descriptor } = parse(read(filename))
   const source = descriptor.script.src ? read(path.join(path.dirname(filename), descriptor.script.src)) : descriptor.script.content
   const leaf = { render: () => null }
-  const sandbox = vm.createContext({ module: { exports: {} }, logger,
+  const sandbox = vm.createContext({ listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},  module: { exports: {} }, logger,
     window: { innerWidth: 1200, innerHeight: 800 }, localStorage: { getItem: () => null },
     SongBadges: leaf, ArtistLinks: leaf, ContextMenu: leaf, ArtworkCover: artwork.component,
     repeatAllIcon: '', repeatOneIcon: '', shuffleIcon: ''
@@ -293,7 +293,7 @@ function mountMusicPage(t, name, data, props, cache) {
     compilerOptions: { mode: 'function', hoistStatic: false } })
   assert.deepEqual(template.errors, [])
   const transition = { setup(_props, { slots }) { return () => slots.default?.()[0] } }
-  const component = { name, props: options.props, components: options.components, methods: options.methods,
+  const component = { name, props: options.props, components: options.components, directives: options.directives, methods: options.methods,
     computed: options.computed, data() { return { ...options.data.call(this), ...data } },
     render: new Function('Vue', template.code)({ ...vue, Transition: transition }) }
   const host = renderer()

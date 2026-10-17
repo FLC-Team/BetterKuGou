@@ -11,6 +11,7 @@
 - `reset.css`：全局基础元素重置。
 - `mixins.css`：布局、文本与间距等复用工具类。
 - `components.css`：按钮等共享组件样式与 loading-spinner。
+- `motion.css`：原生交互控件的悬停、焦点、按压及滑块反馈，统一 ui-fade/ui-pop/ui-list 过渡与全局减少动态效果保护。
 - `README.md`：既有样式说明，作为补充参考保留。
 
 ## 流程与保障
@@ -21,6 +22,7 @@
 - 视觉变量白名单与默认值以 `themes/default-dark.json` 为准，格式、分享和制作说明见 [themes.md](../themes/themes.md)。
 - 页面专用样式保留 scoped，不在全局入口堆积单页选择器。
 - 公共加载状态使用 CSS spinner，应用 Logo 由 public 维护。
+- 共享过渡使用独立 translate/scale 保留组件 transform；ui-list 的 move 使用 Vue FLIP。只有显式 ui-list-container 容器启用绝对离场，网格离场由页面冻结原坐标与尺寸。scoped 控件显式 transition 清单必须包含 scale，系统减少动态效果时清除位移并缩短全部 CSS 过渡。
 
 ## 运行
 

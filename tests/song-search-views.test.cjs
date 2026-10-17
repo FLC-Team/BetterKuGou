@@ -17,6 +17,10 @@ const song = {
 const logger = { trace() {}, info() {}, warn() {}, error() {} }
 const leaf = { render: () => vue.h('span') }
 const transitionGroup = { render() { return vue.h('div', this.$slots.default?.()) } }
+// Layout is isolated here; windowing and keyboard boundaries are tested with the real component separately.
+const windowedList = { props: ['items'], render() {
+  return vue.h('div', [this.$slots.header?.(), ...(this.items || []).flatMap((item, index) => this.$slots.default?.({ item, index }) || [])])
+} }
 const metadata = vm.createContext({})
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/utils/songMetadata.js'), 'utf8').replace(/^export /gm, ''), metadata)
 
@@ -24,7 +28,7 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/utils/songMetadata.
 function loadArtistLinks() {
   const filename = path.join(__dirname, '../src/components/common/ArtistLinks.vue')
   const { descriptor } = parse(fs.readFileSync(filename, 'utf8'), { filename })
-  const sandbox = vm.createContext({ module: { exports: {} }, getSongArtists: metadata.getSongArtists })
+  const sandbox = vm.createContext({ listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},  module: { exports: {} }, getSongArtists: metadata.getSongArtists })
   vm.runInContext(descriptor.script.content.replace(/^import[^\n]*\n/gm, '').replace('export default', 'module.exports ='), sandbox)
   const template = compileTemplate({ source: descriptor.template.content, filename, id: 'ArtistLinks',
     compilerOptions: { mode: 'function', hoistStatic: false } })
@@ -41,8 +45,8 @@ function mountPage(t, name, overrides = {}) {
     ? fs.readFileSync(path.resolve(path.dirname(filename), descriptor.script.src), 'utf8')
     : descriptor.script.content
   const timers = []
-  const sandbox = vm.createContext({
-    logger, ArtworkCover: leaf, SongBadges: leaf, ContextMenu: leaf, ArtistLinks: loadArtistLinks(),
+  const sandbox = vm.createContext({ listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},
+    logger, ArtworkCover: leaf, SongBadges: leaf, ContextMenu: leaf, ArtistLinks: loadArtistLinks(), WindowedList: windowedList,
     getSongArtists: metadata.getSongArtists, nextplayIcon: '',
     TransitionGroup: transitionGroup,
     localStorage: { getItem: () => null },
@@ -60,7 +64,7 @@ function mountPage(t, name, overrides = {}) {
     compilerOptions: { mode: 'function', hoistStatic: false }
   })
   assert.deepEqual(template.errors, [])
-  const render = new Function('Vue', template.code)({ ...vue, TransitionGroup: transitionGroup, vModelText: {} })
+  const render = new Function('Vue', template.code)({ ...vue, Transition: { setup(_props, { slots }) { return () => slots.default?.()[0] } }, TransitionGroup: transitionGroup, vModelText: {} })
   const node = (type, text = '') => ({ type, text, props: {}, children: [], parent: null })
   const renderer = vue.createRenderer({
     createElement: node, createText: text => node('text', text), createComment: text => node('comment', text),
@@ -82,7 +86,7 @@ function mountPage(t, name, overrides = {}) {
   })
   const emitted = []
   const app = renderer.createApp({
-    name: source.name, components: source.components, methods: source.methods, computed: source.computed,
+    name: source.name, components: source.components, directives: source.directives, methods: source.methods, computed: source.computed,
     emits: source.emits,
     data() {
       return {

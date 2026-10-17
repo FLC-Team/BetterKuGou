@@ -14,7 +14,8 @@
       </header>
       <div class="section-heading"><h2>曲目</h2><span>跟随音乐的热度</span></div>
 
-      <div v-if="error && songs.length > 0" class="refresh-error" role="alert"><span>{{ error }}</span><button type="button" class="retry-btn" @click="loadData">重试</button></div>
+      <Transition name="ui-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">      <div v-if="error && songs.length > 0" class="refresh-error" role="alert"><span>{{ error }}</span><button type="button" class="retry-btn" @click="loadData">重试</button></div></Transition>
+      <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
       <div v-if="loading && songs.length === 0" class="loading-container">
         <span class="loading-spinner" role="status" aria-label="加载中"></span>
         <p>加载中...</p>
@@ -87,6 +88,7 @@
             </div>
         </div>
       </div>
+      </Transition>
     </div>
   </div>
 </template>

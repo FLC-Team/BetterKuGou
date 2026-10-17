@@ -3,6 +3,11 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const vue = require('vue')
+// This host has no CSSOM; keep Vue's real template/events and isolate DOM-only motion hooks.
+const motionVue = { ...vue,
+  Transition: { setup(_props, { slots }) { return () => slots.default?.()[0] } },
+  TransitionGroup: { props: ['tag'], setup(props, { attrs, slots }) { return () => vue.h(props.tag || 'div', attrs, slots.default?.()) } }
+}
 const { parse, compileScript } = require('@vue/compiler-sfc')
 
 const root = path.join(__dirname, '..')
@@ -48,7 +53,7 @@ function mountUpdates(t, options = {}) {
     }]))
   }
   const opened = []
-  const component = new Function('Vue', 'packageInfo', 'logger', 'window', 'URL', compiled)(vue, packageInfo, quietLogger, {
+  const component = new Function('Vue', 'packageInfo', 'logger', 'window', 'URL', compiled)(motionVue, packageInfo, quietLogger, {
     electronAPI: { updates: updateAPI, openExternal: async url => opened.push(url) }
   }, URL)
   function makeNode(type, text = '') {

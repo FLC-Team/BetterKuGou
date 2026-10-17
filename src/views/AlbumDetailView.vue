@@ -14,6 +14,7 @@
       </header>
       <div class="section-heading"><h2>专辑曲目</h2></div>
 
+      <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
       <div class="song-list" v-if="songs.length">
         <div class="list-header">
           <div class="col-index">#</div>
@@ -43,6 +44,7 @@
   <p class="empty-text">无法打开专辑</p><p>{{ error }}</p><button type="button" class="retry-btn" @click="load">重试</button>
       </div>
       <div v-else class="empty"><p class="empty-text">暂无专辑曲目</p><p>稍后再来听听，或返回发现更多音乐。</p></div>
+      </Transition>
     </div>
   </div>
 </template>

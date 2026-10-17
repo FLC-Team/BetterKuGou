@@ -7,6 +7,7 @@
         <p class="search-info" v-if="searchResults?.lists?.length">共找到 {{ searchResults.total || searchResults.lists.length }} 首相关歌曲，当前展示 {{ searchResults.lists.length }} 首</p>
         <p class="search-info" v-else>{{ loading ? '正在寻找与你的关键词有关的声音' : '从歌名、歌手或专辑开始，找到下一首喜欢。' }}</p>
       </header>
+      <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
       <div v-if="errorMessage" class="empty-state" role="alert">
         <p class="empty-text">暂时无法搜索</p><p class="empty-hint">{{ errorMessage }}</p>
         <button type="button" class="retry-btn" @click="performSearch()">重新搜索</button>
@@ -88,6 +89,7 @@
         </div>
       </div>
 
+      </Transition>
       <!-- 右键菜单 -->
       <ContextMenu
         :visible="contextMenuVisible"

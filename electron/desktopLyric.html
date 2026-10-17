@@ -5,360 +5,291 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>桌面歌词</title>
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-      user-select: none;
-      -webkit-user-select: none;
-    }
-
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
-      background: transparent;
-      color: #ffffff;
-      overflow: hidden;
-      cursor: move;
-      -webkit-app-region: drag;
-    }
-
+    * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+    html, body { width: 100%; height: 100%; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif; background: transparent; color: #fff; overflow: hidden; -webkit-app-region: drag; }
     .lyric-container {
-      width: 100%;
-      height: 100%;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      align-items: center;
-      padding: 20px;
-      background: transparent;
-      backdrop-filter: none;
-      -webkit-backdrop-filter: none;
-      border-radius: 12px;
-      border: none;
-      box-shadow: none;
-      transition: all 0.3s ease;
+      --desktop-accent: #feca57;
+      --desktop-text: #fff;
+      --desktop-panel: rgba(24, 27, 34, 0.76);
+      position: relative; width: 100%; height: 100%; padding: 42px 20px 22px;
+      display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 5px;
+      border: 1px solid transparent; border-radius: 12px; background: transparent;
+      transition: background-color 180ms ease, border-color 180ms ease;
+      cursor: move;
     }
-
-    .lyric-container:hover:not(.locked) {
-      background: linear-gradient(135deg, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0.6) 100%);
-      backdrop-filter: blur(10px);
-      -webkit-backdrop-filter: blur(10px);
-      border: 1px solid rgba(255,255,255,0.1);
-      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-    }
-
-    .lyric-container.locked {
-      background: linear-gradient(135deg, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0.6) 100%);
-      backdrop-filter: blur(10px);
-      -webkit-backdrop-filter: blur(10px);
-      border: 1px solid rgba(255,255,255,0.1);
-      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-    }
-
-    .current-lyric {
-      font-size: 24px;
-      font-weight: 600;
-      text-align: center;
-      text-shadow: 2px 2px 8px rgba(0,0,0,1), 1px 1px 4px rgba(0,0,0,0.9);
-      margin-bottom: 8px;
-      opacity: 0.95;
-      transition: all 0.3s ease;
-      line-height: 1.4;
-      word-wrap: break-word;
-      max-width: 100%;
-      position: relative;
-      overflow: hidden;
-    }
-
-    /* 卡拉OK逐字效果样式 */
-    .karaoke-char {
-      display: inline-block;
-      color: rgba(255, 255, 255, 0.9);
-      text-shadow: 2px 2px 8px rgba(0,0,0,1), 1px 1px 4px rgba(0,0,0,0.9);
-      /* 移除transition，避免动画计算消耗性能 */
-    }
-
-    .karaoke-char.is-space {
-      width: 0.25em;
-      min-width: 0.25em;
-    }
-
-    /* 正在播放的字符 - 使用渐进式填充 */
-    .karaoke-char.singing {
-      background: linear-gradient(90deg, #feca57 0%, #feca57 var(--fill-progress, 0%), rgba(255, 255, 255, 0.9) var(--fill-progress, 0%), rgba(255, 255, 255, 0.9) 100%);
-      -webkit-background-clip: text;
-      background-clip: text;
-      -webkit-text-fill-color: transparent;
-      text-shadow: 0 0 6px rgba(254, 202, 87, 0.3);
-      /* 使用transform替代重复的background更新来提升性能 */
-      will-change: background-position;
-    }
-
-    /* 已唱完的字符 */
-    .karaoke-char.sung {
-      color: #feca57;
-      text-shadow: 0 0 8px rgba(254, 202, 87, 0.5), 2px 2px 8px rgba(0,0,0,1);
-    }
-
-    /* 当前行的整体高亮 */
-    .current-lyric.active-line {
-      transform: scale(1.05);
-      text-shadow: 
-        0 0 10px rgba(254, 202, 87, 0.6),
-        2px 2px 8px rgba(0,0,0,1), 
-        1px 1px 4px rgba(0,0,0,0.9);
-    }
-
-    .next-lyric {
-      font-size: 16px;
-      font-weight: 400;
-      text-align: center;
-      color: rgba(255,255,255,0.8);
-      text-shadow: 2px 2px 6px rgba(0,0,0,1), 1px 1px 3px rgba(0,0,0,0.8);
-      opacity: 0.8;
-      transition: all 0.3s ease;
-      line-height: 1.3;
-      word-wrap: break-word;
-      max-width: 100%;
-    }
-
-    .song-info {
-      font-size: 14px;
-      color: rgba(255,255,255,0.7);
-      text-align: center;
-      margin-bottom: 12px;
-      text-shadow: 1px 1px 4px rgba(0,0,0,1), 1px 1px 2px rgba(0,0,0,0.8);
-    }
-
-    .no-lyric {
-      font-size: 18px;
-      color: rgba(255,255,255,0.8);
-      text-align: center;
-      font-style: italic;
-    }
-
-    .control-menu {
-      position: absolute;
-      top: 10px;
-      right: 10px;
-      opacity: 0;
-      transition: opacity 0.3s ease;
-      -webkit-app-region: no-drag;
-    }
-
-    .lyric-container:hover:not(.locked) .control-menu {
-      opacity: 1;
-    }
-
-    .lyric-container.locked .control-menu {
-      opacity: 0 !important;
-    }
-
-    .menu-btn {
-      background: rgba(255,255,255,0.2);
-      border: none;
-      color: white;
-      width: 24px;
-      height: 24px;
-      border-radius: 4px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin-left: 4px;
-      transition: all 0.2s ease;
-      font-size: 12px;
-    }
-
-    .menu-btn:hover {
-      background: rgba(255,255,255,0.3);
-    }
-
-    .controls {
-      display: flex;
-      gap: 4px;
-    }
-
-    /* 锁定状态样式 */
-    .locked {
-      cursor: default;
-      -webkit-app-region: no-drag;
-    }
-
-    .locked .control-menu {
-      opacity: 0 !important;
-    }
-
-    /* 锁定指示器 */
-    .lock-indicator {
-      position: absolute;
-      top: 5px;
-      left: 5px;
-      color: rgba(255,255,255,0.6);
-      font-size: 12px;
-      opacity: 0;
-      transition: opacity 0.3s ease;
-    }
-
-    .locked .lock-indicator {
-      opacity: 1;
-    }
-
-    /* 字体大小变体 */
-    .size-small .current-lyric { font-size: 18px; }
+    .theme-gradient { --desktop-accent: #b9b1ff; --desktop-panel: rgba(49, 40, 78, 0.78); }
+    .theme-minimal { --desktop-accent: #fff; --desktop-panel: rgba(24, 27, 34, 0.66); }
+    .lyric-container:hover:not(.locked), .lyric-container:focus-within:not(.locked) { background: var(--desktop-panel); border-color: rgba(255,255,255,0.16); }
+    .song-info { flex: 0 0 auto; max-width: 100%; height: 18px; line-height: 18px; font-size: 12px; color: rgba(255,255,255,0.75); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 4px #000; transition: opacity 180ms ease, font-size 240ms ease; }
+    .lyric-viewport { display: flex; flex: 0 0 auto; width: 100%; overflow: hidden; padding: 3px 0; }
+    .current-lyric, .next-lyric { flex: 0 0 auto; width: max-content; margin: 0 auto; white-space: pre; line-height: 1.35; text-align: left; transform: translateX(0); }
+    .current-lyric, .next-lyric { transition: font-size 240ms ease; }
+    .current-lyric { font-size: 24px; font-weight: 650; color: var(--desktop-text); text-shadow: 0 2px 5px #000, 0 0 2px #000; }
+    .current-lyric.active-line { color: var(--desktop-accent); }
+    .next-lyric { min-height: 1.35em; font-size: 16px; color: rgba(255,255,255,0.86); text-shadow: 0 2px 4px #000, 0 0 2px #000; }
+    .karaoke-char { display: inline-block; white-space: pre; color: var(--desktop-text); }
+    .karaoke-char.sung { color: var(--desktop-accent); }
+    .karaoke-char.singing { background: linear-gradient(90deg, var(--desktop-accent) var(--fill-progress, 0%), var(--desktop-text) var(--fill-progress, 0%)); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; text-shadow: none; filter: drop-shadow(0 1px 2px #000); }
+    .size-small .current-lyric { font-size: 20px; }
     .size-small .next-lyric { font-size: 14px; }
-    .size-small .song-info { font-size: 12px; }
-
-    .size-medium .current-lyric { font-size: 24px; }
-    .size-medium .next-lyric { font-size: 16px; }
-    .size-medium .song-info { font-size: 14px; }
-
     .size-large .current-lyric { font-size: 32px; }
     .size-large .next-lyric { font-size: 20px; }
-    .size-large .song-info { font-size: 16px; }
-
-    /* 主题样式 */
-    .theme-classic {
-      background: linear-gradient(135deg, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0.6) 100%);
-      color: #ffffff;
-    }
-
-    .theme-gradient {
-      background: linear-gradient(135deg, rgba(102,126,234,0.8) 0%, rgba(118,75,162,0.8) 100%);
-      color: #ffffff;
-    }
-
-    .theme-minimal {
-      background: rgba(0,0,0,0.5);
-      color: #ffffff;
-      border: none;
-    }
-
-    /* 动画效果 */
-    @keyframes lyricFadeIn {
-      from {
-        opacity: 0;
-        transform: translateY(10px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
-    }
-
-    .lyric-change .current-lyric {
-      animation: lyricFadeIn 0.5s ease-out;
+    .control-menu { position: absolute; top: 7px; left: 50%; transform: translateX(-50%); opacity: 0; pointer-events: none; transition: opacity 180ms ease; -webkit-app-region: no-drag; }
+    .lyric-container:hover:not(.locked) .control-menu, .lyric-container:focus-within:not(.locked) .control-menu { opacity: 1; pointer-events: auto; }
+    .controls { display: flex; align-items: center; gap: 5px; }
+    .menu-btn { display: flex; align-items: center; justify-content: center; flex: 0 0 30px; width: 30px; height: 28px; border: 1px solid transparent; border-radius: 6px; background: rgba(255,255,255,0.10); color: #fff; font-family: inherit; font-size: 13px; line-height: 1; cursor: pointer; transition: background-color 180ms ease, scale 100ms ease, opacity 180ms ease; }
+    .menu-btn:hover:not(:disabled) { background: rgba(255,255,255,0.23); }
+    .menu-btn:active:not(:disabled) { scale: 0.88; }
+    .menu-btn:focus-visible { outline: 2px solid var(--desktop-accent); outline-offset: 2px; }
+    .menu-btn:disabled { opacity: 0.4; cursor: default; }
+    .menu-btn[aria-pressed="true"] { border-color: var(--desktop-accent); color: var(--desktop-accent); }
+    .menu-btn[aria-busy="true"] { opacity: 0.65; }
+    .menu-btn svg { width: 15px; height: 15px; fill: currentColor; pointer-events: none; }
+    .play-symbol { display: block; }
+    .pause-symbol { display: none; }
+    .playing .play-symbol { display: none; }
+    .playing .pause-symbol { display: block; }
+    .control-feedback { position: absolute; bottom: 5px; left: 10px; right: 10px; text-align: center; font-size: 11px; line-height: 14px; color: rgba(255,255,255,0.9); pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .control-feedback[data-error="true"] { color: #ffd2cc; }
+    .resize-handle { position: absolute; right: 4px; bottom: 4px; width: 18px; height: 18px; border: 0; border-radius: 3px; background: transparent; color: rgba(255,255,255,0.8); cursor: nwse-resize; opacity: 0; pointer-events: none; touch-action: none; -webkit-app-region: no-drag; transition: opacity 180ms ease; }
+    .resize-handle svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; pointer-events: none; }
+    .lyric-container:hover:not(.locked) .resize-handle, .lyric-container:focus-within:not(.locked) .resize-handle { opacity: 1; pointer-events: auto; }
+    .resize-handle:focus-visible { outline: 2px solid var(--desktop-accent); }
+    body.locked, .lyric-container.locked { cursor: default; -webkit-app-region: no-drag; }
+    .lyric-container.locked { background: transparent; border-color: transparent; }
+    .locked .control-menu, .locked .song-info, .locked .control-feedback, .locked .resize-handle { visibility: hidden; opacity: 0; pointer-events: none; }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition: none !important; animation: none !important; }
+      .menu-btn:active:not(:disabled) { scale: 1; }
     }
   </style>
 </head>
 <body data-bk-theme-root="desktop">
   <div class="lyric-container" id="lyricContainer">
-    <div class="lock-indicator">🔒</div>
-    <div class="control-menu">
+    <div class="control-menu" id="controlMenu" role="toolbar" aria-label="桌面歌词控制">
       <div class="controls">
-        <button class="menu-btn" id="sizeBtn" title="字体大小">A</button>
-        <button class="menu-btn" id="themeBtn" title="主题">🎨</button>
-        <button class="menu-btn" id="closeBtn" title="关闭">✕</button>
+        <button type="button" class="menu-btn" id="previousBtn" title="上一首" aria-label="上一首"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2h2v12H3zM13 2v12L5 8z"/></svg></button>
+        <button type="button" class="menu-btn" id="playBtn" title="播放" aria-label="播放"><svg class="play-symbol" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2v12l10-6z"/></svg><svg class="pause-symbol" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2h4v12H3zM9 2h4v12H9z"/></svg></button>
+        <button type="button" class="menu-btn" id="nextBtn" title="下一首" aria-label="下一首"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11 2h2v12h-2zM3 2l8 6-8 6z"/></svg></button>
+        <button type="button" class="menu-btn" id="sizeBtn" title="字体大小" aria-label="字体大小">A</button>
+        <button type="button" class="menu-btn" id="themeBtn" title="歌词样式" aria-label="歌词样式">◐</button>
+        <button type="button" class="menu-btn" id="translationBtn" title="显示翻译" aria-label="显示翻译" aria-pressed="true">译</button>
+        <button type="button" class="menu-btn" id="lockBtn" title="锁定并穿透鼠标；可从托盘或设置解锁" aria-label="锁定桌面歌词，可从托盘或设置解锁"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 7V5a4 4 0 0 1 8 0v2h1v8H3V7zm2 0h4V5a2 2 0 0 0-4 0z"/></svg></button>
+        <button type="button" class="menu-btn" id="closeBtn" title="关闭桌面歌词" aria-label="关闭桌面歌词">✕</button>
       </div>
     </div>
-    
     <div class="song-info" id="songInfo">暂无播放</div>
-    <div class="current-lyric" id="currentLyric">请播放音乐以显示歌词</div>
-    <div class="next-lyric" id="nextLyric"></div>
+    <div class="lyric-viewport" id="currentViewport"><div class="current-lyric" id="currentLyric">请播放音乐以显示歌词</div></div>
+    <div class="lyric-viewport" id="nextViewport"><div class="next-lyric" id="nextLyric"></div></div>
+    <div class="control-feedback" id="controlFeedback" role="status" aria-live="polite"></div>
+    <button type="button" class="resize-handle" id="resizeHandle" title="拖动调整窗口大小；方向键微调" aria-label="调整歌词窗口大小，使用方向键微调"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 13l9-9M9 13l4-4"/></svg></button>
   </div>
 
   <script>
     const lyricAPI = window.desktopLyricAPI
     const subscriptions = []
-    
-    // 状态管理
-    let isLocked = false
-    let currentSize = 'medium' // small, medium, large
-    let currentTheme = 'classic' // classic, gradient, minimal
-    let currentLyrics = []
-    let currentTime = 0
-    let currentSong = null
-    
-    // 性能优化相关
-    let lastUpdateTime = -Infinity
-    let updateRAFId = null
-    let currentLyricIndex = -1
-    let lastRenderedHTML = ''
-    let isDOMReady = false
-    let cachedCharElements = null
-    let lastProcessedWordIndex = -1
-    let karaokeUpdateCache = new Map()
-
-    // DOM 元素
     const container = document.getElementById('lyricContainer')
     const songInfo = document.getElementById('songInfo')
     const currentLyric = document.getElementById('currentLyric')
     const nextLyric = document.getElementById('nextLyric')
+    const currentViewport = document.getElementById('currentViewport')
+    const nextViewport = document.getElementById('nextViewport')
     const sizeBtn = document.getElementById('sizeBtn')
     const themeBtn = document.getElementById('themeBtn')
     const closeBtn = document.getElementById('closeBtn')
+    const previousBtn = document.getElementById('previousBtn')
+    const playBtn = document.getElementById('playBtn')
+    const nextBtn = document.getElementById('nextBtn')
+    const translationBtn = document.getElementById('translationBtn')
+    const lockBtn = document.getElementById('lockBtn')
+    const controlMenu = document.getElementById('controlMenu')
+    const controlFeedback = document.getElementById('controlFeedback')
+    const resizeHandle = document.getElementById('resizeHandle')
+    const motionPreference = window.matchMedia?.('(prefers-reduced-motion: reduce)')
+    const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null
+    const feedbackAnimations = new Map()
+    const pendingButtons = new Set()
+    let feedbackTimer = null
+    let feedbackLeaving = false
+    let updateRAFId = null
+    let resizeObserver = null
+    let disposed = false
+    let currentSong = null
+    let currentLyrics = []
+    let currentTime = 0
+    let currentDuration = 0
+    let currentLyricIndex = -2
+    let currentSize = 'medium'
+    let currentTheme = 'classic'
+    let showTranslation = true
+    let isLocked = false
+    let isPlaying = false
+    let playbackAvailable = null
+    let settingsRevision = 0
+    let charEntries = []
+    let layoutDirty = true
+    let lineOverflow = 0
+    let nextOverflow = 0
+    let activeResize = null
 
-    // 初始化
+    /** Preserve the existing replacement feedback while cancelling obsolete animations. */
+    function animateReplacement(element) {
+      feedbackAnimations.get(element)?.cancel()
+      feedbackAnimations.delete(element)
+      if (!element.textContent || motionPreference?.matches || !element.animate) return
+      const animation = element.animate([{ opacity: 0, translate: '0 5px' }, { opacity: 1, translate: '0 0' }], { duration: 220, easing: 'ease-out' })
+      feedbackAnimations.set(element, animation)
+      animation.onfinish = () => { if (feedbackAnimations.get(element) === animation) feedbackAnimations.delete(element) }
+    }
+
+    function animateText(element, text) {
+      if (element.textContent === text) return
+      element.textContent = text
+      animateReplacement(element)
+    }
+
+    function showControlFeedback(text, error = false) {
+      clearTimeout(feedbackTimer)
+      feedbackLeaving = false
+      feedbackAnimations.get(controlFeedback)?.cancel()
+      feedbackAnimations.delete(controlFeedback)
+      controlFeedback.dataset.error = String(error)
+      animateText(controlFeedback, text)
+      feedbackTimer = setTimeout(hideControlFeedback, error ? 3600 : 1800)
+    }
+
+    /** Leave before clearing the status; a newer result cancels this obsolete dismissal. */
+    function hideControlFeedback() {
+      if (motionPreference?.matches || !controlFeedback.animate) { feedbackLeaving = false; animateText(controlFeedback, ''); return }
+      feedbackLeaving = true
+      feedbackAnimations.get(controlFeedback)?.cancel()
+      const animation = controlFeedback.animate([{ opacity: 1, translate: '0 0' }, { opacity: 0, translate: '0 -4px' }], { duration: 160, easing: 'ease-in' })
+      feedbackAnimations.set(controlFeedback, animation)
+      animation.onfinish = () => {
+        if (feedbackAnimations.get(controlFeedback) !== animation) return
+        controlFeedback.textContent = ''
+        feedbackLeaving = false
+        feedbackAnimations.delete(controlFeedback)
+      }
+    }
+
+    function stopFeedbackMotion() {
+      feedbackAnimations.forEach(animation => animation.cancel())
+      feedbackAnimations.clear()
+      if (feedbackLeaving) { controlFeedback.textContent = ''; feedbackLeaving = false }
+    }
+
+    /** Consume the latest position once per frame, including the final paused seek. */
+    function scheduleRender() {
+      if (disposed || updateRAFId !== null) return
+      updateRAFId = requestAnimationFrame(() => {
+        updateRAFId = null
+        if (!disposed) updateCurrentLyric()
+      })
+    }
+
+    function invalidateLayout() {
+      layoutDirty = true
+      scheduleRender()
+    }
+
     function init() {
-      // 设置初始样式
       updateSize()
       updateTheme()
-      
-      // 绑定事件
+      refreshControls()
       sizeBtn.addEventListener('click', cycleSize)
       themeBtn.addEventListener('click', cycleTheme)
-      closeBtn.addEventListener('click', closeLyric)
+      closeBtn.addEventListener('click', () => lyricAPI.close())
+      previousBtn.addEventListener('click', () => sendPlayerControl(previousBtn, 'prev'))
+      playBtn.addEventListener('click', () => sendPlayerControl(playBtn, 'toggle'))
+      nextBtn.addEventListener('click', () => sendPlayerControl(nextBtn, 'next'))
+      translationBtn.addEventListener('click', toggleTranslation)
+      lockBtn.addEventListener('click', lockLyrics)
+      resizeHandle.addEventListener('pointerdown', beginResize)
+      resizeHandle.addEventListener('pointermove', moveResize)
+      resizeHandle.addEventListener('pointerup', endResize)
+      resizeHandle.addEventListener('pointercancel', endResize)
+      resizeHandle.addEventListener('lostpointercapture', endResize)
+      resizeHandle.addEventListener('keydown', resizeWithKeyboard)
+      subscriptions.push(lyricAPI.onSongUpdate(updateSongInfo))
+      subscriptions.push(lyricAPI.onLyricUpdate(updateLyrics))
+      subscriptions.push(lyricAPI.onTimeUpdate(updateCurrentTime))
+      subscriptions.push(lyricAPI.onSettingsUpdate(updateSettings))
+      if (lyricAPI.onError) subscriptions.push(lyricAPI.onError(message => showControlFeedback(typeof message === 'string' && message ? message : '操作失败，请重试', true)))
+      if (lyricAPI.onPlaybackUpdate) subscriptions.push(lyricAPI.onPlaybackUpdate(updatePlayback))
+      if (lyricAPI.onLockChanged) subscriptions.push(lyricAPI.onLockChanged(locked => { isLocked = Boolean(locked); updateLockState() }))
+      motionPreference?.addEventListener?.('change', stopFeedbackMotion)
+      window.addEventListener('resize', invalidateLayout)
+      window.addEventListener('blur', endResize)
+      if (typeof ResizeObserver === 'function') {
+        resizeObserver = new ResizeObserver(invalidateLayout)
+        ;[currentViewport, nextViewport, currentLyric, nextLyric].forEach(element => resizeObserver.observe(element))
+      }
+      document.fonts?.ready.then(() => { if (!disposed) invalidateLayout() })
+      window.addEventListener('beforeunload', dispose, { once: true })
+    }
 
-      // 监听主进程消息
-      subscriptions.push(lyricAPI.onSongUpdate((song) => {
-        updateSongInfo(song)
-      }))
-
-      subscriptions.push(lyricAPI.onLyricUpdate((lyrics) => {
-        updateLyrics(lyrics)
-      }))
-
-      subscriptions.push(lyricAPI.onTimeUpdate((time) => {
-        // 使用requestAnimationFrame进行性能优化
-        if (updateRAFId) {
-          cancelAnimationFrame(updateRAFId)
-        }
-        updateRAFId = requestAnimationFrame(() => {
-          updateCurrentTime(time)
-        })
-      }))
-
-      subscriptions.push(lyricAPI.onSettingsUpdate((settings) => {
-        if (Object.prototype.hasOwnProperty.call(settings, 'appearance')) applyAppearance(settings.appearance)
-        if (settings.fontSize) currentSize = settings.fontSize
-        if (settings.theme) currentTheme = settings.theme
-        if (typeof settings.locked === 'boolean') isLocked = settings.locked
-        
-        updateSize()
-        updateTheme()
-        updateLockState()
-      }))
-
-      subscriptions.push(lyricAPI.onLockChanged((locked) => {
-        isLocked = locked
-        updateLockState()
-      }))
-
-      window.addEventListener('beforeunload', () => {
-        subscriptions.splice(0).forEach(unsubscribe => unsubscribe())
-        if (updateRAFId) cancelAnimationFrame(updateRAFId)
-      }, { once: true })
-
+    function dispose() {
+      disposed = true
+      endResize()
+      subscriptions.splice(0).forEach(unsubscribe => unsubscribe())
+      if (updateRAFId !== null) cancelAnimationFrame(updateRAFId)
+      updateRAFId = null
+      clearTimeout(feedbackTimer)
+      stopFeedbackMotion()
+      resizeObserver?.disconnect()
+      window.removeEventListener('resize', invalidateLayout)
+      window.removeEventListener('blur', endResize)
+      motionPreference?.removeEventListener?.('change', stopFeedbackMotion)
     }
 
     function updateLockState() {
-      if (isLocked) {
-        container.classList.add('locked')
-        document.body.classList.add('locked')
-      } else {
-        container.classList.remove('locked')
-        document.body.classList.remove('locked')
+      controlMenu.inert = isLocked
+      resizeHandle.disabled = isLocked
+      if (isLocked) endResize()
+      container.classList.toggle('locked', isLocked)
+      document.body.classList.toggle('locked', isLocked)
+    }
+
+    /** The main process measures screen DIP coordinates; transparent windows do not use native resize borders. */
+    async function beginResize(event) {
+      if (isLocked || disposed || activeResize || event.button !== 0) return
+      event.preventDefault()
+      const gesture = { pointerId: event.pointerId, started: false }
+      activeResize = gesture
+      resizeHandle.setPointerCapture(event.pointerId)
+      try {
+        const result = await lyricAPI.beginResize()
+        if (activeResize !== gesture || disposed) return
+        if (!result?.success) throw new Error(result?.error || '无法调整窗口')
+        gesture.started = true
+        lyricAPI.resize()
+      } catch (error) {
+        if (activeResize !== gesture || disposed) return
+        endResize()
+        console.warn('desktop-lyric', '调整窗口失败', error)
+        showControlFeedback('无法调整窗口，请重试', true)
       }
+    }
+
+    function moveResize(event) {
+      if (activeResize?.pointerId === event.pointerId && activeResize.started) lyricAPI.resize()
+    }
+
+    function endResize(event) {
+      if (!activeResize || (event?.pointerId !== undefined && event.pointerId !== activeResize.pointerId)) return
+      const pointerId = activeResize.pointerId
+      activeResize = null
+      if (resizeHandle.hasPointerCapture(pointerId)) resizeHandle.releasePointerCapture(pointerId)
+      lyricAPI.endResize()
+    }
+
+    function resizeWithKeyboard(event) {
+      const changes = { ArrowLeft: { width: -40, height: 0 }, ArrowRight: { width: 40, height: 0 }, ArrowUp: { width: 0, height: -20 }, ArrowDown: { width: 0, height: 20 } }
+      if (!changes[event.key] || isLocked || activeResize) return
+      event.preventDefault()
+      return runAction(resizeHandle, () => lyricAPI.resizeBy(changes[event.key]))
     }
 
     /** Only the main process sends this already validated, window-scoped visual snapshot. Replace, never append. */
@@ -375,291 +306,256 @@
       sheet.textContent = appearance.css
     }
 
-    // 循环切换字体大小
-    function cycleSize() {
-      const sizes = ['small', 'medium', 'large']
-      const currentIndex = sizes.indexOf(currentSize)
-      currentSize = sizes[(currentIndex + 1) % sizes.length]
+    // Settings broadcasts are authoritative; acknowledgements only fill in when no broadcast arrived.
+    function updateSettings(settings = {}) {
+      settingsRevision++
+      if (Object.prototype.hasOwnProperty.call(settings, 'appearance')) applyAppearance(settings.appearance)
+      if (['small', 'medium', 'large'].includes(settings.fontSize)) currentSize = settings.fontSize
+      if (['classic', 'gradient', 'minimal'].includes(settings.theme)) currentTheme = settings.theme
+      if (typeof settings.locked === 'boolean') isLocked = settings.locked
+      if (typeof settings.showTranslation === 'boolean') showTranslation = settings.showTranslation
       updateSize()
-      lyricAPI.changeSize(currentSize)
+      updateTheme()
+      updateLockState()
+      refreshControls()
+      updateCurrentLyric()
     }
 
     function updateSize() {
-      container.className = container.className.replace(/size-\w+/g, '')
+      container.classList.remove('size-small', 'size-medium', 'size-large')
       container.classList.add(`size-${currentSize}`)
-    }
-
-    // 循环切换主题
-    function cycleTheme() {
-      const themes = ['classic', 'gradient', 'minimal']
-      const currentIndex = themes.indexOf(currentTheme)
-      currentTheme = themes[(currentIndex + 1) % themes.length]
-      updateTheme()
-      lyricAPI.changeTheme(currentTheme)
+      sizeBtn.title = '字号：' + ({ small: '小', medium: '中', large: '大' })[currentSize]
+      sizeBtn.setAttribute('aria-label', sizeBtn.title + '，点击切换')
+      layoutDirty = true
     }
 
     function updateTheme() {
-      container.className = container.className.replace(/theme-\w+/g, '')
+      container.classList.remove('theme-classic', 'theme-gradient', 'theme-minimal')
       container.classList.add(`theme-${currentTheme}`)
+      themeBtn.title = '样式：' + ({ classic: '经典', gradient: '渐变', minimal: '简约' })[currentTheme]
+      themeBtn.setAttribute('aria-label', themeBtn.title + '，点击切换')
+      layoutDirty = true
     }
 
-    // 关闭歌词窗口
-    function closeLyric() {
-      lyricAPI.close()
+    /** Keep a failed action retryable, and never display an optimistic setting as saved. */
+    async function runAction(button, operation, onSuccess, successText) {
+      if (disposed || button.disabled || pendingButtons.has(button)) return
+      pendingButtons.add(button)
+      refreshControls()
+      try {
+        const result = await operation()
+        if (disposed) return
+        if (!result?.success) throw new Error(result?.error || '操作未完成')
+        onSuccess?.()
+        if (successText) showControlFeedback(typeof successText === 'function' ? successText() : successText)
+      } catch (error) {
+        if (!disposed) {
+          console.warn('desktop-lyric', '控制操作失败', error)
+          showControlFeedback('操作失败，请重试', true)
+        }
+      } finally {
+        pendingButtons.delete(button)
+        if (!disposed) refreshControls()
+      }
     }
 
-    // 更新歌曲信息
+    function cycleSize() {
+      const sizes = ['small', 'medium', 'large']
+      const target = sizes[(sizes.indexOf(currentSize) + 1) % sizes.length]
+      const revision = settingsRevision
+      return runAction(sizeBtn, () => lyricAPI.changeSize(target), () => {
+        if (revision === settingsRevision) { currentSize = target; updateSize(); updateCurrentLyric() }
+      }, () => '字号：' + ({ small: '小', medium: '中', large: '大' })[currentSize])
+    }
+
+    function cycleTheme() {
+      const themes = ['classic', 'gradient', 'minimal']
+      const target = themes[(themes.indexOf(currentTheme) + 1) % themes.length]
+      const revision = settingsRevision
+      return runAction(themeBtn, () => lyricAPI.changeTheme(target), () => {
+        if (revision === settingsRevision) { currentTheme = target; updateTheme(); updateCurrentLyric() }
+      }, () => '样式：' + ({ classic: '经典', gradient: '渐变', minimal: '简约' })[currentTheme])
+    }
+
+    function toggleTranslation() {
+      const target = !showTranslation
+      const revision = settingsRevision
+      return runAction(translationBtn, () => lyricAPI.setTranslation(target), () => {
+        if (revision === settingsRevision) { showTranslation = target; updateCurrentLyric() }
+      }, () => showTranslation ? '已显示翻译' : '已显示下一句')
+    }
+
+    function lockLyrics() {
+      const revision = settingsRevision
+      return runAction(lockBtn, () => lyricAPI.setLocked(true), () => {
+        if (revision === settingsRevision) { isLocked = true; updateLockState() }
+      })
+    }
+
+    function sendPlayerControl(button, action) {
+      return runAction(button, () => lyricAPI.control(action))
+    }
+
+    function refreshControls() {
+      const available = Boolean(currentSong) && playbackAvailable !== false
+      const hasTranslation = currentLyrics.some(line => line.translation?.trim())
+      ;[previousBtn, playBtn, nextBtn, sizeBtn, themeBtn, translationBtn, lockBtn, resizeHandle].forEach(button => {
+        const unavailable = ([previousBtn, playBtn, nextBtn].includes(button) && !available) || (button === translationBtn && !hasTranslation) || (button === resizeHandle && isLocked)
+        button.disabled = unavailable || pendingButtons.has(button)
+        button.setAttribute('aria-busy', String(pendingButtons.has(button)))
+      })
+      playBtn.classList.toggle('playing', isPlaying)
+      playBtn.title = isPlaying ? '暂停' : '播放'
+      playBtn.setAttribute('aria-label', playBtn.title)
+      translationBtn.setAttribute('aria-pressed', String(showTranslation))
+      translationBtn.title = hasTranslation ? (showTranslation ? '隐藏翻译，显示下一句' : '显示翻译') : '当前歌曲暂无翻译'
+      translationBtn.setAttribute('aria-label', translationBtn.title)
+    }
+
+    function songKey(song) {
+      return song ? (song.trackId || `${song.title || ''}\n${song.artist || ''}`) : null
+    }
+
+    /** A new track invalidates every old lyric and timing before its async lyrics arrive. */
     function updateSongInfo(song) {
-      currentSong = song
-      if (song && song.title) {
-        songInfo.textContent = `${song.title} - ${song.artist || '未知歌手'}`
-      } else {
-        songInfo.textContent = '暂无播放'
+      const nextSong = song && typeof song === 'object' ? song : null
+      if (songKey(nextSong) !== songKey(currentSong)) {
+        currentLyrics = []
+        currentTime = 0
+        currentDuration = 0
+        currentLyricIndex = -2
+        charEntries = []
+        isPlaying = false
+        playbackAvailable = null
       }
+      currentSong = nextSong
+      animateText(songInfo, currentSong ? `${currentSong.title || '未知歌曲'} - ${currentSong.artist || '未知歌手'}` : '暂无播放')
+      songInfo.title = songInfo.textContent
+      refreshControls()
+      updateCurrentLyric()
     }
 
-    // 更新歌词
+    /** Accept plain strings only; lyric content never enters an HTML parser. */
     function updateLyrics(lyrics) {
-      lastUpdateTime = -Infinity
-      currentLyricIndex = -1
-      lastRenderedHTML = ''
-      cachedCharElements = null
-      lastProcessedWordIndex = -1
-      karaokeUpdateCache.clear()
-      currentLyrics = lyrics || []
+      currentLyrics = Array.isArray(lyrics) ? lyrics.filter(line => line && Number.isFinite(line.time) && line.time >= 0).map(line => ({
+        ...line,
+        text: typeof line.text === 'string' ? line.text : '',
+        translation: typeof line.translation === 'string' ? line.translation : '',
+        words: Array.isArray(line.words) ? line.words.filter(word => word && typeof (word.word ?? word.text) === 'string') : []
+      })).sort((a, b) => a.time - b.time) : []
+      currentLyricIndex = -2
+      charEntries = []
+      refreshControls()
       updateCurrentLyric()
     }
 
-    // 更新当前时间
-    function updateCurrentTime(time) {
-      // 更严格的防抖：减少更新频率，每50ms最多更新一次（20FPS足够流畅）
-      const now = performance.now()
-      if (now - lastUpdateTime < 50) {
-        return
-      }
-      lastUpdateTime = now
-      
+    function updateCurrentTime(time, meta = {}) {
+      if (!Number.isFinite(time) || time < 0) return
       currentTime = time
-      updateCurrentLyric()
+      if (Number.isFinite(meta?.duration) && meta.duration >= 0) currentDuration = meta.duration
+      scheduleRender()
     }
 
-    // 检测歌词是否为中文
-    function isChinese(text) {
-      if (!text) return false
-      return /[\u4e00-\u9fff]/.test(text)
+    function updatePlayback(state = {}) {
+      if (typeof state.playing === 'boolean') isPlaying = state.playing
+      if (typeof state.available === 'boolean') playbackAvailable = state.available
+      if (Number.isFinite(state.duration) && state.duration >= 0) currentDuration = state.duration
+      if (Number.isFinite(state.time) && state.time >= 0) currentTime = state.time
+      refreshControls()
+      scheduleRender()
     }
 
-    // 更新当前显示的歌词
-    function updateCurrentLyric() {      
-      if (!currentLyrics || currentLyrics.length === 0) {
-        const fallbackText = currentSong ? '暂无歌词' : '请播放音乐以显示歌词'
-        if (currentLyric.textContent !== fallbackText) {
-          currentLyric.textContent = fallbackText
-          nextLyric.textContent = ''
-        }
-        return
-      }
+    function graphemes(text) {
+      return segmenter ? Array.from(segmenter.segment(text), part => part.segment) : Array.from(text)
+    }
 
-      let newCurrentIndex = -1
-      let nextIndex = -1
-
-      // 找到当前时间对应的歌词
-      for (let i = 0; i < currentLyrics.length; i++) {
-        if (currentTime >= currentLyrics[i].time) {
-          newCurrentIndex = i
-        } else {
-          nextIndex = i
-          break
-        }
-      }
-
-      let nextText = ''
-
-      if (newCurrentIndex >= 0) {
-        const currentLine = currentLyrics[newCurrentIndex]
-        
-        // 只在歌词行发生变化时才重新渲染DOM结构
-        if (newCurrentIndex !== currentLyricIndex) {
-          currentLyricIndex = newCurrentIndex
-          
-          // 检查是否是KRC格式（支持卡拉OK效果）
-          if (currentLine.isKrc && currentLine.words && currentLine.words.length > 0) {
-            // 渲染卡拉OK效果DOM结构（只在切换时）
-            renderKaraokeStructure(currentLine)
-          } else {
-            // 普通歌词显示
-            renderNormalLyric(currentLine.text || '♪', currentLine)
-          }
-        } else if (currentLine.isKrc && currentLine.words && currentLine.words.length > 0) {
-          // 同一行歌词，只更新卡拉OK进度（高性能）
-          updateKaraokeProgress(currentLine, currentTime)
-        }
-        
-        // 设置下一行歌词
-        if (nextIndex >= 0) {
-          nextText = currentLyrics[nextIndex].text || ''
-        } else if (currentLine.translation) {
-          nextText = currentLine.translation
-        }
+    /** Rebuild by line identity, even when adjacent lines have exactly the same text. */
+    function renderLine(line) {
+      charEntries = []
+      currentLyric.replaceChildren()
+      currentLyric.classList.toggle('active-line', Boolean(line && !line.isKrc))
+      if (line?.isKrc && line.words.length) {
+        const fragment = document.createDocumentFragment()
+        line.words.forEach(word => {
+          const letters = graphemes(word.word ?? word.text)
+          const offset = Number.isFinite(word.startTime) ? Math.max(0, word.startTime) : 0
+          const duration = Number.isFinite(word.duration) ? Math.max(0, word.duration) : Math.max(0, (word.endTime || 0) - offset)
+          letters.forEach((letter, index) => {
+            const element = document.createElement('span')
+            element.className = 'karaoke-char'
+            element.textContent = letter
+            fragment.appendChild(element)
+            charEntries.push({ element, start: line.time + offset + duration * index / letters.length, duration: duration / letters.length, progress: -1 })
+          })
+        })
+        currentLyric.appendChild(fragment)
       } else {
-        if (currentLyric.innerHTML !== '♪') {
-          currentLyric.innerHTML = '♪'
-          currentLyricIndex = -1
-        }
+        currentLyric.textContent = line ? (line.text || '♪') : (currentLyrics.length ? '♪ 前奏' : currentSong ? '暂无歌词' : '请播放音乐以显示歌词')
       }
-      
-      // 只在文本发生变化时更新下一行歌词
-      if (nextLyric.textContent !== nextText) {
-        nextLyric.textContent = nextText
-      }
+      animateReplacement(currentLyric)
+      layoutDirty = true
     }
 
-    // 渲染卡拉OK DOM结构（只在歌词行变化时调用）
-    function renderKaraokeStructure(lyricLine) {
-      const words = lyricLine.words || []
-      let html = ''
-      
-      
-      for (let i = 0; i < words.length; i++) {
-        const word = words[i]
-        const wordText = word.word || word.text
-        
-        // 为每个字符创建span
-        for (let charIndex = 0; charIndex < wordText.length; charIndex++) {
-          const char = wordText[charIndex]
-          
-          if (char === ' ') {
-            html += `<span class="karaoke-char is-space" data-word="${i}" data-char="${charIndex}">&#8203;</span>`
-          } else {
-            html += `<span class="karaoke-char" data-word="${i}" data-char="${charIndex}">${char}</span>`
-          }
-        }
-        
-        // 在单词之间添加空格（对英文歌很重要）
-        if (i < words.length - 1 && !isChinese(wordText)) {
-          html += '<span class="karaoke-char is-space">&#8203;</span>'
-        }
-      }
-      
-      // 只在HTML真正发生变化时才更新DOM
-      if (lastRenderedHTML !== html) {
-        currentLyric.innerHTML = html
-        currentLyric.classList.add('active-line')
-        container.classList.add('lyric-change')
-        setTimeout(() => container.classList.remove('lyric-change'), 300)
-        lastRenderedHTML = html
-        isDOMReady = true
-        
-        // 重置缓存，因为DOM结构已改变
-        cachedCharElements = null
-        karaokeUpdateCache.clear()
-      }
+    /** Recalculate every grapheme from absolute time so seeks and paused first frames cannot retain stale state. */
+    function updateKaraokeProgress() {
+      charEntries.forEach(entry => {
+        const progress = currentTime < entry.start ? 0 : entry.duration > 0 ? Math.min(1, (currentTime - entry.start) / entry.duration) : 1
+        if (progress === entry.progress) return
+        entry.element.className = progress >= 1 ? 'karaoke-char sung' : progress > 0 ? 'karaoke-char singing' : 'karaoke-char'
+        entry.element.style.setProperty('--fill-progress', `${Math.round(progress * 1000) / 10}%`)
+        entry.progress = progress
+      })
     }
 
-    // 更新卡拉OK进度（极度优化版本）
-    function updateKaraokeProgress(lyricLine, currentTime) {
-      if (!isDOMReady) return
-      
-      const words = lyricLine.words || []
-      const lineStartTime = lyricLine.time
-      
-      // 缓存字符元素，避免重复查询DOM
-      if (!cachedCharElements || currentLyricIndex !== lastProcessedWordIndex) {
-        cachedCharElements = currentLyric.querySelectorAll('.karaoke-char:not(.is-space)')
-        lastProcessedWordIndex = currentLyricIndex
-      }
-      
-      // 只处理活跃单词附近的字符，而不是全部
-      let globalCharIndex = 0
-      let hasActiveChar = false
-      
-      for (let wordIndex = 0; wordIndex < words.length && !hasActiveChar; wordIndex++) {
-        const word = words[wordIndex]
-        const wordText = word.word || word.text
-        const wordAbsoluteStartTime = lineStartTime + word.startTime
-        const wordAbsoluteEndTime = lineStartTime + word.endTime
-        
-        // 跳过还没开始或已经结束很久的单词
-        if (currentTime < wordAbsoluteStartTime - 500 || currentTime > wordAbsoluteEndTime + 500) {
-          globalCharIndex += wordText.replace(/ /g, '').length
-          continue
-        }
-        
-        for (let charIndex = 0; charIndex < wordText.length; charIndex++) {
-          const char = wordText[charIndex]
-          
-          if (char !== ' ' && globalCharIndex < cachedCharElements.length) {
-            // 计算字符的时间（简单平均分配）
-            const charDuration = word.duration / wordText.length
-            const charStartTime = wordAbsoluteStartTime + (charIndex * charDuration)
-            const charEndTime = charStartTime + charDuration
-            
-            const element = cachedCharElements[globalCharIndex]
-            const cacheKey = `${wordIndex}-${charIndex}`
-            
-            // 计算新状态
-            let newClassName = 'karaoke-char'
-            let fillProgress = 0
-            
-            if (currentTime < charStartTime) {
-              // 还未开始
-              newClassName = 'karaoke-char'
-            } else if (currentTime >= charEndTime) {
-              // 已唱完
-              newClassName = 'karaoke-char sung'
-              fillProgress = 100
-            } else {
-              // 正在唱
-              newClassName = 'karaoke-char singing'
-              const elapsed = currentTime - charStartTime
-              fillProgress = Math.min(100, (elapsed / charDuration) * 100)
-              hasActiveChar = true
-            }
-            
-            // 使用缓存避免重复更新
-            const cachedState = karaokeUpdateCache.get(cacheKey)
-            if (!cachedState || cachedState.className !== newClassName) {
-              element.className = newClassName
-              karaokeUpdateCache.set(cacheKey, { className: newClassName, fillProgress })
-            }
-            
-            // 只为正在唱的字符更新进度（减少90%的CSS更新）
-            if (newClassName.includes('singing') && Math.abs(fillProgress - (cachedState?.fillProgress || 0)) > 5) {
-              element.style.setProperty('--fill-progress', fillProgress + '%')
-              karaokeUpdateCache.set(cacheKey, { className: newClassName, fillProgress })
-            }
-            
-            globalCharIndex++
-          }
-        }
-      }
+    function lineProgress(line, index) {
+      if (!line) return currentLyrics[0]?.time > 0 ? Math.min(1, currentTime / currentLyrics[0].time) : 0
+      const nextTime = currentLyrics[index + 1]?.time
+      const durationEnd = Number.isFinite(line.duration) && line.duration > 0 ? line.time + line.duration : 0
+      const wordEnd = line.words.reduce((end, word) => Math.max(end, line.time + (Number.isFinite(word.endTime) ? word.endTime : (word.startTime || 0) + (word.duration || 0))), 0)
+      let end = durationEnd || wordEnd || nextTime || currentDuration
+      if (nextTime && end > nextTime) end = nextTime
+      return end > line.time ? Math.max(0, Math.min(1, (currentTime - line.time) / (end - line.time))) : 0
     }
 
-    // 渲染普通歌词
-    function renderNormalLyric(text, lyricLine) {
-      const isChineseText = isChinese(text)
-      let displayText = text
-      
-      if (isChineseText) {
-        // 中文歌曲处理
-        if (lyricLine.translation) {
-          // 有翻译时显示原文，翻译在下一行
-          displayText = text
-        }
-      } else {
-        // 非中文歌曲处理
-        displayText = text
+    /** Measure only after content/font/viewport changes; horizontal position follows playback, not a second clock. */
+    function updateLongLines(progress) {
+      if (layoutDirty) {
+        lineOverflow = Math.max(0, currentLyric.scrollWidth - currentViewport.clientWidth)
+        nextOverflow = Math.max(0, nextLyric.scrollWidth - nextViewport.clientWidth)
+        layoutDirty = false
       }
-
-      // 更新显示文本
-      if (currentLyric.textContent !== displayText) {
-        currentLyric.textContent = displayText
-        container.classList.add('lyric-change')
-        setTimeout(() => container.classList.remove('lyric-change'), 500)
-      }
+      const position = Math.max(0, Math.min(1, (progress - 0.12) / 0.76))
+      currentLyric.style.transform = `translateX(${-Math.round(lineOverflow * position)}px)`
+      nextLyric.style.transform = `translateX(${-Math.round(nextOverflow * position)}px)`
     }
 
-    // 页面加载完成后初始化
+    function updateCurrentLyric() {
+      let low = 0
+      let high = currentLyrics.length
+      while (low < high) {
+        const middle = (low + high) >>> 1
+        if (currentLyrics[middle].time <= currentTime) low = middle + 1
+        else high = middle
+      }
+      const index = low - 1
+      const line = currentLyrics[index]
+      if (index !== currentLyricIndex) {
+        currentLyricIndex = index
+        renderLine(line)
+      }
+      updateKaraokeProgress()
+      const translation = showTranslation && line?.translation.trim() ? line.translation : ''
+      const nextLine = currentLyrics[index + 1]
+      const secondary = translation || nextLine?.text || ''
+      const kind = translation ? 'translation' : nextLine ? (index < 0 ? 'intro' : 'next') : 'empty'
+      if (nextLyric.textContent !== secondary || nextLyric.dataset.kind !== kind) {
+        animateText(nextLyric, secondary)
+        nextLyric.dataset.kind = kind
+        layoutDirty = true
+      }
+      updateLongLines(lineProgress(line, index))
+    }
+
     document.addEventListener('DOMContentLoaded', init)
   </script>
 </body>

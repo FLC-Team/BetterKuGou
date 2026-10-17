@@ -1,8 +1,8 @@
 <template>
-  <Transition name="user-menu-fade">
-    <div v-if="visible" class="user-menu-overlay">
-      <Transition name="user-menu-slide">
-        <div v-if="visible" ref="menu" class="user-menu" :style="menuStyle" @click.stop>
+  <Transition name="user-menu-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
+    <div v-if="visible" class="user-menu-overlay" @keydown.esc.stop.prevent="handleClose">
+      <Transition name="user-menu-slide" appear @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
+        <div v-if="visible" ref="menu" class="user-menu" role="group" aria-label="账号菜单" :style="menuStyle" @click.stop>
           <!-- 用户信息头部 -->
           <div class="user-menu-header">
             <div class="user-avatar-large">
@@ -140,7 +140,7 @@ export default {
 /* 遮罩层淡入淡出动画 */
 .user-menu-fade-enter-active,
 .user-menu-fade-leave-active {
-  transition: opacity 0.2s ease;
+  transition: opacity 0.2s ease, scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
 
 .user-menu-fade-enter-from,

@@ -55,6 +55,46 @@ test('playback time bridge rejects non-finite and negative values', () => {
   assert.equal(sent[0][1], 1200)
 })
 
+test('desktop bridge preserves track identity, explicit clearing and millisecond playback metadata', () => {
+  const { exposed, sent } = loadBridge()
+  exposed.electronAPI.updateTrack({ trackId: 'hash-a', title: 'Same title', artist: 'Artist' })
+  exposed.electronAPI.updateLyrics([{ time: 0, text: 'Lyric' }], 'hash-a')
+  exposed.electronAPI.updatePlaybackTime(1250, { trackId: 'hash-a', duration: 20000, extra: 'ignored' })
+  exposed.electronAPI.updateTrack(null)
+  assert.equal(sent[0][1].trackId, 'hash-a')
+  assert.equal(sent[1][2], 'hash-a')
+  assert.equal(sent[2][1], 1250)
+  assert.deepEqual(JSON.parse(JSON.stringify(sent[2][2])), { trackId: 'hash-a', duration: 20000 })
+  assert.deepEqual(sent[3], ['player:track-update', null])
+})
+
+test('desktop commands are validated fixed invocations and playback/error subscriptions release independently', async () => {
+  const { exposed, invoked, ipc } = loadBridge()
+  const desktop = exposed.desktopLyricAPI
+  for (const result of await Promise.all([
+    desktop.changeSize('huge'), desktop.changeTheme('unknown'), desktop.setLocked('true'),
+    desktop.setTranslation(1), desktop.control('delete')
+  ])) assert.equal(result.success, false)
+  assert.equal(invoked.length, 0)
+  await desktop.control('toggle')
+  await desktop.setLocked(false)
+  await desktop.setTranslation(true)
+  await exposed.electronAPI.desktopLyric.resetPosition()
+  assert.deepEqual(invoked.map(args => args[0]), ['desktop-lyric:control', 'desktop-lyric:set-locked', 'desktop-lyric:set-translation', 'desktop-lyric:reset-position'])
+  const received = []
+  const other = () => {}
+  ipc.on('desktop-lyric:playback-update', other)
+  const releasePlayback = desktop.onPlaybackUpdate((...args) => received.push(args))
+  const releaseError = desktop.onError((...args) => received.push(args))
+  const playback = { playing: false, time: 1250, available: true }
+  ipc.emit('desktop-lyric:playback-update', { sender: 'privileged' }, playback)
+  ipc.emit('desktop-lyric:error', { sender: 'privileged' }, '保存失败')
+  assert.deepEqual(received, [[playback], ['保存失败']])
+  releasePlayback(); releaseError()
+  assert.equal(ipc.listenerCount('desktop-lyric:playback-update'), 1)
+  assert.equal(ipc.listenerCount('desktop-lyric:error'), 0)
+})
+
 test('startup bridge exposes only fixed backend and renderer readiness channels', async () => {
   const { exposed, invoked, sent } = loadBridge()
   await exposed.electronAPI.waitForBackend()

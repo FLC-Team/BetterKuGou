@@ -28,7 +28,7 @@
         <div class="playlist-search-field">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4 4" /></svg>
           <input ref="playlistSearch" v-model="searchQuery" type="search" aria-label="搜索此歌单的歌曲、歌手或专辑" placeholder="搜索此歌单的歌曲、歌手或专辑" autocomplete="off" @keydown.esc.stop.prevent="searchQuery = ''" />
-          <button v-if="searchQuery" type="button" class="clear-search" aria-label="清空歌单搜索" @click="searchQuery = ''; $refs.playlistSearch?.focus()">×</button>
+          <Transition name="ui-pop" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><button v-if="searchQuery" type="button" class="clear-search" aria-label="清空歌单搜索" @click="searchQuery = ''; $refs.playlistSearch?.focus()">×</button></Transition>
         </div>
         <p class="playlist-search-count" role="status" aria-live="polite">{{ hasSearchQuery ? `找到 ${filteredFavoriteList.length} 首 / 共 ${favoriteList.length} 首` : `共 ${favoriteList.length} 首歌曲` }}</p>
       </div>
@@ -38,6 +38,7 @@
         <button type="button" class="action-btn" :disabled="loading" @click="loadFavorites(true)">重试</button>
       </div>
 
+      <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
       <!-- 加载状态 -->
       <div v-if="loading && favoriteList.length === 0" class="loading-container">
         <span class="loading-spinner" role="status" aria-label="加载中"></span>
@@ -70,7 +71,8 @@
       </div>
 
       <!-- 歌曲列表 -->
-      <div v-else class="song-list">
+      <WindowedList v-else ref="songList" v-list-motion="filteredFavoriteList" class="song-list" :items="filteredFavoriteList" item-key="index">
+        <template #header>
         <div class="list-header">
           <div class="col-index"><button type="button" class="sort-button" @click="toggleSortOrder" :aria-label="'切换曲目顺序，当前' + (sortOrder === 'desc' ? '倒序' : sortOrder === 'asc' ? '正序' : '原始顺序')">
             <span>#</span>
@@ -84,12 +86,15 @@
           <div class="col-duration">时长</div>
           <div class="col-actions-label"><span class="visually-hidden">操作</span></div>
         </div>
+        </template>
 
+        <template #default="{ item: song, index }">
         <div
-          v-for="song in filteredFavoriteList"
-          :key="song.hash"
+          :key="`${song.hash}:${song.index}`"
+          :data-motion-key="`${song.hash}:${song.index}`"
+          :data-window-index="index"
           class="song-item"
-          :class="{ playing: isCurrentlyPlaying(song) }"
+          :class="{ playing: isCurrentlyPlaying(song), 'is-striped': index % 2 === 1 }"
           :aria-current="isCurrentlyPlaying(song) ? 'true' : undefined"
           @dblclick="playSong(song)"
           @contextmenu.prevent.stop="showContextMenu($event, song)"
@@ -131,8 +136,10 @@
               </button>
             </div>
         </div>
-      </div>
+        </template>
+      </WindowedList>
 
+      </Transition>
       <!-- 右键菜单 -->
       <ContextMenu
         :visible="contextMenuVisible"

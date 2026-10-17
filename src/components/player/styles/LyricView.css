@@ -85,15 +85,35 @@
 .control-btn.play-btn:hover { background: var(--lyric-play-hover); }
 .favorite-btn.active { color: var(--lyric-favorite); }
 .mode-icon { display: block; width: 20px; height: 20px; background: currentColor; mask: var(--mode-icon) center / contain no-repeat; -webkit-mask: var(--mode-icon) center / contain no-repeat; }
-.lyric-tools { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.lyric-quality { display: inline-flex; align-items: center; gap: 6px; color: var(--lyric-text-secondary); font-size: 12px; }
-.lyric-quality select { max-width: 140px; padding: 4px 6px; border: 1px solid var(--lyric-track); border-radius: 4px; background: var(--lyric-background); color: var(--lyric-text); font: inherit; cursor: pointer; }
-.lyric-quality select:focus-visible, .lyric-quality-status button:focus-visible { outline: 2px solid var(--lyric-text); outline-offset: 3px; }
-.lyric-quality-status { min-height: 16px; margin-top: 5px; text-align: center; color: var(--lyric-text-muted); font-size: 11px; line-height: 1.5; }
-.lyric-quality-status button { margin-left: 8px; background: transparent; color: var(--lyric-text); cursor: pointer; }
-.translation-btn { width: auto; height: 28px; gap: 6px; padding: 0 10px; border-radius: 4px; font-size: 12px; }
-.translation-btn svg { width: 15px; height: 15px; }
-.translation-btn.active { color: var(--lyric-text); background: var(--lyric-active-hover); }
+.lyric-tools { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 14px; }
+.lyric-quality { position: relative; }
+.lyric-tool { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 30px; padding: 0 12px; border: 1px solid var(--lyric-track); border-radius: 20px; color: var(--lyric-text-secondary); background: transparent; font: inherit; font-size: 11px; cursor: pointer; transition: color 0.15s ease, background-color 0.15s ease; }
+.lyric-tool:hover, .lyric-tool.is-open { color: var(--lyric-text); background: var(--lyric-hover); }
+.lyric-tool:focus-visible, .quality-option:focus-visible, .lyric-tool-feedback button:focus-visible { outline: 2px solid var(--lyric-text); outline-offset: 3px; }
+.quality-trigger-label { color: var(--lyric-text-muted); }
+.quality-trigger-value { min-width: 30px; font-size: 10px; font-weight: 600; letter-spacing: 0.03em; }
+.quality-chevron { width: 5px; height: 5px; margin-left: 1px; border-top: 1px solid currentColor; border-left: 1px solid currentColor; transform: translateY(2px) rotate(45deg); }
+.is-open .quality-chevron { transform: translateY(-1px) rotate(225deg); }
+.quality-trigger.is-switching .quality-trigger-value { opacity: 0.65; }
+.lyric-quality-menu { position: absolute; bottom: calc(100% + 10px); left: 50%; z-index: 30; width: 238px; max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); padding: 10px; border: 1px solid var(--lyric-track); border-radius: 14px; background: color-mix(in srgb, var(--lyric-background) 96%, var(--lyric-text)); box-shadow: var(--shadow-playlist); transform: translateX(-50%); translate: var(--quality-menu-x, 0px) var(--quality-menu-y, 0px); overflow-y: auto; overscroll-behavior: contain; }
+.quality-menu-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px 10px; color: var(--lyric-text-secondary); font-size: 11px; }
+.quality-menu-heading > :last-child { color: var(--lyric-text-muted); font-size: 10px; }
+.quality-option { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 36px; padding: 8px 10px; border-radius: 7px; color: var(--lyric-text-secondary); background: transparent; text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
+.quality-option:hover, .quality-option:focus-visible { background: var(--lyric-hover); color: var(--lyric-text); }
+.quality-option[aria-checked="true"] { background: var(--lyric-active-hover); color: var(--lyric-text); }
+.quality-option-name { font-weight: 500; }
+.quality-option-detail { flex: 1; font-size: 11px; color: var(--lyric-text-muted); letter-spacing: 0.02em; }
+.quality-option-check { width: 10px; height: 6px; margin-left: auto; border-left: 1.5px solid transparent; border-bottom: 1.5px solid transparent; transform: rotate(-45deg) translateY(-2px); }
+.quality-option[aria-checked="true"] .quality-option-check { border-color: currentColor; }
+.quality-menu-status { margin-top: 8px; padding: 10px 6px 0; border-top: 1px solid var(--lyric-track); color: var(--lyric-text-secondary); font-size: 11px; line-height: 1.5; }
+.quality-menu-status.is-switching { color: var(--lyric-text); }
+.quality-menu-note { margin: 4px 6px 2px; color: var(--lyric-text-muted); font-size: 10px; line-height: 1.5; }
+.lyric-tool-feedback { margin-top: 8px; text-align: center; color: var(--lyric-text-secondary); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.lyric-tool-feedback button { margin-left: 8px; background: transparent; color: var(--lyric-text); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.translation-btn { gap: 7px; }
+.translation-indicator { width: 4px; height: 4px; border-radius: 50%; background: var(--lyric-text-muted); opacity: 0.5; }
+.translation-btn.active { color: var(--lyric-text); }
+.translation-btn.active .translation-indicator { background: currentColor; opacity: 1; }
 .close-btn { position: absolute; top: 8px; left: 8px; z-index: 20; }
 
 .lyrics-section { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
@@ -165,10 +185,26 @@
 .translation-lyric { font-size: 0.55em; font-weight: 400; line-height: 1.4; color: var(--lyric-translation); overflow-wrap: anywhere; margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .karaoke-char { display: inline-block; vertical-align: baseline; font-weight: 500; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; transition: transform 0.15s ease-out, color 0.1s ease; }
 .karaoke-char.is-space { width: 0.25em; min-width: 0.25em; white-space: pre; pointer-events: none; }
-.bridge-progress-bar { height: 3px; width: min(280px, 70%); border-radius: 2px; pointer-events: none; transform-origin: center; transition: transform 0.05s linear; }
-.bridge-progress-bar.overlay { position: absolute; top: 50%; left: 50%; z-index: 20; }
-.bridge-fade-enter-active, .bridge-fade-leave-active { transition: opacity 0.2s ease; }
-.bridge-fade-enter-from, .bridge-fade-leave-to { opacity: 0; }
+/* 桥段是一小段光点编舞；外层只定位，避免与手动浏览、歌词滚动争用 transform。 */
+.bridge-indicator { position: absolute; top: 50%; left: 50%; z-index: 20; width: min(180px, 72%); height: var(--bridge-height); color: var(--bridge-color); pointer-events: none; }
+.bridge-body { position: relative; width: 100%; height: 100%; }
+.bridge-choreography { position: absolute; top: 50%; left: 50%; width: 160px; height: 100%; transform: translate(-50%, -50%); }
+.bridge-wave { position: relative; height: calc(100% - 14px); transform: scale(var(--bridge-scale)); }
+.bridge-particle { position: absolute; top: calc(50% - 2px); left: calc(50% - 2px); width: 4px; height: 4px; border-radius: 4px; background: currentColor; }
+.bridge-aura { position: absolute; inset: 2px 12px; border-radius: 50%; background: radial-gradient(ellipse, currentColor, transparent 72%); filter: blur(6px); }
+.bridge-caption { display: flex; align-items: center; justify-content: center; gap: 9px; height: 14px; color: var(--lyric-text-secondary); font-size: 10px; line-height: 1; letter-spacing: 0.18em; }
+.bridge-caption-divider { width: 2px; height: 2px; border-radius: 50%; background: currentColor; opacity: 0.5; }
+.bridge-countdown { min-width: 3.4em; font-variant-numeric: tabular-nums; letter-spacing: 0.06em; }
+.bridge-still { display: none; height: calc(100% - 14px); align-items: center; justify-content: center; gap: 12px; }
+.bridge-still span { width: 5px; height: 5px; border-radius: 50%; background: var(--lyric-text); opacity: 0.25; }
+.bridge-still span.filled { opacity: 0.9; }
+.bridge-morph-enter-active { transition: opacity 0.4s ease; }
+.bridge-morph-leave-active { transition: opacity 0.32s ease; }
+.bridge-morph-enter-active .bridge-body { transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1); }
+.bridge-morph-leave-active .bridge-body { transition: transform 0.32s cubic-bezier(0.4, 0, 1, 1); }
+.bridge-morph-enter-from, .bridge-morph-leave-to { opacity: 0; }
+.bridge-morph-enter-from .bridge-body { transform: translateY(10px) scale(0.82); }
+.bridge-morph-leave-to .bridge-body { transform: translateY(-12px) scale(0.92); }
 
 @media (max-height: 600px) {
   .lyric-view { --album-size: clamp(120px, 30vh, 190px); --base-font-size: 20px; --current-font-size: 24px; }
@@ -189,9 +225,52 @@
   .song-title { font-size: 18px; }
   .playback-panel { max-width: none; }
   .playback-controls { margin-top: 4px; gap: 6px; }
-  .lyric-tools { position: absolute; top: 8px; right: 8px; margin: 0; }
+  .lyric-tools { margin-top: 8px; }
+  .lyric-quality-menu { top: calc(100% + 10px); bottom: auto; left: auto; right: 0; transform: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .lyric-line, .karaoke-char, .control-btn, .track-piece, .background-image { transition: none !important; }
+  .lyric-tool { transition: none !important; }
+  .lyric-line, .karaoke-char, .control-btn, .track-piece, .background-image,
+  .bridge-indicator, .bridge-body { transition: none !important; }
   .background-image { transform: none; }
+  .bridge-body { transform: none !important; }
+  .bridge-wave { display: none; }
+  .bridge-still { display: flex; }
+}
+/* State feedback stays inside controls, separate from track/lyric transforms. */
+.control-state-stage { display: grid; place-items: center; }
+.control-state-icon { grid-area: 1 / 1; display: inline-flex; align-items: center; justify-content: center; }
+.control-state-enter-active, .control-state-leave-active { transition: opacity 140ms ease, transform 180ms cubic-bezier(0.22, 1, 0.36, 1); }
+.control-state-enter-from { opacity: 0; transform: scale(0.65) rotate(-12deg); }
+.control-state-leave-to { opacity: 0; transform: scale(0.65) rotate(12deg); }
+.control-state-leave-active { pointer-events: none; }
+.control-btn, .close-btn, .lyric-tool, .quality-option { transition: color 150ms ease, background-color 150ms ease, scale 100ms ease; }
+.control-btn:active, .close-btn:active, .lyric-tool:active, .quality-option:active { scale: 0.92; }
+.quality-chevron { transition: transform 180ms ease; }
+.quality-option-check, .translation-indicator { transition: opacity 180ms ease, border-color 180ms ease, background-color 180ms ease; }
+.quality-option-check { opacity: 0; }
+.quality-option[aria-checked="true"] .quality-option-check { opacity: 1; }
+.quality-menu-enter-active, .quality-menu-leave-active { transform-origin: 50% 100%; transition: opacity 180ms ease, scale 180ms ease; }
+.quality-menu-enter-from, .quality-menu-leave-to { opacity: 0; scale: 0.95; }
+.quality-menu-leave-active { pointer-events: none; }
+.quality-trigger.is-switching .quality-trigger-label::before {
+  content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 5px;
+  border: 1px solid currentColor; border-right-color: transparent; border-radius: 50%;
+  animation: quality-busy 700ms linear infinite;
+}
+@keyframes quality-busy { to { transform: rotate(360deg); } }
+.lyric-tool-feedback button:disabled { opacity: 0.6; cursor: wait; }
+.lyric-feedback-enter-active, .lyric-feedback-leave-active { transition: opacity 180ms ease, translate 180ms ease; }
+.lyric-feedback-enter-from, .lyric-feedback-leave-to { opacity: 0; translate: 0 6px; }
+.lyric-feedback-leave-active { pointer-events: none; }
+.translation-stage { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 240ms ease, opacity 180ms ease; }
+.translation-stage.is-visible { grid-template-rows: 1fr; opacity: 1; }
+.translation-clip { min-height: 0; overflow: hidden; }
+@media (max-width: 699px) { .quality-menu-enter-active, .quality-menu-leave-active { transform-origin: 100% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .control-state-enter-active, .control-state-leave-active, .control-btn, .close-btn, .lyric-tool, .quality-option,
+  .quality-chevron, .quality-option-check, .translation-indicator, .quality-menu-enter-active, .quality-menu-leave-active,
+  .lyric-feedback-enter-active, .lyric-feedback-leave-active, .translation-stage { transition: none; }
+  .quality-trigger.is-switching .quality-trigger-label::before { animation: none; }
+  .control-btn:active, .close-btn:active, .lyric-tool:active, .quality-option:active { scale: 1; }
 }

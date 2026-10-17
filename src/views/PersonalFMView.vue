@@ -9,6 +9,7 @@
         <div class="collection-meta"><span>{{ songs.length }} 首待听歌曲</span><span>为你而选</span></div>
       </header>
 
+      <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
       <div v-if="loading" class="loading-container">
         <span class="loading-spinner" role="status" aria-label="加载中"></span>
         <p>加载中...</p>
@@ -41,6 +42,7 @@
           <ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" />
         </article>
       </div>
+      </Transition>
     </div>
   </div>
 </template>

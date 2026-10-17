@@ -2,15 +2,15 @@
   <div class="title-bar" :class="{ 'lyric-mode': isLyricViewVisible }">
     <!-- Logo区域 -->
     <div class="logo-container">
-      <button v-if="!isLyricViewVisible" type="button" class="navigation-back" aria-label="返回上一页" title="返回上一页" :disabled="!canGoBack" @click="$emit('back')">
+      <Transition name="ui-pop" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><button v-if="!isLyricViewVisible" type="button" class="navigation-back" aria-label="返回上一页" title="返回上一页" :disabled="!canGoBack" @click="$emit('back')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m14 6-6 6 6 6" /></svg>
-      </button>
+      </button></Transition>
       <img src="/logo.png" alt="Logo" class="logo-icon" />
       <span class="app-name">BETTERKUGOU</span>
     </div>
     
     <!-- 搜索框（居中） -->
-    <div class="search-container" role="search" aria-label="音乐搜索">
+    <Transition name="ui-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><div v-if="!isLyricViewVisible" class="search-container" role="search" aria-label="音乐搜索">
       <form class="search-box" @submit.prevent="performSearch">
         <button class="search-btn" type="submit" aria-label="搜索" title="搜索" :disabled="!searchKeyword.trim()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
@@ -29,18 +29,18 @@
           spellcheck="false"
           @keydown.esc="!$event.isComposing && !$event.target.composing && $event.target.blur()"
         />
-        <button v-if="searchKeyword" class="search-clear" type="button" aria-label="清空搜索" title="清空搜索" @click="clearSearch">
+        <Transition name="ui-pop" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><button v-if="searchKeyword" class="search-clear" type="button" aria-label="清空搜索" title="清空搜索" @click="clearSearch">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
             <path d="m7 7 10 10M17 7 7 17" />
           </svg>
         </button>
-        <span v-else class="search-hint" aria-hidden="true">↵</span>
+        <span v-else class="search-hint" aria-hidden="true">↵</span></Transition>
       </form>
-    </div>
+    </div></Transition>
     
     <div class="window-controls">
       <!-- 用户信息或登录按钮 -->
-      <div v-if="userLoggedIn && userInfo" ref="userInfoBtn" class="user-info" @click.stop="handleUserClick">
+      <button v-if="userLoggedIn && userInfo" ref="userInfoBtn" type="button" class="user-info" aria-label="打开账号菜单" :aria-expanded="showUserMenu" @click.stop="handleUserClick">
         <div class="user-avatar">
           <img v-if="userInfo.avatar" :src="userInfo.avatar" alt="头像" />
           <svg v-else class="default-avatar" viewBox="0 0 1024 1024">
@@ -49,7 +49,7 @@
           </svg>
         </div>
         <span class="user-name">{{ userInfo.username || '用户' }}</span>
-      </div>
+      </button>
       <button v-else class="control-btn login-btn" @click="handleLogin" title="登录">
         <svg class="icon" viewBox="0 0 1024 1024" width="18" height="18">
           <path d="M512 512m-512 0a512 512 0 1 0 1024 0 512 512 0 1 0-1024 0Z" fill="currentColor" opacity=".2"></path>
@@ -64,7 +64,7 @@
         <img :src="icons.minimize" alt="最小化" class="icon" />
       </button>
       <button class="control-btn maximize" @click="toggleMaximize" :title="isMaximized ? '还原' : '最大化'">
-        <img :src="isMaximized ? icons.restore : icons.maximize" alt="最大化" class="icon" />
+        <Transition name="ui-pop" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><img :key="String(isMaximized)" :src="isMaximized ? icons.restore : icons.maximize" :alt="isMaximized ? '还原' : '最大化'" class="icon" /></Transition>
       </button>
       <button class="control-btn close" @click="closeWindow" title="关闭">
         <img :src="icons.close" alt="关闭" class="icon" />
@@ -143,6 +143,7 @@ export default {
     }
   },
   watch: {
+    userLoggedIn(value) { if (!value) this.showUserMenu = false },
     isLyricViewVisible(newVal) {
       logger.trace('TitleBar', 'TitleBar: 歌词界面状态 =', newVal)
     }
@@ -269,7 +270,7 @@ export default {
 
 .title-bar.lyric-mode .search-container {
   /* 全屏歌词时完全隐藏搜索框，避免遮挡与误触 */
-  display: none !important;
+  pointer-events: none;
 }
 
 .title-bar.lyric-mode .logo-container {
@@ -285,7 +286,7 @@ export default {
   gap: var(--spacing-sm);
   padding: 0 var(--spacing-md);
   -webkit-app-region: no-drag;
-  transition: opacity 0.3s ease;
+  transition: opacity 0.3s ease, scale var(--ui-motion-fast) var(--ui-motion-ease);
   flex-shrink: 0;
   min-width: 200px;
 }
@@ -294,7 +295,7 @@ export default {
   width: 24px;
   height: 24px;
   object-fit: contain;
-  transition: transform 0.3s ease;
+  transition: transform 0.3s ease, scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
 
 .navigation-back {
@@ -323,7 +324,7 @@ export default {
   color: var(--color-text);
   letter-spacing: 0.5px;
   user-select: none;
-  transition: color 0.3s ease;
+  transition: color 0.3s ease, scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
 
 /* 搜索容器 */
@@ -343,7 +344,7 @@ export default {
   background: var(--bg-hover-light);
   border: 1px solid transparent;
   border-radius: var(--radius-full);
-  transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
 
 .search-box:hover {
@@ -389,7 +390,7 @@ export default {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: color var(--transition-fast), background var(--transition-fast);
+  transition: color var(--transition-fast), background var(--transition-fast), scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
 
 .search-btn svg,
@@ -491,7 +492,7 @@ export default {
 .login-text {
   font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
-  transition: color var(--transition-base);
+  transition: color var(--transition-base), scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
 
 .login-btn:hover .login-text {
@@ -557,7 +558,7 @@ export default {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  transition: color var(--transition-base);
+  transition: color var(--transition-base), scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
 
 .user-info:hover .user-name {

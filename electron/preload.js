@@ -82,8 +82,10 @@ const electronAPI = {
 
   // 播放器相关: 向主进程汇报当前歌曲/状态
   updateTrack: (track) => {
+    if (track === null) { ipcRenderer.send('player:track-update', null); return }
     if (!track || typeof track !== 'object') return
     ipcRenderer.send('player:track-update', {
+      trackId: typeof track.trackId === 'string' ? track.trackId : null,
       title: track.title || track.name || '未知歌曲',
       cover: track.cover || track.pic || track.image || null,
       artist: track.artist || track.singername || '未知歌手'
@@ -92,9 +94,9 @@ const electronAPI = {
   updatePlaybackState: (isPlaying) => {
     ipcRenderer.send('player:playback-state', isPlaying ? 'playing' : 'paused')
   },
-  updateLyrics: (lyrics) => {
+  updateLyrics: (lyrics, trackId) => {
     if (Array.isArray(lyrics)) {
-      ipcRenderer.send('player:lyric-update', lyrics)
+      ipcRenderer.send('player:lyric-update', lyrics, typeof trackId === 'string' ? trackId : undefined)
     } else {
       console.warn('preload', '歌词必须是数组')
     }
@@ -104,9 +106,12 @@ const electronAPI = {
       ipcRenderer.send('player:time-update', time * 1000) // 转换为毫秒
     }
   },
-  updatePlaybackTime: (time) => {
+  updatePlaybackTime: (time, meta) => {
     if (Number.isFinite(time) && time >= 0) {
-      ipcRenderer.send('player:time-update', time)
+      ipcRenderer.send('player:time-update', time, {
+        trackId: typeof meta?.trackId === 'string' ? meta.trackId : undefined,
+        duration: Number.isFinite(meta?.duration) && meta.duration >= 0 ? meta.duration : undefined
+      })
     }
   },
   onPlayerControl: (callback) => {
@@ -120,7 +125,8 @@ const electronAPI = {
   desktopLyric: {
     toggle: () => ipcRenderer.invoke('desktop-lyric:toggle'),
     show: () => ipcRenderer.invoke('desktop-lyric:show'),
-    hide: () => ipcRenderer.invoke('desktop-lyric:hide')
+    hide: () => ipcRenderer.invoke('desktop-lyric:hide'),
+    resetPosition: () => ipcRenderer.invoke('desktop-lyric:reset-position')
   },
 
   // 日志 API
@@ -182,14 +188,35 @@ contextBridge.exposeInMainWorld('desktopLyricAPI', {
   onSongUpdate: (callback) => subscribe('desktop-lyric:song-update', callback),
   onLyricUpdate: (callback) => subscribe('desktop-lyric:lyric-update', callback),
   onTimeUpdate: (callback) => subscribe('desktop-lyric:time-update', callback),
+  onPlaybackUpdate: (callback) => subscribe('desktop-lyric:playback-update', callback),
+  onError: (callback) => subscribe('desktop-lyric:error', callback),
   onSettingsUpdate: (callback) => subscribe('desktop-lyric:settings-update', callback),
   onLockChanged: (callback) => subscribe('desktop-lyric:lock-changed', callback),
   changeSize: (size) => {
-    if (['small', 'medium', 'large'].includes(size)) ipcRenderer.send('desktop-lyric:size-changed', size)
+    return ['small', 'medium', 'large'].includes(size)
+      ? ipcRenderer.invoke('desktop-lyric:size-changed', size)
+      : Promise.resolve({ success: false, error: '无效的歌词字号' })
   },
   changeTheme: (theme) => {
-    if (['classic', 'gradient', 'minimal'].includes(theme)) ipcRenderer.send('desktop-lyric:theme-changed', theme)
+    return ['classic', 'gradient', 'minimal'].includes(theme)
+      ? ipcRenderer.invoke('desktop-lyric:theme-changed', theme)
+      : Promise.resolve({ success: false, error: '无效的歌词样式' })
   },
+  setLocked: (locked) => typeof locked === 'boolean'
+    ? ipcRenderer.invoke('desktop-lyric:set-locked', locked)
+    : Promise.resolve({ success: false, error: '无效的锁定状态' }),
+  setTranslation: (show) => typeof show === 'boolean'
+    ? ipcRenderer.invoke('desktop-lyric:set-translation', show)
+    : Promise.resolve({ success: false, error: '无效的翻译状态' }),
+  control: (action) => ['prev', 'toggle', 'next'].includes(action)
+    ? ipcRenderer.invoke('desktop-lyric:control', action)
+    : Promise.resolve({ success: false, error: '无效的播放操作' }),
+  beginResize: () => ipcRenderer.invoke('desktop-lyric:begin-resize'),
+  resize: () => ipcRenderer.send('desktop-lyric:resize'),
+  endResize: () => ipcRenderer.send('desktop-lyric:end-resize'),
+  resizeBy: (delta) => ipcRenderer.invoke('desktop-lyric:resize-by', {
+    width: delta?.width, height: delta?.height
+  }),
   close: () => ipcRenderer.send('desktop-lyric:close')
 })
 

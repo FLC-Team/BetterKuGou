@@ -4,6 +4,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
+const { createHash } = require('node:crypto')
 
 const root = path.resolve(__dirname, '..')
 
@@ -35,7 +36,9 @@ function uiSource() {
   const available = new Map([...source.matchAll(/^Function (\w+)\n[\s\S]*?^FunctionEnd\b/gm)].map(match => [match[1], match[0]]))
   const names = ['BKGuiInit', 'BKColorRefToRgb', 'BKPrimary', 'BKPaintButton', 'BKCloseClick', 'BKDragClick',
     'BKCommonPage', 'BKLoadLogo', 'BKHeading', 'BKScopePage', 'BKScopeChanged',
-    'BKScopeCurrentClick', 'BKScopeAllClick', 'BKLicenseChanged', 'BKProgressShow']
+    'BKScopeCurrentClick', 'BKScopeAllClick', 'BKLicenseChanged', 'BKProgressShow',
+    'BKMotionAllowed', 'BKStopMotion', 'BKStartPageMotion', 'BKPageMotionTick', 'BKPaintScopeMotion', 'BKScopeMotionTick',
+    'BKCreateAnimation', 'BKStopAnimation', 'BKStartSuccessAnimation', 'BKProgressLeave']
   const functions = names.map(name => {
     assert.ok(available.has(name), 'real installer defines ' + name)
     let body = available.get(name)
@@ -287,6 +290,39 @@ Function ProbeScopeReady
   System::Call '*$0(&w32 .r1)'
   FileWriteUTF16LE $ProbeReport "scope.fontFace=$1$\r$\n"
   System::Free $ProbeRect
+  ; Drive real color ticks without sleeping or changing Windows preferences.
+  Call BKMotionAllowed
+  FileWriteUTF16LE $ProbeReport "motion.allowed=$BKMotionEnabled$\r$\n"
+  StrCpy $BKScopePosition 0
+  StrCpy $BKScopeTarget 8
+  Call BKPaintScopeMotion
+  Call BKScopeMotionTick
+  FileWriteUTF16LE $ProbeReport "motion.firstPosition=$BKScopePosition$\r$\n"
+  ; Inspect the actual interpolated native surface, not just the numeric step.
+  StrCpy $ProbeLeft $BKScopePosition
+  StrCpy $BKScopePosition 4
+  Call BKPaintScopeMotion
+  System::Call 'user32::GetDC(p $HWNDPARENT)p.s'
+  Pop $ProbeDC
+  SendMessage $BKPage 0x138 $ProbeDC $BKScopeAllPanel
+  System::Call 'gdi32::GetBkColor(p $ProbeDC)i.r0'
+  FileWriteUTF16LE $ProbeReport "motion.midSurface=$0$\r$\n"
+  System::Call 'user32::ReleaseDC(p $HWNDPARENT, p $ProbeDC)'
+  StrCpy $BKScopePosition $ProbeLeft
+  Call BKPaintScopeMotion
+  ; Reverse while in flight, then complete exactly at the latest target.
+  StrCpy $BKScopeTarget 0
+  Call BKScopeMotionTick
+  FileWriteUTF16LE $ProbeReport "motion.reversedPosition=$BKScopePosition$\r$\n"
+  StrCpy $ProbeStyle $BKHighContrast
+  StrCpy $BKHighContrast 1
+  StrCpy $BKScopeTarget 8
+  Call BKScopeMotionTick
+  FileWriteUTF16LE $ProbeReport "motion.highContrastPosition=$BKScopePosition$\r$\n"
+  FileWriteUTF16LE $ProbeReport "motion.highContrastEnabled=$BKMotionEnabled$\r$\n"
+  StrCpy $BKHighContrast $ProbeStyle
+  Call BKStopMotion
+  FileWriteUTF16LE $ProbeReport "motion.pageAfterStop=$BKPageMotionPage$\r$\n"
   ; Exercise the real consent handler without opening files or installing.
   @{NSD_CreateCheckbox} 0 0 1 1 "Fixture license consent"
   Pop $BKLicense
@@ -312,6 +348,17 @@ Function ProbeScopeReady
   @{NSD_Check} $BKLicense
   Push 0
   Call BKLicenseChanged
+  ; Pump a separate timer after stop to expose any stale scope timer callback.
+  StrCpy $BKScopePosition 0
+  StrCpy $BKScopeTarget 8
+  GetFunctionAddress $0 ProbeAfterMotionStop
+  nsDialogs::CreateTimer $0 40
+FunctionEnd
+
+Function ProbeAfterMotionStop
+  GetFunctionAddress $0 ProbeAfterMotionStop
+  nsDialogs::KillTimer $0
+  FileWriteUTF16LE $ProbeReport "motion.positionAfterStoppedLoop=$BKScopePosition$\r$\n"
   ; Advance only this test fixture's empty install page.
   SendMessage $HWNDPARENT @{WM_COMMAND} 1 0
 FunctionEnd
@@ -326,6 +373,160 @@ Function ProbeProgressReady
   System::Call 'user32::GetWindowLongW(p r0, i -16)i.r1'
   IntOp $1 $1 & 0x10000000
   FileWriteUTF16LE $ProbeReport "progress.stockHeaderVisible=$1$\r$\n"
+FunctionEnd
+`.replaceAll('@{', '${')
+
+// These probes use genuine InstFiles extraction and Abort. Pixel sampling runs
+// serially on the install worker, never from a callback alongside NSIS bytecode.
+const nativeMotionFunctions = String.raw`
+Var BKDone
+Var ProbeFrameHash
+Var ProbePreviousHash
+Var ProbeStart
+Var ProbeAnimatedWindow
+Var ProbeSuccessInitial
+Var ProbeFrameSequence
+Var ProbeFrameBytes
+Var ProbePixels
+Var ProbePixelFile
+Var ProbeCaptureValid
+Var ProbeOriginX
+Var ProbeOriginY
+
+Function ProbeAnimationFrame
+  StrCpy $ProbeFrameHash 0
+  @{If} $BKInstallAnimation == ""
+    Return
+  @{EndIf}
+  IntOp $ProbeFrameSequence $ProbeFrameSequence + 1
+  System::Call 'user32::GetDC(p $BKInstallAnimation)p.s'
+  Pop $ProbeSourceDC
+  System::Call 'gdi32::CreateCompatibleDC(p $ProbeSourceDC)p.s'
+  Pop $ProbeDC
+  System::Alloc 40
+  Pop $ProbeRect
+  System::Call 'user32::GetClientRect(p $BKInstallAnimation, p $ProbeRect)'
+  System::Call '*$ProbeRect(i, i, i .r0, i .r1)'
+  StrCpy $ProbeRight $0
+  StrCpy $ProbeBottom $1
+  IntOp $ProbeFrameBytes $ProbeRight * $ProbeBottom
+  IntOp $ProbeFrameBytes $ProbeFrameBytes * 4
+  System::Call '*$ProbeRect(i 40, i $ProbeRight, i $ProbeBottom, &i2 1, &i2 32, i 0, i $ProbeFrameBytes, i 0, i 0, i 0, i 0)'
+  System::Call 'gdi32::CreateCompatibleBitmap(p $ProbeSourceDC, i $ProbeRight, i $ProbeBottom)p.s'
+  Pop $ProbeBitmap
+  System::Call 'gdi32::SelectObject(p $ProbeDC, p $ProbeBitmap)p.s'
+  Pop $ProbeOldBitmap
+  System::Call 'gdi32::PatBlt(p $ProbeDC, i 0, i 0, i $ProbeRight, i $ProbeBottom, i 0x42)'
+  System::Call 'user32::PrintWindow(p $BKInstallAnimation, p $ProbeDC, i 1)i.r0'
+  StrCpy $ProbeCaptureValid $0
+  System::Call 'gdi32::SelectObject(p $ProbeDC, p $ProbeOldBitmap)'
+  System::Alloc $ProbeFrameBytes
+  Pop $ProbePixels
+  System::Call 'gdi32::GetDIBits(p $ProbeDC, p $ProbeBitmap, i 0, i $ProbeBottom, p $ProbePixels, p $ProbeRect, i 0)i.r0'
+  @{If} $0 != $ProbeBottom
+    StrCpy $ProbeCaptureValid 0
+  @{EndIf}
+  @{If} $ProbeCaptureValid != 0
+  StrCpy $ProbeFrameHash "$EXEFILE.frame-$ProbeFrameSequence.bin"
+  System::Call 'kernel32::CreateFileW(w "$EXEDIR\$ProbeFrameHash", i 0x40000000, i 0, p 0, i 2, i 0, p 0)p.s'
+  Pop $ProbePixelFile
+  System::Call 'kernel32::WriteFile(p $ProbePixelFile, p $ProbePixels, i $ProbeFrameBytes, *i .r0, p 0)i.r1'
+  @{If} $1 == 0
+  @{OrIf} $0 != $ProbeFrameBytes
+    StrCpy $ProbeFrameHash "capture-failed"
+  @{EndIf}
+  System::Call 'kernel32::CloseHandle(p $ProbePixelFile)'
+  @{Else}
+    StrCpy $ProbeFrameHash "capture-failed"
+  @{EndIf}
+  System::Free $ProbePixels
+  System::Free $ProbeRect
+  System::Call 'gdi32::DeleteObject(p $ProbeBitmap)'
+  System::Call 'gdi32::DeleteDC(p $ProbeDC)'
+  System::Call 'user32::ReleaseDC(p $BKInstallAnimation, p $ProbeSourceDC)'
+FunctionEnd
+
+Function ProbeMotionReady
+  HideWindow
+  ; Show only this non-activating fixture, so Windows does not suppress the
+  ; native animation as it can for wholly clipped or hidden windows.
+  ShowWindow $HWNDPARENT 4
+  Call BKProgressShow
+  FileWriteUTF16LE $ProbeReport "native.hwnd=$BKInstallAnimation$\r$\n"
+  StrCpy $ProbeAnimatedWindow $BKInstallAnimation
+  SendMessage $BKInstallAnimation 0x468 0 0 $0
+  FileWriteUTF16LE $ProbeReport "native.installPlaying=$0$\r$\n"
+  FileWriteUTF16LE $ProbeReport "native.dpi=$BKAnimationDpi$\r$\n"
+FunctionEnd
+
+Function ProbeMotionLeave
+  Call BKProgressLeave
+  FileWriteUTF16LE $ProbeReport "native.afterLeave=$BKInstallAnimation$\r$\n"
+  System::Call 'user32::IsWindow(p $ProbeAnimatedWindow)i.r0'
+  FileWriteUTF16LE $ProbeReport "native.destroyed=$0$\r$\n"
+  IfAbort 0 probeMotionSucceeded
+  System::Call 'user32::IsWindowEnabled(p $BKCancel)i.r0'
+  FileWriteUTF16LE $ProbeReport "native.failureCloseEnabled=$0$\r$\n"
+  System::Call 'user32::GetWindowLongW(p $BKCancel, i -16)i.r0'
+  IntOp $0 $0 & 0x10000000
+  FileWriteUTF16LE $ProbeReport "native.failureCloseVisible=$0$\r$\n"
+  System::Call 'user32::GetWindowTextW(p $BKProgressTitle, w .r0, i @{NSIS_MAX_STRLEN})'
+  FileWriteUTF16LE $ProbeReport "native.failureTitle=$0$\r$\n"
+  System::Call 'user32::GetWindowTextW(p $BKProgressStep, w .r0, i @{NSIS_MAX_STRLEN})'
+  FileWriteUTF16LE $ProbeReport "native.failureStep=$0$\r$\n"
+  System::Call 'user32::GetWindowTextW(p $BKProgressBrandStep, w .r0, i @{NSIS_MAX_STRLEN})'
+  FileWriteUTF16LE $ProbeReport "native.failureBrandStep=$0$\r$\n"
+  FileWriteUTF16LE $ProbeReport "native.finished=1$\r$\n"
+  FileClose $ProbeReport
+  SetErrorLevel 0
+  Quit
+  probeMotionSucceeded:
+FunctionEnd
+
+Function ProbeSuccessPage
+  StrCpy $BKBusy 0
+  Call BKCommonPage
+  StrCpy $BKAnimationParent $BKPage
+  StrCpy $BKAnimationKind success
+  Call BKCreateAnimation
+  !insertmacro BKMove $BKInstallAnimation 620 214 80 80
+  Call ProbeAnimationFrame
+  StrCpy $ProbeSuccessInitial $ProbeFrameHash
+  GetFunctionAddress $0 ProbeSuccessPlaying
+  nsDialogs::CreateTimer $0 80
+  GetFunctionAddress $0 ProbeSuccessDone
+  nsDialogs::CreateTimer $0 1250
+  nsDialogs::Show
+FunctionEnd
+
+Function ProbeSuccessPlaying
+  GetFunctionAddress $0 ProbeSuccessPlaying
+  nsDialogs::KillTimer $0
+  SendMessage $BKInstallAnimation 0x468 0 0 $0
+  FileWriteUTF16LE $ProbeReport "native.successPlaying=$0$\r$\n"
+  FileWriteUTF16LE $ProbeReport "native.successPending=$BKSuccessMotionPage$\r$\n"
+FunctionEnd
+
+Function ProbeSuccessDone
+  GetFunctionAddress $0 ProbeSuccessDone
+  nsDialogs::KillTimer $0
+  SendMessage $BKInstallAnimation 0x468 0 0 $0
+  FileWriteUTF16LE $ProbeReport "native.successStopped=$0$\r$\n"
+  Call ProbeAnimationFrame
+  FileWriteUTF16LE $ProbeReport "native.successInitial=$ProbeSuccessInitial$\r$\n"
+  FileWriteUTF16LE $ProbeReport "native.successFinal=$ProbeFrameHash$\r$\n"
+  StrCpy $ProbeAnimatedWindow $BKInstallAnimation
+  Call BKStopMotion
+  System::Call 'user32::IsWindow(p $ProbeAnimatedWindow)i.r0'
+  FileWriteUTF16LE $ProbeReport "native.successDestroyed=$0$\r$\n"
+  ; An absent clip degrades to the native title/progress, without a dangling HWND.
+  StrCpy $BKAnimationKind deliberately-missing-fixture
+  Call BKCreateAnimation
+  FileWriteUTF16LE $ProbeReport "native.missingClip=$BKInstallAnimation$\r$\n"
+  FileWriteUTF16LE $ProbeReport "native.finished=1$\r$\n"
+  FileClose $ProbeReport
+  SetErrorLevel 0
+  SendMessage $HWNDPARENT @{WM_COMMAND} 1 0
 FunctionEnd
 `.replaceAll('@{', '${')
 
@@ -356,6 +557,8 @@ function fixtureSource(theme, executable, report) {
     '  InitPluginsDir',
     '  File /oname=$PLUGINSDIR\\bk-logo-light.bmp "' + nsisString(path.join(root, 'installer/assets/logo-light.bmp')) + '"',
     '  File /oname=$PLUGINSDIR\\bk-logo-dark.bmp "' + nsisString(path.join(root, 'installer/assets/logo-dark.bmp')) + '"',
+    ...['install', 'success'].flatMap(kind => ['light', 'dark'].map(color =>
+      '  File /oname=$PLUGINSDIR\\' + kind + '-' + color + '-96.avi "' + nsisString(path.join(root, 'installer/assets/' + kind + '-' + color + '-96.avi')) + '"')),
     '  FileOpen $ProbeReport "' + nsisString(report) + '" w',
     "  System::Call 'user32::GetSysColor(i 8)i.r0'", '  FileWriteUTF16LE $ProbeReport "system.text=$0$\\r$\\n"',
     "  System::Call 'user32::GetSysColor(i 5)i.r0'", '  FileWriteUTF16LE $ProbeReport "system.background=$0$\\r$\\n"',
@@ -363,6 +566,43 @@ function fixtureSource(theme, executable, report) {
     '  FileWriteUTF16LE $ProbeReport "finished=1$\\r$\\n"', '  FileClose $ProbeReport',
     '  SetErrorLevel 0', '  Quit', 'SectionEnd', ''
   ].join('\n')
+}
+
+function motionFixtureSource({ theme, dpi, reduced, fail }, executable, report, payload) {
+  const source = fixtureSource(theme, executable, report)
+    .replace('XPStyle on\n', 'XPStyle on\nAutoCloseWindow true\n')
+    .replace('Page custom BKScopePage\n', '')
+    .replace('!define MUI_PAGE_CUSTOMFUNCTION_SHOW ProbeProgressReady',
+      '!define MUI_PAGE_CUSTOMFUNCTION_SHOW ProbeMotionReady\n!define MUI_PAGE_CUSTOMFUNCTION_LEAVE ProbeMotionLeave')
+    .replace('!insertmacro MUI_PAGE_INSTFILES\n', '!insertmacro MUI_PAGE_INSTFILES\nPage custom ProbeSuccessPage\n')
+    .replace("i -32000, i -32000, i 0, i 0, i 0x15)", "i 64, i 64, i 0, i 0, i 0x15)")
+    .replace(/^  StrCpy \$BKScale 96$/m, [
+      '  StrCpy $BKScale ' + dpi,
+      '  IntOp $BKWidth 760 * $BKScale', '  IntOp $BKWidth $BKWidth / 96',
+      '  IntOp $BKHeight 500 * $BKScale', '  IntOp $BKHeight $BKHeight / 96',
+      "  System::Call 'user32::SetWindowPos(p $HWNDPARENT, p 0, i 64, i 64, i $BKWidth, i $BKHeight, i 0x14)'"
+    ].join('\n'))
+    // Replace only the preference query; no machine setting is changed. All
+    // creation, native playback, seek, stop and teardown code stays production.
+    .replace("System::Call 'user32::SystemParametersInfoW(i 0x1042, i 0, *i .r0, i 0)i.s'",
+      'StrCpy $0 ' + Number(!reduced) + '\n    Push 1')
+    .replace('Function ProbeInit\n', nativeMotionFunctions + '\nFunction ProbeInit\n')
+    .replace('  FileOpen $ProbeReport',
+      ['install', 'success'].flatMap(kind => ['light', 'dark'].map(color =>
+        '  File /oname=$PLUGINSDIR\\' + kind + '-' + color + '-' + dpi + '.avi "' + nsisString(path.join(root, 'installer/assets/' + kind + '-' + color + '-' + dpi + '.avi')) + '"')).join('\n') + '\n  FileOpen $ProbeReport')
+    .replace(/FunctionEnd\nSection\n[\s\S]*$/, [
+      'FunctionEnd', 'Section', '  SetOutPath $PLUGINSDIR',
+      '  Call ProbeAnimationFrame', '  StrCpy $ProbePreviousHash $ProbeFrameHash',
+      "  System::Call 'kernel32::GetTickCount()i.s'", '  Pop $ProbeStart',
+      ...Array.from({ length: 4 }, () => '  File /oname=native-motion-payload.bin "' + nsisString(payload) + '"'),
+      "  System::Call 'kernel32::GetTickCount()i.r0'", '  IntOp $0 $0 - $ProbeStart',
+      '  FileWriteUTF16LE $ProbeReport "native.extractMs=$0$\\r$\\n"',
+      '  Call ProbeAnimationFrame', '  FileWriteUTF16LE $ProbeReport "native.beforeExtract=$ProbePreviousHash$\\r$\\n"',
+      '  FileWriteUTF16LE $ProbeReport "native.afterExtract=$ProbeFrameHash$\\r$\\n"',
+      fail ? '  Abort "Intentional own-fixture extraction failure"' : '  StrCpy $BKDone 1',
+      'SectionEnd', ''
+    ].join('\n'))
+  return source
 }
 
 function parseReport(output) {
@@ -446,6 +686,13 @@ test('real NSIS UI keeps readable palettes, loaded logos and uncovered branding'
       assertPage(controls.progress, theme, values, 'progress')
       assert.equal(values.get('scope.stockHeaderVisible'), '0', 'stock header separator cannot overlap the brand on custom pages')
       assert.equal(values.get('progress.stockHeaderVisible'), '0', 'extraction page also hides the stock header separator')
+      assert.equal(values.get('motion.firstPosition'), values.get('motion.allowed') === '1' ? '1' : '8', 'real timer honors current system animation preference')
+      assert.equal(values.get('motion.reversedPosition'), '0', 'a reversed selection ends at the latest target')
+      assert.equal(values.get('motion.highContrastPosition'), '8', 'high contrast skips palette interpolation')
+      assert.equal(values.get('motion.highContrastEnabled'), '0', 'high contrast disables client-area animation')
+      assert.equal(values.get('motion.pageAfterStop'), '', 'stopping the page releases its animated HWND identity')
+      assert.equal(values.get('motion.positionAfterStoppedLoop'), '0', 'no stale palette timer runs after stop while the dialog still pumps messages')
+      assert.equal(Number(values.get('motion.midSurface')), theme === 'high-contrast' ? Number(values.get('system.background')) : colorRef(theme === 'dark' ? '332C3B' : 'F8F5FB'), 'native card receives the interpolated opaque background')
       assert.equal(values.get('scope.fontFace'), 'Microsoft YaHei UI', 'Chinese labels use an explicit CJK sans-serif font')
       assert.equal(values.get('scope.allChecked'), '1', 'clicking the all-users card selects its native radio')
       assert.equal(values.get('scope.currentUnchecked'), '0', 'cards remain mutually exclusive')
@@ -464,4 +711,76 @@ test('real NSIS UI keeps readable palettes, loaded logos and uncovered branding'
       }
     })
   }
+})
+
+/** Hash the complete private DIB; sparse point samples can miss the thin moving waveform. */
+function capturedFrameHash(directory, name) {
+  assert.match(name || '', /^[A-Za-z0-9_.-]+\.exe\.frame-\d+\.bin$/, 'native pixel capture must succeed')
+  const bytes = fs.readFileSync(path.join(directory, name))
+  assert.ok(bytes.length > 0 && bytes.length % 4 === 0, 'capture contains complete 32-bit pixels')
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
+test('native installer motion advances during real extraction and stops on completion or Abort', { timeout: 90000 }, async t => {
+  if (process.platform !== 'win32') { t.skip('Native animation playback requires Windows'); return }
+  const compiler = findCompiler()
+  if (!compiler) {
+    assert.notEqual(process.env.BK_REQUIRE_NSIS_TESTS, '1', 'Native animation probe requires a cached NSIS compiler')
+    t.skip('No cached NSIS compiler; package Windows first or set BK_NSIS_COMPILER')
+    return
+  }
+  const directory = fs.mkdtempSync(path.join(root, '.agent/tools/installer-motion-probe-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  // Repeated data keeps the probe executable tiny while genuinely extracting
+  // enough bytes for a frame to advance, without an artificial install delay.
+  const payload = path.join(directory, 'own-extraction-payload.bin')
+  const bytes = Buffer.alloc(48 * 1024 * 1024)
+  for (let index = 0; index < bytes.length; index++) bytes[index] = (index * 13 + (index >>> 8) * 17) & 255
+  fs.writeFileSync(payload, bytes)
+  const cases = [
+    { theme: 'light', dpi: 96, reduced: false, fail: false },
+    { theme: 'dark', dpi: 144, reduced: false, fail: false },
+    { theme: 'dark', dpi: 192, reduced: false, fail: true },
+    { theme: 'dark', dpi: 120, reduced: true, fail: false },
+    { theme: 'high-contrast', dpi: 96, reduced: false, fail: true }
+  ]
+  for (const options of cases) await t.test(Object.values(options).join('/'), () => {
+    const name = options.theme + '-' + options.dpi
+    const executable = path.join(directory, name + '.exe')
+    const report = path.join(directory, name + '.txt')
+    const source = path.join(directory, name + '.nsi')
+    fs.writeFileSync(source, motionFixtureSource(options, executable, report, payload), 'utf8')
+    const compiled = spawnSync(compiler, ['/V2', '/INPUTCHARSET', 'UTF8', source], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 20000 })
+    assert.ifError(compiled.error)
+    assert.equal(compiled.status, 0, 'Native motion compilation failed:\n' + compiled.stdout + '\n' + compiled.stderr)
+    const executed = spawnSync(executable, [], { cwd: directory, encoding: 'utf8', windowsHide: true, timeout: 10000, killSignal: 'SIGKILL' })
+    const output = fs.existsSync(report) ? fs.readFileSync(report, 'utf16le') : '(no report)'
+    assert.ok(!executed.error, 'Native motion executable failed: ' + executed.error?.message + '\n' + output)
+    assert.equal(executed.status, 0, 'Native motion fixture failed:\n' + output)
+    const { values } = parseReport(output)
+    assert.equal(values.get('native.finished'), '1', 'fixture reached its native lifecycle callback:\n' + output)
+    assert.equal(values.get('native.afterLeave'), '', 'InstFiles LEAVE closes the animation immediately')
+    assert.equal(values.get('native.destroyed'), '0', 'InstFiles animation HWND is destroyed')
+    if (options.theme === 'high-contrast') {
+      assert.equal(values.get('native.hwnd'), '', 'high contrast retains system UI without decorative playback')
+    } else {
+      assert.ok(Number(values.get('native.hwnd')) > 0, 'the real native control opens the packaged silent clip')
+      assert.equal(values.get('native.dpi'), String(options.dpi), 'the native pixel asset matches the requested system DPI')
+      assert.equal(values.get('native.installPlaying'), options.reduced ? '0' : '1', 'reduced motion seeks a static frame; ordinary installation loops natively')
+      if (options.reduced) assert.equal(capturedFrameHash(directory, values.get('native.beforeExtract')), capturedFrameHash(directory, values.get('native.afterExtract')), 'the static reduced-motion frame does not advance during extraction')
+      else assert.notEqual(capturedFrameHash(directory, values.get('native.beforeExtract')), capturedFrameHash(directory, values.get('native.afterExtract')), 'actual AVI pixels change while NSIS extracts real bytes:\n' + output)
+    }
+    if (options.fail) {
+      assert.equal(values.get('native.failureCloseEnabled'), '1', 'an actual Abort immediately enables close')
+      assert.equal(values.get('native.failureCloseVisible'), String(0x10000000), 'an actual Abort reveals close without waiting for .onInstFailed')
+      for (const label of ['Title', 'Step', 'BrandStep']) assert.equal(values.get('native.failure' + label), '安装未完成', 'all visible status text reflects failure')
+    } else {
+      assert.equal(values.get('native.successPlaying'), options.reduced ? '0' : '1', 'success reveals once or immediately seeks its completed state')
+      assert.equal(values.get('native.successStopped'), '0', 'the success reveal ends instead of looping')
+      assert.equal(values.get('native.successPending'), '', 'the one-shot start callback releases its page identity')
+      if (!options.reduced) assert.notEqual(capturedFrameHash(directory, values.get('native.successInitial')), capturedFrameHash(directory, values.get('native.successFinal')), 'the success check visibly draws and settles')
+      assert.equal(values.get('native.successDestroyed'), '0', 'page cleanup destroys the success control')
+      assert.equal(values.get('native.missingClip'), '', 'a failed asset open leaves no native resources behind')
+    }
+  })
 })

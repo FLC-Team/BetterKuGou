@@ -5,7 +5,7 @@
 .personal-fm-view .fm-card > .song-badges { margin-top: 5px; }
 .personal-fm-view .fm-play { display: block; position: relative; width: 100%; text-align: left; color: var(--color-text); border-radius: var(--radius-md); }
 .personal-fm-view .fm-cover { width: 100%; aspect-ratio: 1; border-radius: var(--radius-md); font-size: 36px; }
-.personal-fm-view .fm-play-icon { position: absolute; right: 14px; bottom: 14px; display: grid; place-items: center; width: 37px; height: 37px; border-radius: 50%; background: var(--color-background-light); color: var(--color-text); box-shadow: var(--shadow-card); opacity: 0; transition: opacity var(--transition-fast); font-size: 13px; padding-left: 2px; }
+.personal-fm-view .fm-play-icon { position: absolute; right: 14px; bottom: 14px; display: grid; place-items: center; width: 37px; height: 37px; border-radius: 50%; background: var(--color-background-light); color: var(--color-text); box-shadow: var(--shadow-card); opacity: 0; transition: opacity var(--transition-fast), scale var(--ui-motion-fast) var(--ui-motion-ease); font-size: 13px; padding-left: 2px; }
 .personal-fm-view .fm-play:hover .fm-play-icon, .personal-fm-view .fm-play:focus-visible .fm-play-icon, .personal-fm-view .fm-card.playing .fm-play-icon { opacity: 1; }
 .personal-fm-view .fm-song-title { display: block; max-width: 100%; margin-top: 14px; color: var(--color-text); text-align: left; border-radius: 3px; font-size: var(--font-size-sm); font-weight: 500; line-height: 1.7; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .personal-fm-view .fm-song-title:hover { color: var(--color-primary); }

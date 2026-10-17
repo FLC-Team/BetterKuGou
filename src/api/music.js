@@ -74,6 +74,7 @@ apiClient.interceptors.response.use(
     return response.data
   },
   (error) => {
+    if (error.code === 'ERR_CANCELED') return Promise.reject(error)
     if (isAuthExpiredPayload(error.response?.data)) {
       notifyAuthExpired(error.config)
       return Promise.reject(createAuthExpiredError(error))
@@ -134,11 +135,13 @@ export const getAIRecommend = (album_audio_id) => {
 /**
  * 获取歌曲详情
  * @param {string} hash - 歌曲 hash
+ * @param {{ signal?: AbortSignal }} options - 可选的请求取消信号
  * @returns {Promise}
  */
-export const getSongDetail = (hash) => {
+export const getSongDetail = (hash, options = {}) => {
   return apiClient.get('/audio', {
-    params: { hash }
+    params: { hash },
+    signal: options.signal
   })
 }
 
@@ -148,9 +151,10 @@ export const getSongDetail = (hash) => {
  * @param {number} album_id - 专辑 ID
  * @param {number} album_audio_id - 专辑音频 ID
  * @param {string} quality - 普通音质：128、320、flac 或 high
+ * @param {{ signal?: AbortSignal }} options - 可选的请求取消信号
  * @returns {Promise}
  */
-export const getSongUrl = (hash, album_id = 0, album_audio_id = 0, quality = '128') => {
+export const getSongUrl = (hash, album_id = 0, album_audio_id = 0, quality = '128', options = {}) => {
   // 获取认证信息
   const token = localStorage.getItem('kugou_token') || ''
   const userid = localStorage.getItem('kugou_userid') || '0'
@@ -173,7 +177,7 @@ export const getSongUrl = (hash, album_id = 0, album_audio_id = 0, quality = '12
   url += '?' + params.toString()
   
   // 使用 axios 直接请求
-  return apiClient.get(url)
+  return apiClient.get(url, { signal: options.signal })
 }
 
 /**

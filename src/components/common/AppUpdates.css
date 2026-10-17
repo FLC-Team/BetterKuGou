@@ -9,6 +9,11 @@
 .updates-result { min-width: 0; padding: 26px; border: 1px solid color-mix(in srgb, var(--color-border) 75%, transparent); border-radius: 16px; background: color-mix(in srgb, var(--color-background-light) 72%, var(--color-background)); }
 .updates-result.is-ready { border-color: color-mix(in srgb, var(--color-primary) 38%, var(--color-border)); }
 .updates-result.is-error { border-color: color-mix(in srgb, var(--color-error) 40%, var(--color-border)); }
+.updates-result { transition: border-color .2s ease, background-color .2s ease; }
+.updates-stage { display: grid; grid-template-rows: 1fr; }
+.updates-stage-inner { min-height: 0; overflow: hidden; }
+.updates-expand-enter-active, .updates-expand-leave-active { transition: grid-template-rows .2s ease, opacity .18s ease; }
+.updates-expand-enter-from, .updates-expand-leave-to { grid-template-rows: 0fr; opacity: 0; }
 .updates-overview { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.5fr); gap: 25px; align-items: start; }
 .current-version, .updates-summary { min-width: 0; }
 .current-version { display: flex; flex-direction: column; align-items: flex-start; gap: 9px; padding: 2px 22px 2px 0; border-right: 1px solid var(--color-border); }
@@ -46,7 +51,9 @@
 .downloaded-file strong { font-size: 11px; font-weight: 500; line-height: 1.8; overflow-wrap: anywhere; }
 .downloaded-file p { margin-top: 5px; color: var(--color-text-secondary); font-size: 10px; line-height: 1.9; overflow-wrap: anywhere; }
 .updates-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 23px; }
-.update-button { display: inline-flex; align-items: center; justify-content: center; min-height: 38px; padding: 9px 17px; border: 1px solid var(--color-border); border-radius: 30px; color: var(--color-text); background: transparent; font-size: 11px; line-height: 1.6; cursor: pointer; transition: background .16s, border-color .16s, color .16s; }
+.update-button { display: inline-flex; align-items: center; justify-content: center; min-height: 38px; padding: 9px 17px; border: 1px solid var(--color-border); border-radius: 30px; color: var(--color-text); background: transparent; font-size: 11px; line-height: 1.6; cursor: pointer; transition: background .16s, border-color .16s, color .16s, scale .16s; }
+.update-button.ui-list-enter-active, .update-button.ui-list-leave-active { transition: opacity .18s ease, translate .18s ease, scale .18s ease; }
+.update-button.ui-list-move { transition: transform .18s ease; }
 .update-button:hover:not(:disabled) { border-color: var(--color-text-secondary); background: var(--bg-hover-light); }
 .update-button.is-primary { border-color: var(--color-text); color: var(--color-background); background: var(--color-text); }
 .update-button.is-primary:hover:not(:disabled) { border-color: var(--color-primary); color: var(--color-on-primary); background: var(--color-primary); }

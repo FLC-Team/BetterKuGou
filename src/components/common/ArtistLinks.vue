@@ -50,8 +50,14 @@ export default {
       const container = this.$el
       const bounds = container.getBoundingClientRect()
       const artist = event.currentTarget.getBoundingClientRect()
-      if (artist.left < bounds.left) container.scrollLeft -= bounds.left - artist.left
-      else if (artist.right > bounds.right) container.scrollLeft += artist.right - bounds.right
+      let position = container.scrollLeft
+      if (artist.left < bounds.left) position -= bounds.left - artist.left
+      else if (artist.right > bounds.right) position += artist.right - bounds.right
+      if (position === container.scrollLeft) return
+      if (typeof container.scrollTo === 'function') {
+        const reduced = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+        container.scrollTo({ left: position, behavior: reduced ? 'auto' : 'smooth' })
+      } else container.scrollLeft = position
     }
   }
 }
@@ -60,10 +66,13 @@ export default {
 <style scoped>
 .artist-links { display: inline-flex; flex-wrap: wrap; align-items: baseline; min-width: 0; max-width: 100%; color: inherit; font: inherit; line-height: inherit; vertical-align: baseline; }
 .artist-name { appearance: none; flex: 0 1 auto; max-width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; line-height: inherit; text-align: left; white-space: normal; overflow-wrap: anywhere; cursor: pointer; }
+.artist-name { transition: color .16s ease, opacity .16s ease, scale .16s ease; text-decoration-color: transparent; }
+.artist-name:active { scale: .96; }
 .artist-name:hover { color: var(--color-primary); text-decoration: underline; text-underline-offset: 2px; }
 .artist-name:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; border-radius: 2px; }
 .artist-separator { flex: 0 0 auto; }
 .artist-links-compact { flex-wrap: nowrap; height: 18px; overflow-x: auto; overflow-y: hidden; line-height: 18px; white-space: nowrap; scrollbar-width: none; }
 .artist-links-compact .artist-name { flex: 0 0 auto; max-width: none; white-space: nowrap; }
 .artist-links-compact::-webkit-scrollbar { display: none; }
+@media (prefers-reduced-motion: reduce) { .artist-links-compact { scroll-behavior: auto; } .artist-name { transition: none; } }
 </style>
