@@ -38,7 +38,7 @@ function uiSource() {
     'BKCommonPage', 'BKLoadLogo', 'BKHeading', 'BKScopePage', 'BKScopeChanged',
     'BKScopeCurrentClick', 'BKScopeAllClick', 'BKLicenseChanged', 'BKProgressShow',
     'BKMotionAllowed', 'BKStopMotion', 'BKStartPageMotion', 'BKPageMotionTick', 'BKPaintScopeMotion', 'BKScopeMotionTick',
-    'BKCreateAnimation', 'BKStopAnimation', 'BKStartSuccessAnimation', 'BKProgressLeave']
+    'BKCreateAnimation', 'BKStopAnimation', 'BKStartSuccessAnimation', 'BKProgressLeave', 'BKDestroyProgress', 'BKReadIdentifier']
   const functions = names.map(name => {
     assert.ok(available.has(name), 'real installer defines ' + name)
     let body = available.get(name)
@@ -86,6 +86,7 @@ Var ProbeX
 Var ProbeY
 Var ProbeBrightPixels
 Var ProbeInvalidPixels
+Var ProbeProgressBackdrop
 Var installMode
 
 Function ProbeDumpChildren
@@ -113,6 +114,15 @@ Function ProbeDumpChildren
   StrCpy $ProbeTop $1
   StrCpy $ProbeRight $2
   StrCpy $ProbeBottom $3
+  @{If} $ProbeName == progress
+  @{AndIf} $ProbeClass == Static
+  @{AndIf} $ProbeText == ""
+  @{AndIf} $ProbeLeft == 224
+  @{AndIf} $ProbeTop == 0
+  @{AndIf} $ProbeRight == 760
+  @{AndIf} $ProbeBottom == 500
+    StrCpy $ProbeProgressBackdrop $ProbeControl
+  @{EndIf}
   System::Call 'user32::GetWindowLongW(p $ProbeControl, i -16)i.s'
   Pop $ProbeStyle
   System::Call 'user32::GetWindowLongW(p $ProbeControl, i -20)i.s'
@@ -366,6 +376,9 @@ FunctionEnd
 Function ProbeProgressReady
   HideWindow
   Call BKProgressShow
+  ; Model a host dialog repaint independently of its explicitly colored child
+  ; controls. Only this fixture's own HWND receives the contrasting palette.
+  SetCtlColors $HWNDPARENT FFFFFF 000000
   StrCpy $ProbeContainer $HWNDPARENT
   StrCpy $ProbeName progress
   Call ProbeDumpChildren
@@ -373,6 +386,39 @@ Function ProbeProgressReady
   System::Call 'user32::GetWindowLongW(p r0, i -16)i.r1'
   IntOp $1 $1 & 0x10000000
   FileWriteUTF16LE $ProbeReport "progress.stockHeaderVisible=$1$\r$\n"
+  Call ProbeProgressSurface
+  Call BKDestroyProgress
+  System::Call 'user32::IsWindow(p $ProbeProgressBackdrop)i.r0'
+  FileWriteUTF16LE $ProbeReport "progress.backdropExistsAfterCleanup=$0$\r$\n"
+  FileWriteUTF16LE $ProbeReport "progress.controlsAfterCleanup=$BKProgressControls$\r$\n"
+FunctionEnd
+
+; Render the complete owned window, so a WM_CTLCOLOR declaration alone cannot
+; conceal a host-colored gap behind the progress labels or footer.
+Function ProbeProgressSurface
+  ; Keep the owned dialog offscreen but logically visible: Windows otherwise
+  ; omits its hidden child windows from PrintWindow's complete-window output.
+  ShowWindow $HWNDPARENT 4
+  System::Call 'user32::RedrawWindow(p $HWNDPARENT, p 0, p 0, i 0x185)'
+  System::Call 'user32::GetDC(p $HWNDPARENT)p.s'
+  Pop $ProbeSourceDC
+  System::Call 'gdi32::CreateCompatibleDC(p $ProbeSourceDC)p.s'
+  Pop $ProbeDC
+  System::Call 'gdi32::CreateCompatibleBitmap(p $ProbeSourceDC, i 760, i 500)p.s'
+  Pop $ProbeBitmap
+  System::Call 'gdi32::SelectObject(p $ProbeDC, p $ProbeBitmap)p.s'
+  Pop $ProbeOldBitmap
+  System::Call 'user32::PrintWindow(p $HWNDPARENT, p $ProbeDC, i 0)i.r0'
+  FileWriteUTF16LE $ProbeReport "progress.surfaceRendered=$0$\r$\n"
+  System::Call 'gdi32::GetPixel(p $ProbeDC, i 744, i 200)i.r0'
+  FileWriteUTF16LE $ProbeReport "progress.rightBackground=$0$\r$\n"
+  System::Call 'gdi32::GetPixel(p $ProbeDC, i 744, i 470)i.r0'
+  FileWriteUTF16LE $ProbeReport "progress.footerBackground=$0$\r$\n"
+  System::Call 'gdi32::SelectObject(p $ProbeDC, p $ProbeOldBitmap)'
+  System::Call 'gdi32::DeleteObject(p $ProbeBitmap)'
+  System::Call 'gdi32::DeleteDC(p $ProbeDC)'
+  System::Call 'user32::ReleaseDC(p $HWNDPARENT, p $ProbeSourceDC)'
+  HideWindow
 FunctionEnd
 `.replaceAll('@{', '${')
 
@@ -570,7 +616,6 @@ function fixtureSource(theme, executable, report) {
 
 function motionFixtureSource({ theme, dpi, reduced, fail }, executable, report, payload) {
   const source = fixtureSource(theme, executable, report)
-    .replace('XPStyle on\n', 'XPStyle on\nAutoCloseWindow true\n')
     .replace('Page custom BKScopePage\n', '')
     .replace('!define MUI_PAGE_CUSTOMFUNCTION_SHOW ProbeProgressReady',
       '!define MUI_PAGE_CUSTOMFUNCTION_SHOW ProbeMotionReady\n!define MUI_PAGE_CUSTOMFUNCTION_LEAVE ProbeMotionLeave')
@@ -653,6 +698,18 @@ function assertPage(controls, theme, values, page) {
   assert.equal(subtitle.foreground, palette.muted, page + ': visible muted text')
   assert.equal(subtitle.background, palette.background, page + ': subtitle background')
   assert.equal(heading.text, page === 'scope' ? '为谁安装？' : '正在安装')
+  if (page === 'progress') {
+    const surface = controls.find(control => control.className === 'Static' && !control.text && control.left === 224 && control.top === 0 && control.width === 536 && control.height === 500)
+    assert.ok(surface, 'progress: a dedicated surface covers the full content and footer')
+    assert.ok(surface.style & 0x04000000, 'progress: the surface clips foreground siblings')
+    assert.ok(surface.index > heading.index && surface.index > subtitle.index, 'progress: text remains above the surface')
+    assert.equal(surface.background, palette.background, 'progress: surface uses the selected palette')
+    assert.equal(values.get('progress.surfaceRendered'), '1', 'progress: native full-window rendering succeeds')
+    assert.equal(Number(values.get('progress.rightBackground')), palette.background, 'progress: content pixels keep their palette when the host background changes')
+    assert.equal(Number(values.get('progress.footerBackground')), palette.background, 'progress: footer pixels keep their palette when the host background changes')
+    assert.equal(values.get('progress.backdropExistsAfterCleanup'), '0', 'progress: cleanup destroys the content surface')
+    assert.equal(values.get('progress.controlsAfterCleanup'), '', 'progress: cleanup releases tracked controls')
+  }
 }
 
 test('real NSIS UI keeps readable palettes, loaded logos and uncovered branding', { timeout: 60000 }, async t => {

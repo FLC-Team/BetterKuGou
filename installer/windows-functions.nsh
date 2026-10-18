@@ -180,6 +180,9 @@ FunctionEnd
 !macroend
 
 Function BKGuiInit
+  ; A custom finish page replaces MUI's finish GUIInit, including this setting.
+  ; Advance successful extraction instead of waiting for the hidden Next button.
+  SetAutoClose true
   System::Call 'user32::GetDC(p $HWNDPARENT)p.r0'
   System::Call 'gdi32::GetDeviceCaps(p r0, i 88)i.s'
   Pop $BKScale
@@ -1144,6 +1147,10 @@ Function BKProgressShow
   GetDlgItem $0 $BKPage 1027
   !insertmacro BKMove $0 0 64 124 28
   ShowWindow $0 0
+  ; Unlike nsDialogs pages, InstFiles has no full-size content background.
+  ; An opaque sibling surface keeps its text and footer on the same palette
+  ; even when the native host repaints its own dialog background differently.
+  !insertmacro BKRootLabel 224 0 536 500 "" $BKFont $BKText $BKBg
 FunctionEnd
 
 ; MUI calls InstFiles LEAVE as soon as its worker finishes, including Abort.
