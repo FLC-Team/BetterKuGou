@@ -4,6 +4,8 @@
 
 `windows-functions.nsh` 在 builder 的 `customHeader` 阶段加载运行函数，确保安装范围宏及插件路径已经就绪；包含界面、SemVer 比较、UTF-8 说明读取和退出管道客户端。
 
+`install-mode.nsh` 在安装/卸载欢迎页展开前及 `customHeader` 阶段幂等替换 builder 的当前用户路径宏。Windows 已知目录通过有长度上限且遇 NUL 停止的 `lstrcpynW` 读取，随后释放原 CoTaskMem；不得用 NSIS 字符串容量对操作系统返回的小缓冲区做固定长度拷贝。保留已有安装记录、重定向的用户程序目录、失败时的 LocalAppData 回退与 `/D` 路径覆盖，不修改依赖模板。
+
 ## 直接子目录
 
 - `assets/`：Windows 深浅色 Logo 位图及 macOS DMG 背景图。
@@ -45,5 +47,7 @@ macOS 保留 Finder 拖放；DMG 背景说明首次安装与退出后替换。Li
 静态图像由 `pwsh -NoProfile -File scripts/generate-installer-assets.ps1` 在 Windows PowerShell 7 下从公共 Logo 生成，附加 `-WindowsOnly` 仅更新 NSIS 深浅 Logo；其他平台直接打包已提交的 640 × 420 与 1280 × 840 DMG 背景。Windows 的实际版本比较由 `tests/installer-nsis.test.cjs` 提取原函数编译并执行验证。
 
 `node scripts/generate-installer-motion.cjs` 使用纯 Node 生成全部静音原生动画资源，无外部编码器或新增依赖；打包直接读取已提交 AVI。
+
+`tests/installer-install-mode.test.cjs` 使用原生保护页复现固定长度读取越界，并运行实际路径宏验证安全拷贝及安装目录兼容；不执行安装或修改真实安装记录。Windows CI 在打包获得编译器后要求该测试通过。
 
 `tests/installer-ui.test.cjs` 编译实际界面函数及动画 timer，验证实际色阶推进、快速反转、高对比度跳过和页面动画身份清理；使用自有窗口验证控件颜色、Logo、层级、中文字体、卡片及原生单选激活的互斥状态、许可按钮启禁用与外观刷新，并通过私有离屏位图验证标题和深色单选项实际文字像素。额外的非激活自有窗口探针在临时插件目录真实提取测试文件并触发 Abort，通过一次 GetDIBits 取回完整原生帧并计算 SHA256，避免稀疏像素采样遗漏细线变化；验证原生波形帧变化、减少动态静帧、不同 DPI、完成单次播放、失败立即关闭入口、无效资源降级及 HWND 销毁。Windows CI 在打包获得编译器后要求原生测试通过；测试不执行真实应用安装或注册表写入，完整安装及前台视觉检查仍需单独验证。

@@ -42,7 +42,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Verify native installer protocol, versions and UI
         if: runner.os == 'Windows'
-        run: node --test tests/installer-nsis.test.cjs tests/installer-ui.test.cjs
+        run: node --test tests/installer-install-mode.test.cjs tests/installer-nsis.test.cjs tests/installer-ui.test.cjs
         env:
           BK_REQUIRE_NSIS_TESTS: '1'
       - name: Upload Release Assets
