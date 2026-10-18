@@ -18,6 +18,7 @@
 !ifdef BUILD_UNINSTALLER
 ; An uninstaller must never fall back to electron-builder's taskkill branch.
 !macro customHeader
+  !include "${PROJECT_DIR}\installer\install-mode.nsh"
 Function un.BKCheckRunning
   bkUnRetry:
   nsProcess::_FindProcess "${PRODUCT_FILENAME}.exe"
@@ -30,6 +31,11 @@ Function un.BKCheckRunning
     Quit
   ${EndIf}
 FunctionEnd
+!macroend
+
+!macro customUnWelcomePage
+  !include "${PROJECT_DIR}\installer\install-mode.nsh"
+  !insertmacro MUI_UNPAGE_WELCOME
 !macroend
 !else
 
@@ -243,6 +249,7 @@ Var BKParseHadPre
 !macroend
 
 !macro customWelcomePage
+  !include "${PROJECT_DIR}\installer\install-mode.nsh"
   Page custom BKScopePage BKScopeLeave
 !macroend
 
@@ -291,6 +298,7 @@ Var BKParseHadPre
 ; This section runs even inside the elevated child, where builder skips its
 ; stock CHECK_APP_RUNNING. Recheck immediately before any old uninstaller runs.
 !macro customHeader
+  !include "${PROJECT_DIR}\installer\install-mode.nsh"
   !include "${PROJECT_DIR}\installer\windows-functions.nsh"
   Section "-BetterKuGou preflight"
     StrCpy $BKBusy 1
