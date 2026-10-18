@@ -246,10 +246,58 @@ test('missing release digest still computes a hash but never reuses an unchecked
 
 test('cancellation stops a partial download without trying GitHub and cleans the partial file', async t => {
   const response = new PassThrough()
-  const { engine, calls, directory } = createEngine(t, () => ({ headers: {}, stream: response }))
+  let writes = 0
+  const fsApi = { ...fs, createWriteStream(...arguments_) {
+    writes += 1
+    return fs.createWriteStream(...arguments_)
+  } }
+  const { engine, calls, directory } = createEngine(t, () => ({ headers: {}, stream: response }), { fsApi })
   const abort = new AbortController()
   const running = engine.download(normalizedPackage(), { signal: abort.signal, onProgress: () => { abort.abort() } })
   await assert.rejects(running, { code: 'CANCELLED' })
+  assert.equal(calls.length, 1)
+  assert.equal(writes, 0, 'a cancelled initial progress callback must not start writing a file')
+  assert.deepEqual(fs.readdirSync(directory), [])
+})
+
+test('cancellation waits for a pending file open to close before removing its partial file', async t => {
+  const response = new PassThrough()
+  const abort = new AbortController()
+  let releaseOpen
+  let output
+  let reportOpen
+  let cleanupBeforeClose = false
+  const opened = new Promise(resolve => { reportOpen = resolve })
+  const delayedFs = { ...fs, createWriteStream(filename, options) {
+    output = fs.createWriteStream(filename, { ...options, fs: { ...fs, open(...arguments_) {
+      releaseOpen = () => fs.open(...arguments_)
+      reportOpen()
+    } } })
+    return output
+  }, promises: { ...fs.promises, async unlink(filename) {
+    if (filename.endsWith('.part') && !output.closed) {
+      cleanupBeforeClose = true
+      throw Object.assign(new Error('file has not opened yet'), { code: 'ENOENT' })
+    }
+    return fs.promises.unlink(filename)
+  } } }
+  const { engine, calls, directory } = createEngine(t, () => ({ headers: {}, stream: response }), { fsApi: delayedFs })
+  let settled = false
+  const running = engine.download(normalizedPackage(), { signal: abort.signal }).then(
+    () => { settled = true; assert.fail('cancelled download must reject') },
+    error => { settled = true; return error }
+  )
+  await opened
+  abort.abort()
+  // Drain the abort's stream callbacks while the actual file open is held.
+  await new Promise(resolve => setImmediate(resolve))
+  const settledBeforeOpen = settled
+  releaseOpen()
+  const error = await running
+  if (!output.closed) await new Promise(resolve => output.once('close', resolve))
+  assert.equal(error.code, 'CANCELLED')
+  assert.equal(settledBeforeOpen, false, 'cancellation must await the pending file handle')
+  assert.equal(cleanupBeforeClose, false, 'the file must close before unlink')
   assert.equal(calls.length, 1)
   assert.deepEqual(fs.readdirSync(directory), [])
 })

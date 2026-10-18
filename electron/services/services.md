@@ -30,7 +30,7 @@
 - Worker 分页请求固定 `FLC-Team/BetterKuGou/releases`，元数据先使用 `https://git.tangbai.cc/https://api.github.com/repos/FLC-Team/BetterKuGou/releases`，失败再从 GitHub 原站重新分页。按 SemVer 选择高于安装版本的最新版本；stable 同时排除 GitHub prerelease 标记与版本预发布后缀，beta 包含正式与预发布。
 - Windows 匹配通用或当前架构 setup.exe，macOS 匹配当前架构 DMG，Linux 优先同架构 AppImage，也允许同架构 DEB/RPM。无匹配包仍返回版本说明，禁止把未知架构误当作当前架构。
 - 下载单独优先代理资产 URL，网络、超时或完整性失败后从头尝试 GitHub 一次；用户取消与磁盘错误不换源。只允许固定仓库的 HTTPS 地址和受限重定向主机，文件名和路径必须落在专用目录。
-- 在 `userData/updates/` 使用唯一 `.part` 临时文件流式写入，核对发布大小并计算 SHA256，有发布 digest 时必须匹配。发布 digest 可校验的完整缓存可复用；无发布 digest 时仍计算本次摘要供后续复核，不复用无法验证来源的同大小缓存。失败或取消清理临时文件。
+- 在 `userData/updates/` 使用唯一 `.part` 临时文件流式写入，核对发布大小并计算 SHA256，有发布 digest 时必须匹配。发布 digest 可校验的完整缓存可复用；无发布 digest 时仍计算本次摘要供后续复核，不复用无法验证来源的同大小缓存。失败或取消先销毁写流并等待真实关闭（包含尚未完成的文件打开），再清理临时文件，完成清理后才结束下载任务。
 - `getDownloadedFile()` 在 Worker 中重验大小和 SHA256，主进程据此执行定位或明确确认后的打开；Worker 没有安装命令。切换渠道取消旧任务并丢弃候选状态，进程内状态及取消记录不持久化。
 
 已提交设置 → updateService 调度 → updateWorker 检查/下载/校验 → 带 revision 的主窗口展示状态；用户确认安装 → Worker 再次复核 → 主进程打开同一安装包。

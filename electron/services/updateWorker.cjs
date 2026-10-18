@@ -301,6 +301,8 @@ function createUpdateEngine({ downloadRoot, request, now = Date.now, fsApi = fs,
     for (const source of ['proxy', 'github']) {
       const temporary = containedFile(`${filename}.${crypto.randomBytes(6).toString('hex')}.part`)
       let response
+      let output
+      let outputClosed
       try {
         assertNotCancelled(signal)
         response = await transport.open(source === 'proxy' ? PROXY + asset.url : asset.url, { signal })
@@ -311,6 +313,7 @@ function createUpdateEngine({ downloadRoot, request, now = Date.now, fsApi = fs,
         let received = 0
         let lastProgress = now()
         onProgress({ received: 0, total: asset.size, percent: 0, source })
+        assertNotCancelled(signal)
         const counter = new Transform({ transform(chunk, _encoding, callback) {
           received += chunk.length
           if (received > asset.size) { callback(updateError('SIZE_MISMATCH', '更新包超过发布大小')); return }
@@ -321,7 +324,8 @@ function createUpdateEngine({ downloadRoot, request, now = Date.now, fsApi = fs,
           }
           callback(null, chunk)
         } })
-        const output = fsApi.createWriteStream(temporary, { flags: 'wx' })
+        output = fsApi.createWriteStream(temporary, { flags: 'wx' })
+        outputClosed = new Promise(resolve => output.once('close', resolve))
         // pipeline 会把网络错误转发到写流，不能把所有写流 error 都误判成磁盘故障。
         output.on('error', error => { if (DISK_ERROR_CODES.has(error.code)) error.updateDiskError = true })
         await pipeline(response, counter, output, { signal })
@@ -340,6 +344,10 @@ function createUpdateEngine({ downloadRoot, request, now = Date.now, fsApi = fs,
         return { ...baseRecord, source, digest }
       } catch (error) {
         response?.destroy()
+        // pipeline may reject on abort before a pending fs.open has completed.
+        // Wait for the write stream to close so unlink cannot race its creation.
+        output?.destroy()
+        await outputClosed
         try { await fsApi.promises.unlink(temporary) } catch (cleanupError) {
           if (cleanupError.code !== 'ENOENT') throw updateError('DISK_ERROR', `无法清理临时更新包：${cleanupError.message}`)
         }
