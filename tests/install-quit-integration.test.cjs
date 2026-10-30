@@ -45,16 +45,20 @@ function loadMain({ platform = 'win32', packaged = true, startFails = false } = 
     (...args) => { if (name === 'error') failures.push(args) }]))
   const context = vm.createContext({
     require(name) {
+      if (name === './services/desktopLyricPolicy') return require('../electron/services/desktopLyricPolicy')
+      if (name === './services/windowsForeground') return require('../electron/services/windowsForeground')
       if (name === 'electron') return {
         app, BrowserWindow: Window, ipcMain, globalShortcut: { unregisterAll() {} },
         dialog: {}, shell: {}, nativeImage: {}, Menu: {}, Tray: class {}
       }
       if (name === './logger') return logger
+      if (name === './services/lyricLibraryService') return { createLyricLibraryService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/playlistCacheService') return { createPlaylistCacheService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/backendService') return { createBackendService: () => ({ stop: async () => {} }) }
       if (name === './services/updateService') return { createUpdateService() {} }
       if (name === './services/installQuitService') return { createInstallQuitService(value) { options = value; return service } }
-      if (name === './settingsStore') return { getSettings: () => ({ software: { minimizeToTray: true } }) }
+      if (name === './settingsStore') return { normalizeDesktopLyrics: require('../electron/settingsStore').normalizeDesktopLyrics,
+        getSettings: () => ({ software: { minimizeToTray: true } }) }
       return require(name)
     },
     __dirname: path.join(__dirname, '../electron'),

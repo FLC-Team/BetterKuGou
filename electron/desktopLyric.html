@@ -31,6 +31,21 @@
     .karaoke-char { display: inline-block; white-space: pre; color: var(--desktop-text); }
     .karaoke-char.sung { color: var(--desktop-accent); }
     .karaoke-char.singing { background: linear-gradient(90deg, var(--desktop-accent) var(--fill-progress, 0%), var(--desktop-text) var(--fill-progress, 0%)); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; text-shadow: none; filter: drop-shadow(0 1px 2px #000); }
+    [hidden] { display: none !important; }
+    .song-info, .current-lyric, .next-lyric { font-family: var(--desktop-font, inherit); }
+    .current-lyric, .next-lyric { -webkit-text-stroke: var(--desktop-stroke-width, 1px) rgba(0,0,0,0.9); paint-order: stroke fill; text-shadow: none; }
+    .lyric-viewport { filter: var(--desktop-lyric-shadow, none); }
+    .karaoke-char.singing { filter: none; }
+    .next-lyric { color: var(--desktop-translation, rgba(255,255,255,0.86)); }
+    .align-left .current-lyric, .align-left .next-lyric { margin-left: 0; margin-right: auto; }
+    .align-right .current-lyric, .align-right .next-lyric { margin-left: auto; margin-right: 0; }
+    .align-left .lyric-viewport { transform-origin: left center; }
+    .align-right .lyric-viewport { transform-origin: right center; }
+    .song-info { align-self: stretch; text-align: var(--desktop-alignment, center); }
+    .song-info-only .song-info { height: auto; line-height: 1.35; font-size: 24px; font-weight: 650; color: var(--desktop-accent); -webkit-text-stroke: var(--desktop-stroke-width, 1px) rgba(0,0,0,0.9); paint-order: stroke fill; text-shadow: none; filter: var(--desktop-lyric-shadow, none); }
+    .size-small.song-info-only .song-info { font-size: 20px; }
+    .size-large.song-info-only .song-info { font-size: 32px; }
+    .efficient-mode, .efficient-mode *, .efficient-mode *::before, .efficient-mode *::after { transition: none !important; animation: none !important; }
     .size-small .current-lyric { font-size: 20px; }
     .size-small .next-lyric { font-size: 14px; }
     .size-large .current-lyric { font-size: 32px; }
@@ -59,6 +74,10 @@
     body.locked, .lyric-container.locked { cursor: default; -webkit-app-region: no-drag; }
     .lyric-container.locked { background: transparent; border-color: transparent; }
     .locked .control-menu, .locked .song-info, .locked .control-feedback, .locked .resize-handle { visibility: hidden; opacity: 0; pointer-events: none; }
+    .locked.song-info-only .song-info { visibility: visible; opacity: 1; }
+    body.locked .lyric-container { pointer-events: none; }
+    .unlock-btn { position: fixed; top: 8px; right: 8px; width: 44px; height: 36px; z-index: 100; border: 1px solid rgba(255,255,255,0.35); border-radius: 8px; background: rgba(24,27,34,0.88); color: #fff; font: 12px 'Microsoft YaHei', sans-serif; cursor: pointer; pointer-events: auto; -webkit-app-region: no-drag; }
+    .unlock-btn:focus-visible { outline: 2px solid #feca57; outline-offset: -3px; }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { transition: none !important; animation: none !important; }
       .menu-btn:active:not(:disabled) { scale: 1; }
@@ -85,6 +104,7 @@
     <div class="control-feedback" id="controlFeedback" role="status" aria-live="polite"></div>
     <button type="button" class="resize-handle" id="resizeHandle" title="拖动调整窗口大小；方向键微调" aria-label="调整歌词窗口大小，使用方向键微调"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 13l9-9M9 13l4-4"/></svg></button>
   </div>
+  <button type="button" class="unlock-btn" id="unlockBtn" style="position:fixed!important;top:8px!important;right:8px!important;left:auto!important;width:44px!important;height:36px!important;margin:0!important;transform:none!important;translate:none!important;scale:none!important;rotate:none!important" hidden title="解锁桌面歌词" aria-label="解锁桌面歌词">解锁</button>
 
   <script>
     const lyricAPI = window.desktopLyricAPI
@@ -103,6 +123,7 @@
     const nextBtn = document.getElementById('nextBtn')
     const translationBtn = document.getElementById('translationBtn')
     const lockBtn = document.getElementById('lockBtn')
+    const unlockBtn = document.getElementById('unlockBtn')
     const controlMenu = document.getElementById('controlMenu')
     const controlFeedback = document.getElementById('controlFeedback')
     const resizeHandle = document.getElementById('resizeHandle')
@@ -138,13 +159,38 @@
     let clockAdvancing = false
     let playbackRate = 1
     let timeDiscontinuity = true
+    let renderTimer = null
+    let lastRenderAt = -Infinity
+    let runtimeHidden = false
+    let coverRequestKey = ''
+    let coverRequestVersion = 0
+    let coverImage = null
+    let coverShadowColor = ''
+    let lyricShadowFilter = 'none'
+    const displayOptions = {
+      doubleLine: true, efficientMode: false, transitionEnabled: true, transitionBlur: true,
+      hideTranslation: false, songInfoOnly: false, karaokeEnabled: true, hideUnlockButton: false,
+      alignment: 'center', fontFamily: '', activeColor: '', textColor: '', translationColor: '', strokeWidth: 100,
+      shadowEnabled: false, shadowColorMode: 'cover', shadowColor: '#000000', shadowDepth: 5,
+      shadowDirection: 315, shadowOpacity: 50, shadowRadius: 10
+    }
+
+    function hasDecorativeMotion() { return !runtimeHidden && !displayOptions.efficientMode && !motionPreference?.matches }
+
+    /** The viewport owns the shadow, so its temporary blur must retain that filter throughout promotion. */
+    function promotionFilter(radius) {
+      return `${lyricShadowFilter === 'none' ? '' : lyricShadowFilter + ' '}blur(${radius}px)`
+    }
 
     /** Preserve the existing replacement feedback while cancelling obsolete animations. */
     function animateReplacement(element) {
       feedbackAnimations.get(element)?.cancel()
       feedbackAnimations.delete(element)
-      if (!element.textContent || motionPreference?.matches || !element.animate) return
-      const animation = element.animate([{ opacity: 0, translate: '0 5px' }, { opacity: 1, translate: '0 0' }], { duration: 220, easing: 'ease-out' })
+      const lyricMotion = element === currentLyric || element === nextLyric
+      if (!element.textContent || !hasDecorativeMotion() || !element.animate || (lyricMotion && !displayOptions.transitionEnabled)) return
+      const blur = lyricMotion && displayOptions.transitionBlur
+      const animation = element.animate([{ opacity: 0, translate: '0 5px', ...(blur ? { filter: 'blur(4px)' } : {}) },
+        { opacity: 1, translate: '0 0', ...(blur ? { filter: 'blur(0px)' } : {}) }], { duration: 220, easing: 'ease-out' })
       feedbackAnimations.set(element, animation)
       animation.onfinish = () => { if (feedbackAnimations.get(element) === animation) feedbackAnimations.delete(element) }
     }
@@ -167,7 +213,7 @@
 
     /** Leave before clearing the status; a newer result cancels this obsolete dismissal. */
     function hideControlFeedback() {
-      if (motionPreference?.matches || !controlFeedback.animate) { feedbackLeaving = false; animateText(controlFeedback, ''); return }
+      if (!hasDecorativeMotion() || !controlFeedback.animate) { feedbackLeaving = false; animateText(controlFeedback, ''); return }
       feedbackLeaving = true
       feedbackAnimations.get(controlFeedback)?.cancel()
       const animation = controlFeedback.animate([{ opacity: 1, translate: '0 0' }, { opacity: 0, translate: '0 -4px' }], { duration: 160, easing: 'ease-in' })
@@ -195,14 +241,20 @@
 
     /** Consume IPC samples at display cadence; stop at the bounded horizon or immediately on pause/buffering. */
     function scheduleRender() {
-      if (disposed || updateRAFId !== null) return
+      if (disposed || runtimeHidden || updateRAFId !== null || renderTimer !== null) return
+      const remaining = 34 - (performance.now() - lastRenderAt)
+      if (displayOptions.efficientMode && remaining > 0) {
+        renderTimer = setTimeout(() => { renderTimer = null; scheduleRender() }, Math.ceil(remaining))
+        return
+      }
       updateRAFId = requestAnimationFrame(() => {
         updateRAFId = null
         if (disposed) return
         const now = performance.now()
+        lastRenderAt = now
         currentTime = visualPlaybackTime(now)
         updateCurrentLyric()
-        if (clockAdvancing && now - timeAnchorAt < maxInterpolationMs &&
+        if (!displayOptions.songInfoOnly && clockAdvancing && now - timeAnchorAt < maxInterpolationMs &&
             !(currentDuration > 0 && currentTime >= currentDuration)) scheduleRender()
       })
     }
@@ -213,6 +265,9 @@
       timeAnchor = currentTime = time
       timeAnchorAt = performance.now()
       timeDiscontinuity = true
+      lastRenderAt = -Infinity
+      clearTimeout(renderTimer)
+      renderTimer = null
       stopLyricMotion()
     }
 
@@ -225,13 +280,13 @@
 
     /** The preview rises into the current row; horizontal playback transforms stay on the inner text. */
     function animateLinePromotion(preview) {
-      if (motionPreference?.matches || !currentViewport.animate) return
+      if (!hasDecorativeMotion() || !displayOptions.transitionEnabled || !currentViewport.animate) return
       const current = currentViewport.getBoundingClientRect()
       const distance = preview.top + preview.height / 2 - current.top - current.height / 2
       const scale = Math.max(0.5, Math.min(1, preview.height / Math.max(1, current.height)))
       const animation = currentViewport.animate([
-        { translate: `0 ${distance}px`, scale, opacity: 0.86 },
-        { translate: '0 0', scale: 1, opacity: 1 }
+        { translate: `0 ${distance}px`, scale, opacity: 0.86, ...(displayOptions.transitionBlur ? { filter: promotionFilter(3) } : {}) },
+        { translate: '0 0', scale: 1, opacity: 1, ...(displayOptions.transitionBlur ? { filter: promotionFilter(0) } : {}) }
       ], { duration: 280, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' })
       feedbackAnimations.set(currentViewport, animation)
       animation.onfinish = () => { if (feedbackAnimations.get(currentViewport) === animation) feedbackAnimations.delete(currentViewport) }
@@ -254,6 +309,7 @@
       nextBtn.addEventListener('click', () => sendPlayerControl(nextBtn, 'next'))
       translationBtn.addEventListener('click', toggleTranslation)
       lockBtn.addEventListener('click', lockLyrics)
+      unlockBtn.addEventListener('click', unlockLyrics)
       resizeHandle.addEventListener('pointerdown', beginResize)
       resizeHandle.addEventListener('pointermove', moveResize)
       resizeHandle.addEventListener('pointerup', endResize)
@@ -267,6 +323,7 @@
       if (lyricAPI.onError) subscriptions.push(lyricAPI.onError(message => showControlFeedback(typeof message === 'string' && message ? message : '操作失败，请重试', true)))
       if (lyricAPI.onPlaybackUpdate) subscriptions.push(lyricAPI.onPlaybackUpdate(updatePlayback))
       if (lyricAPI.onLockChanged) subscriptions.push(lyricAPI.onLockChanged(locked => { isLocked = Boolean(locked); updateLockState() }))
+      if (lyricAPI.onRuntimeState) subscriptions.push(lyricAPI.onRuntimeState(updateRuntimeState))
       motionPreference?.addEventListener?.('change', stopFeedbackMotion)
       window.addEventListener('resize', invalidateLayout)
       window.addEventListener('blur', endResize)
@@ -285,6 +342,9 @@
       if (updateRAFId !== null) cancelAnimationFrame(updateRAFId)
       updateRAFId = null
       clearTimeout(feedbackTimer)
+      clearTimeout(renderTimer)
+      renderTimer = null
+      cancelCoverRequest()
       stopFeedbackMotion()
       resizeObserver?.disconnect()
       window.removeEventListener('resize', invalidateLayout)
@@ -298,6 +358,21 @@
       if (isLocked) endResize()
       container.classList.toggle('locked', isLocked)
       document.body.classList.toggle('locked', isLocked)
+      unlockBtn.hidden = !isLocked || displayOptions.hideUnlockButton
+      unlockBtn.style.setProperty('display', unlockBtn.hidden ? 'none' : 'block', 'important')
+      unlockBtn.disabled = pendingButtons.has(unlockBtn)
+    }
+
+    /** Native visibility policy owns hiding; hidden windows stop rendering without discarding their latest sample. */
+    function updateRuntimeState(state = {}) {
+      runtimeHidden = state.hidden === true
+      if (runtimeHidden) {
+        if (updateRAFId !== null) cancelAnimationFrame(updateRAFId)
+        updateRAFId = null
+        clearTimeout(renderTimer)
+        renderTimer = null
+        stopFeedbackMotion()
+      } else { lastRenderAt = -Infinity; scheduleRender() }
     }
 
     /** The main process measures screen DIP coordinates; transparent windows do not use native resize borders. */
@@ -354,6 +429,111 @@
       sheet.textContent = appearance.css
     }
 
+    /** Consume validated display fields without allowing settings text to become CSS rules or markup. */
+    function applyDisplayOptions(settings) {
+      const previousOptions = JSON.stringify(displayOptions)
+      const previousKaraoke = displayOptions.karaokeEnabled
+      const previousInfoOnly = displayOptions.songInfoOnly
+      for (const name of ['doubleLine', 'efficientMode', 'transitionEnabled', 'transitionBlur', 'hideTranslation', 'songInfoOnly', 'karaokeEnabled', 'hideUnlockButton', 'shadowEnabled']) {
+        if (typeof settings[name] === 'boolean') displayOptions[name] = settings[name]
+      }
+      if (['left', 'center', 'right'].includes(settings.alignment)) displayOptions.alignment = settings.alignment
+      if (['cover', 'custom'].includes(settings.shadowColorMode)) displayOptions.shadowColorMode = settings.shadowColorMode
+      if (typeof settings.fontFamily === 'string') displayOptions.fontFamily = settings.fontFamily.trim().slice(0, 200)
+      for (const name of ['activeColor', 'textColor', 'translationColor', 'shadowColor']) {
+        if (typeof settings[name] === 'string' && (/^#[\da-f]{6}(?:[\da-f]{2})?$/i.test(settings[name]) || (name !== 'shadowColor' && settings[name] === ''))) displayOptions[name] = settings[name]
+      }
+      for (const [name, maximum] of [['strokeWidth', 200], ['shadowDepth', 100], ['shadowDirection', 360], ['shadowOpacity', 100], ['shadowRadius', 100]]) {
+        if (Number.isFinite(settings[name])) displayOptions[name] = Math.max(0, Math.min(maximum, settings[name]))
+      }
+      container.classList.toggle('efficient-mode', displayOptions.efficientMode)
+      container.classList.toggle('song-info-only', displayOptions.songInfoOnly)
+      container.classList.remove('align-left', 'align-center', 'align-right')
+      container.classList.add(`align-${displayOptions.alignment}`)
+      container.style.setProperty('--desktop-alignment', displayOptions.alignment)
+      container.style.setProperty('--desktop-stroke-width', `${displayOptions.strokeWidth / 100}px`)
+      for (const [field, name] of [['activeColor', '--desktop-accent'], ['textColor', '--desktop-text'], ['translationColor', '--desktop-translation']]) {
+        if (displayOptions[field]) container.style.setProperty(name, displayOptions[field])
+        else container.style.removeProperty(name)
+      }
+      if (displayOptions.fontFamily) container.style.setProperty('--desktop-font', `"${displayOptions.fontFamily.replace(/[\\"\n\r\f]/g, character => /[\n\r\f]/.test(character) ? ' ' : '\\' + character)}"`)
+      else container.style.removeProperty('--desktop-font')
+      currentViewport.hidden = displayOptions.songInfoOnly
+      nextViewport.hidden = displayOptions.songInfoOnly || !displayOptions.doubleLine
+      if (previousKaraoke !== displayOptions.karaokeEnabled || previousInfoOnly !== displayOptions.songInfoOnly) currentLyricIndex = -2
+      if (JSON.stringify(displayOptions) !== previousOptions) {
+        stopFeedbackMotion()
+        clearTimeout(renderTimer)
+        renderTimer = null
+        lastRenderAt = -Infinity
+      }
+      layoutDirty = true
+      refreshCoverShadow()
+      applyShadowStyle()
+    }
+
+    function cancelCoverRequest() {
+      coverRequestVersion++
+      if (coverImage) { coverImage.onload = null; coverImage.onerror = null; coverImage.src = ''; coverImage = null }
+    }
+
+    /** Read a tiny cover sample only when needed; obsolete images and inaccessible pixels retain the custom fallback. */
+    function refreshCoverShadow() {
+      const cover = displayOptions.shadowEnabled && displayOptions.shadowColorMode === 'cover' && typeof currentSong?.cover === 'string' ? currentSong.cover : ''
+      if (cover === coverRequestKey) return
+      cancelCoverRequest()
+      coverRequestKey = cover
+      coverShadowColor = ''
+      applyShadowStyle()
+      if (!cover || typeof Image !== 'function' || !/^(https?:|data:image\/|blob:|bk-cache:)/i.test(cover)) return
+      const version = coverRequestVersion
+      const image = new Image()
+      coverImage = image
+      image.crossOrigin = 'anonymous'
+      image.onload = () => {
+        if (disposed || version !== coverRequestVersion) return
+        try {
+          const canvas = document.createElement('canvas')
+          canvas.width = canvas.height = 24
+          const context = canvas.getContext('2d', { willReadFrequently: true })
+          if (!context) return
+          context.drawImage(image, 0, 0, 24, 24)
+          const pixels = context.getImageData(0, 0, 24, 24).data
+          const buckets = new Map()
+          for (let offset = 0; offset < pixels.length; offset += 4) {
+            if (pixels[offset + 3] < 128) continue
+            const [red, green, blue] = pixels.slice(offset, offset + 3)
+            const key = `${red >> 5},${green >> 5},${blue >> 5}`
+            const bucket = buckets.get(key) || { count: 0, red: 0, green: 0, blue: 0 }
+            bucket.count++; bucket.red += red; bucket.green += green; bucket.blue += blue
+            buckets.set(key, bucket)
+          }
+          const dominant = [...buckets.values()].sort((left, right) => right.count - left.count)[0]
+          if (dominant) coverShadowColor = '#' + ['red', 'green', 'blue'].map(name => Math.round(dominant[name] / dominant.count).toString(16).padStart(2, '0')).join('')
+        } catch {
+          // Cross-origin or unavailable cover pixels are optional; retain the configured fallback color.
+        } finally {
+          image.onload = null; image.onerror = null
+          if (coverImage === image) coverImage = null
+          if (!disposed && version === coverRequestVersion) applyShadowStyle()
+        }
+      }
+      image.onerror = () => { if (coverImage === image) coverImage = null; image.onload = null; image.onerror = null }
+      image.src = cover.replace('{size}', '100')
+    }
+
+    function applyShadowStyle() {
+      if (!displayOptions.shadowEnabled) { lyricShadowFilter = 'none'; container.style.setProperty('--desktop-lyric-shadow', lyricShadowFilter); return }
+      const color = displayOptions.shadowColorMode === 'cover' && coverShadowColor ? coverShadowColor : displayOptions.shadowColor
+      const channels = [1, 3, 5].map(offset => parseInt(color.slice(offset, offset + 2), 16))
+      const alpha = displayOptions.shadowOpacity / 100 * (color.length === 9 ? parseInt(color.slice(7, 9), 16) / 255 : 1)
+      const angle = displayOptions.shadowDirection * Math.PI / 180
+      const x = Math.round(Math.cos(angle) * displayOptions.shadowDepth * 100) / 100
+      const y = Math.round(Math.sin(angle) * displayOptions.shadowDepth * 100) / 100
+      lyricShadowFilter = `drop-shadow(${x}px ${y}px ${displayOptions.shadowRadius}px rgba(${channels.join(',')},${alpha}))`
+      container.style.setProperty('--desktop-lyric-shadow', lyricShadowFilter)
+    }
+
     // Settings broadcasts are authoritative; acknowledgements only fill in when no broadcast arrived.
     function updateSettings(settings = {}) {
       settingsRevision++
@@ -362,11 +542,13 @@
       if (['classic', 'gradient', 'minimal'].includes(settings.theme)) currentTheme = settings.theme
       if (typeof settings.locked === 'boolean') isLocked = settings.locked
       if (typeof settings.showTranslation === 'boolean') showTranslation = settings.showTranslation
+      applyDisplayOptions(settings)
       updateSize()
       updateTheme()
       updateLockState()
       refreshControls()
       updateCurrentLyric()
+      scheduleRender()
     }
 
     function updateSize() {
@@ -440,6 +622,14 @@
       })
     }
 
+    function unlockLyrics() {
+      if (!isLocked || displayOptions.hideUnlockButton) return
+      const revision = settingsRevision
+      return runAction(unlockBtn, () => lyricAPI.setLocked(false), () => {
+        if (revision === settingsRevision) { isLocked = false; updateLockState() }
+      })
+    }
+
     function sendPlayerControl(button, action) {
       return runAction(button, () => lyricAPI.control(action))
     }
@@ -447,8 +637,9 @@
     function refreshControls() {
       const available = Boolean(currentSong) && playbackAvailable !== false
       const hasTranslation = currentLyrics.some(line => line.translation?.trim())
-      ;[previousBtn, playBtn, nextBtn, sizeBtn, themeBtn, translationBtn, lockBtn, resizeHandle].forEach(button => {
-        const unavailable = ([previousBtn, playBtn, nextBtn].includes(button) && !available) || (button === translationBtn && !hasTranslation) || (button === resizeHandle && isLocked)
+      const translationUnavailable = !hasTranslation || displayOptions.hideTranslation || !displayOptions.doubleLine || displayOptions.songInfoOnly
+      ;[previousBtn, playBtn, nextBtn, sizeBtn, themeBtn, translationBtn, lockBtn, unlockBtn, resizeHandle].forEach(button => {
+        const unavailable = ([previousBtn, playBtn, nextBtn].includes(button) && !available) || (button === translationBtn && translationUnavailable) || (button === resizeHandle && isLocked)
         button.disabled = unavailable || pendingButtons.has(button)
         button.setAttribute('aria-busy', String(pendingButtons.has(button)))
       })
@@ -456,7 +647,7 @@
       playBtn.title = isPlaying ? '暂停' : '播放'
       playBtn.setAttribute('aria-label', playBtn.title)
       translationBtn.setAttribute('aria-pressed', String(showTranslation))
-      translationBtn.title = hasTranslation ? (showTranslation ? '隐藏翻译，显示下一句' : '显示翻译') : '当前歌曲暂无翻译'
+      translationBtn.title = translationUnavailable && hasTranslation ? '当前桌面显示模式已隐藏翻译，可在设置中调整' : hasTranslation ? (showTranslation ? '隐藏翻译，显示下一句' : '显示翻译') : '当前歌曲暂无翻译'
       translationBtn.setAttribute('aria-label', translationBtn.title)
     }
 
@@ -477,6 +668,7 @@
         playbackAvailable = null
       }
       currentSong = nextSong
+      refreshCoverShadow()
       animateText(songInfo, currentSong ? `${currentSong.title || '未知歌曲'} - ${currentSong.artist || '未知歌手'}` : '暂无播放')
       songInfo.title = songInfo.textContent
       refreshControls()
@@ -490,6 +682,7 @@
         ...line,
         text: typeof line.text === 'string' ? line.text : '',
         translation: typeof line.translation === 'string' ? line.translation : '',
+        romanization: typeof line.romanization === 'string' ? line.romanization : '',
         words: Array.isArray(line.words) ? line.words.filter(word => word && typeof (word.word ?? word.text) === 'string') : []
       })).sort((a, b) => a.time - b.time) : []
       currentLyricIndex = -2
@@ -538,8 +731,8 @@
     function renderLine(line) {
       charEntries = []
       currentLyric.replaceChildren()
-      currentLyric.classList.toggle('active-line', Boolean(line && !line.isKrc))
-      if (line?.isKrc && line.words.length) {
+      currentLyric.classList.toggle('active-line', Boolean(line && (!line.isKrc || !displayOptions.karaokeEnabled)))
+      if (displayOptions.karaokeEnabled && line?.isKrc && line.words.length) {
         const fragment = document.createDocumentFragment()
         line.words.forEach(word => {
           const letters = graphemes(word.word ?? word.text)
@@ -595,6 +788,7 @@
     }
 
     function updateCurrentLyric() {
+      if (displayOptions.songInfoOnly) { timeDiscontinuity = false; return }
       let low = 0
       let high = currentLyrics.length
       while (low < high) {
@@ -607,7 +801,7 @@
       const lineChanged = index !== currentLyricIndex
       const sequential = lineChanged && !timeDiscontinuity && isPlaying && index === currentLyricIndex + 1
       const preview = sequential && ['next', 'intro'].includes(nextLyric.dataset.kind) && nextLyric.textContent === line?.text &&
-        !motionPreference?.matches && nextViewport.getBoundingClientRect ? nextViewport.getBoundingClientRect() : null
+        displayOptions.doubleLine && displayOptions.transitionEnabled && hasDecorativeMotion() && nextViewport.getBoundingClientRect ? nextViewport.getBoundingClientRect() : null
       if (lineChanged) {
         stopLyricMotion()
         currentLyricIndex = index
@@ -616,11 +810,12 @@
         else if (sequential) animateReplacement(currentLyric)
       }
       updateKaraokeProgress()
-      const translation = showTranslation && line?.translation.trim() ? line.translation : ''
+      const translation = showTranslation && !displayOptions.hideTranslation && line?.translation.trim() ? line.translation : ''
       const nextLine = currentLyrics[index + 1]
-      const secondary = translation || nextLine?.text || ''
-      const kind = translation ? 'translation' : nextLine ? (index < 0 ? 'intro' : 'next') : 'empty'
-      const identity = translation ? `translation:${index}` : `line:${index + 1}`
+      const annotation = displayOptions.hideTranslation ? '' : [line?.romanization, translation].filter(Boolean).join(' · ')
+      const secondary = annotation || nextLine?.text || ''
+      const kind = annotation ? 'translation' : nextLine ? (index < 0 ? 'intro' : 'next') : 'empty'
+      const identity = annotation ? `translation:${index}:${annotation}` : `line:${index + 1}`
       if (nextLyric.textContent !== secondary || nextLyric.dataset.kind !== kind || nextLyric.dataset.identity !== identity) {
         nextLyric.textContent = secondary
         if (!timeDiscontinuity) animateReplacement(nextLyric)

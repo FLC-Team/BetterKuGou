@@ -27,6 +27,7 @@ const electronAPI = {
   playlistCache: {
     setSession: (session) => ipcRenderer.invoke('playlist-cache:set-session', session),
     getState: () => ipcRenderer.invoke('playlist-cache:get-state'),
+    chooseDirectory: () => ipcRenderer.invoke('playlist-cache:choose-directory'),
     readPlaylist: (id = null) => ipcRenderer.invoke('playlist-cache:read-playlist', id),
     putPlaylist: (snapshot) => ipcRenderer.invoke('playlist-cache:put-playlist', snapshot),
     cacheSong: (request) => ipcRenderer.invoke('playlist-cache:cache-song', request),
@@ -43,6 +44,16 @@ const electronAPI = {
     clear: () => ipcRenderer.invoke('playlist-cache:clear'),
     onState: (callback) => subscribe('playlist-cache:state', callback),
     onAuthExpired: (callback) => subscribe('playlist-cache:auth-expired', callback)
+  },
+
+  // 歌词版本仅按歌曲标识读写，不提供文件路径或通用文件系统能力。
+  lyricLibrary: {
+    list: () => ipcRenderer.invoke('lyric-library:list'),
+    read: (hash) => ipcRenderer.invoke('lyric-library:read', hash),
+    saveOnline: (request) => ipcRenderer.invoke('lyric-library:save-online', request),
+    saveEdit: (request) => ipcRenderer.invoke('lyric-library:save-edit', request),
+    select: (request) => ipcRenderer.invoke('lyric-library:select', request),
+    onChanged: (callback) => subscribe('lyric-library:changed', callback)
   },
 
   // 更新任务只接受已检查出的资产 ID；安装始终经过主窗口确认。
@@ -94,6 +105,9 @@ const electronAPI = {
   updatePlaybackState: (isPlaying) => {
     ipcRenderer.send('player:playback-state', isPlaying ? 'playing' : 'paused')
   },
+  setLyricViewVisible: (visible) => {
+    if (typeof visible === 'boolean') ipcRenderer.send('player:lyric-view-visible', visible)
+  },
   updateLyrics: (lyrics, trackId) => {
     if (Array.isArray(lyrics)) {
       ipcRenderer.send('player:lyric-update', lyrics, typeof trackId === 'string' ? trackId : undefined)
@@ -125,6 +139,13 @@ const electronAPI = {
   },
 
   // 桌面歌词相关API
+  islandLyric: {
+    show: () => ipcRenderer.invoke('island-lyric:show'),
+    getDisplays: () => ipcRenderer.invoke('island-lyric:get-displays'),
+    getCapabilities: () => ipcRenderer.invoke('island-lyric:get-capabilities'),
+    onDisplaysChanged: callback => subscribe('island-lyric:displays-changed', callback),
+    setLyricViewOpen: visible => { if (typeof visible === 'boolean') ipcRenderer.send('island-lyric:main-lyrics', visible) }
+  },
   desktopLyric: {
     toggle: () => ipcRenderer.invoke('desktop-lyric:toggle'),
     show: () => ipcRenderer.invoke('desktop-lyric:show'),
@@ -192,6 +213,7 @@ contextBridge.exposeInMainWorld('desktopLyricAPI', {
   onLyricUpdate: (callback) => subscribe('desktop-lyric:lyric-update', callback),
   onTimeUpdate: (callback) => subscribe('desktop-lyric:time-update', callback),
   onPlaybackUpdate: (callback) => subscribe('desktop-lyric:playback-update', callback),
+  onRuntimeState: (callback) => subscribe('desktop-lyric:runtime-state', callback),
   onError: (callback) => subscribe('desktop-lyric:error', callback),
   onSettingsUpdate: (callback) => subscribe('desktop-lyric:settings-update', callback),
   onLockChanged: (callback) => subscribe('desktop-lyric:lock-changed', callback),
@@ -221,6 +243,29 @@ contextBridge.exposeInMainWorld('desktopLyricAPI', {
     width: delta?.width, height: delta?.height
   }),
   close: () => ipcRenderer.send('desktop-lyric:close')
+})
+
+contextBridge.exposeInMainWorld('islandLyricAPI', {
+  beginDrag: () => ipcRenderer.invoke('island-lyric:begin-drag'),
+  drag: () => ipcRenderer.send('island-lyric:drag'),
+  endDrag: () => ipcRenderer.invoke('island-lyric:end-drag'),
+  onPointerUpdate: callback => subscribe('island-lyric:pointer-update', callback),
+  onSongUpdate: callback => subscribe('island-lyric:song-update', callback),
+  onLyricUpdate: callback => subscribe('island-lyric:lyric-update', callback),
+  onTimeUpdate: callback => subscribe('island-lyric:time-update', callback),
+  onPlaybackUpdate: callback => subscribe('island-lyric:playback-update', callback),
+  onSettingsUpdate: callback => subscribe('island-lyric:settings-update', callback),
+  onError: callback => subscribe('island-lyric:error', callback),
+  control: action => ['prev', 'toggle', 'next'].includes(action)
+    ? ipcRenderer.invoke('island-lyric:control', action)
+    : Promise.resolve({ success: false, error: '无效的播放操作' }),
+  setTranslation: show => typeof show === 'boolean'
+    ? ipcRenderer.invoke('island-lyric:set-translation', show)
+    : Promise.resolve({ success: false, error: '无效的翻译状态' }),
+  setInteractive: interactive => {
+    if (typeof interactive === 'boolean') ipcRenderer.send('island-lyric:set-interactive', interactive)
+  },
+  close: () => ipcRenderer.invoke('island-lyric:close')
 })
 
 // 为了防止 undefined 错误，暴露一个 API 检查函数

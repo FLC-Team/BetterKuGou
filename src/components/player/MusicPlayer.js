@@ -4,15 +4,18 @@ import { computed } from 'vue'
 import { getSongUrl, getLyric, getSongDetail } from '../../api/music.js'
 import PlaylistDrawer from './PlaylistDrawer.vue'
 import ContextMenu from '../common/ContextMenu.vue'
+import AnimatedSelect from '../common/AnimatedSelect.vue'
 import ArtworkCover from '../common/ArtworkCover.vue'
 import ArtistLinks from '../common/ArtistLinks.vue'
 import LyricView from './LyricView.vue'
+import VolumeControl from './VolumeControl.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import { useSettingsStore } from '../../stores/settingsStore.js'
 import { PLAYBACK_QUALITY_OPTIONS, normalizePlaybackQuality, readPlaybackQuality } from '../../utils/playbackQuality.js'
 import { getPlaylistCacheAPI, waitForPlaylistCacheSession, getPlaylistCacheSessionVersion } from '../../utils/playlistCache.js'
 import { cloneDeep } from '../../utils/objectUtils.js'
 import { parseDesktopLyrics } from '../../utils/desktopLyrics.js'
+import { processLyricContent, readLyricRomanization } from '../../utils/lyricProcessing.js'
 import { getSongArtists, getSongSearchKeyword } from '../../utils/songMetadata.js'
 
 // 动态导入 SVG 图标
@@ -20,19 +23,17 @@ import playlistIcon from '../../assets/icons/playlist.svg'
 import repeatAllIcon from '../../assets/icons/repeat_all.svg'
 import repeatOneIcon from '../../assets/icons/repeat_one.svg'
 import shuffleIcon from '../../assets/icons/shuffle.svg'
-import sound0Icon from '../../assets/icons/sound_0.svg'
-import sound1Icon from '../../assets/icons/sound_1.svg'
-import sound2Icon from '../../assets/icons/sound_2.svg'
-import sound3Icon from '../../assets/icons/sound_3.svg'
 
 export default {
   name: 'MusicPlayer',
   components: {
     PlaylistDrawer,
     ContextMenu,
+    AnimatedSelect,
     ArtworkCover,
     ArtistLinks,
-    LyricView
+    LyricView,
+    VolumeControl
   },
   props: {
     song: {
@@ -68,12 +69,12 @@ export default {
       repeatAllIcon,
       repeatOneIcon,
       shuffleIcon,
-      sound0Icon,
-      sound1Icon,
-      sound2Icon,
-      sound3Icon,
       // 状态
       currentSong: null,
+      songLoadStage: '',
+      songLoadError: '',
+      failedSong: null,
+      failedSongOptions: null,
       hasRequestedInitialSong: false,
       replacingPlaybackSnapshot: null,
       trackTransition: 'select',
@@ -83,6 +84,7 @@ export default {
       isDragging: false, // 是否正在拖动进度条
       seekPreviewTime: null,
       volume: 80,
+      lastAudibleVolume: 80,
       isMuted: false,
       playMode: 'loop', // loop: 列表循环, single: 单曲循环, shuffle: 随机播放
       isFavorite: false,
@@ -101,6 +103,7 @@ export default {
       currentLyrics: '', // 当前歌词内容
       isLyricPlaceholder: true,
       currentLyricData: null, // 完整的歌词数据（包含翻译等信息）
+      lyricLibraryUnsubscribe: null,
       // MediaSession 相关
       lastPositionUpdate: null, // 上次位置更新的时间（秒）
       lastDesktopTimeUpdate: null, // 上次桌面歌词时间更新的时间戳（毫秒）
@@ -130,6 +133,7 @@ export default {
       queuedCacheSongs: new Set(),
       cachedLyricData: null,
       currentLyricsFromCache: false,
+      currentLyricsFromLibrary: false,
       qualityMessage: '',
       qualitySaveMessage: '',
       qualityRequestVersion: 0,
@@ -153,12 +157,38 @@ export default {
     }
   },
   computed: {
+    displayLyric() {
+      return processLyricContent(this.currentLyrics, this.currentLyricData, this.settingsStore?.settings?.playback || {})
+    },
+    qualityDropdownOptions() {
+      return this.qualityOptions.map(option => ({ ...option, label: option.name || option.label, description: option.detail }))
+    },
+    // 底栏预览最新选择；会话、歌词和音源身份仍只读取已确认的 currentSong。
+    barSong() {
+      return this.pendingSong || this.loadingSongTarget || this.currentSong || this.failedSong
+    },
+    isSongPending() {
+      return Boolean(this.pendingSong || this.loadingSongTarget)
+    },
+    barSongIsUnconfirmed() {
+      return !this.currentSong || this.barSong?.hash !== this.currentSong.hash
+    },
+    barTrackTransition() {
+      return this.pendingSong ? this.pendingSongTransition
+        : this.loadingSongTarget ? this.loadingSongTransition : this.trackTransition
+    },
+    songLoadingText() {
+      if (this.pendingSong) return '正在加载歌曲…'
+      if (this.loadingQualityChange) return '正在切换音质…'
+      return this.songLoadStage || '正在加载歌曲…'
+    },
     qualityPreference() {
       return normalizePlaybackQuality(this.settingsStore?.settings?.playback?.quality)
     },
     qualityStatus() {
       if (this.loadingQualityChange || this.pendingSongOptions?.qualityChange) return '正在切换…'
-      return this.currentQuality?.confirmed ? `实际音质 · ${this.currentQuality.label}` : '实际音质暂未确认'
+      if (this.barSongIsUnconfirmed) return this.isSongPending ? '音源加载中…' : '音源未加载'
+      return this.currentQuality?.confirmed ? `实际音质 · ${this.currentQuality.label}` : '音源未提供音质信息'
     },
     qualityFeedback() {
       return [this.qualityMessage, this.qualitySaveMessage].filter(Boolean).join(' ')
@@ -199,6 +229,15 @@ export default {
     }
   },
   watch: {
+    displayLyric() {
+      if (!this.isDisposed && this.currentSong?.hash === this.loadedSongHash) this.sendLyricsToDesktop(this.currentLyrics, this.currentLyricData)
+    },
+    'settingsStore.settings.playback.lyricLibrary.enabled'() {
+      if (this.currentSong?.hash && !this.isDisposed) this.loadLyric(this.currentSong)
+    },
+    'settingsStore.settings.playback.romanization'() {
+      if (!this.isDisposed && this.currentSong?.hash === this.loadedSongHash) this.sendLyricsToDesktop(this.currentLyrics, this.currentLyricData)
+    },
     song: {
       handler(newSong) {
         if (!newSong || this.isDisposed) return
@@ -314,6 +353,11 @@ export default {
     }
   },
   mounted() {
+    this.lyricLibraryUnsubscribe = window.electronAPI?.lyricLibrary?.onChanged?.(event => {
+      if (event?.reason !== 'online' && event?.hash?.toLowerCase() === this.currentSong?.hash?.toLowerCase() && !this.isDisposed) {
+        this.loadLyric(this.currentSong, { refresh: false })
+      }
+    }) || null
     if (process.env.NODE_ENV === 'development') {
       logger.trace('MusicPlayer', '🎵 [MusicPlayer] 组件已挂载')
       logger.trace('MusicPlayer', '🎵 [MusicPlayer] audioPlayer ref 状态:', !!this.$refs.audioPlayer)
@@ -363,6 +407,9 @@ export default {
     })
   },
   beforeUnmount() {
+    window.electronAPI?.setLyricViewVisible?.(false)
+    this.lyricLibraryUnsubscribe?.()
+    this.lyricLibraryUnsubscribe = null
     this.clearDesktopPlayback()
     this.isDisposed = true
     this.playbackStopVersion++
@@ -510,7 +557,7 @@ export default {
       const data = this.currentLyricData
       const hash = this.currentSong?.hash
       const version = this.loadedCacheSessionVersion
-      if (!hash || !data || this.isLyricPlaceholder || this.currentLyricsFromCache || this.cachedLyricData === data ||
+      if (!hash || !data || this.isLyricPlaceholder || this.currentLyricsFromCache || this.currentLyricsFromLibrary || this.cachedLyricData === data ||
           this.loadedSongHash !== hash || version !== getPlaylistCacheSessionVersion() ||
           !this.playedCacheSongs.has(`${version}:${hash}`)) return
       this.cachedLyricData = data
@@ -557,6 +604,9 @@ export default {
     /** 将选歌及动效来源一起排队，并使尚未完成的歌曲及歌词响应失效。 */
     requestSong(song, transition = 'select', options = {}) {
       if (!song?.hash || this.isDisposed) return Promise.resolve(false)
+      this.songLoadError = ''
+      this.failedSong = null
+      this.failedSongOptions = null
       this.cancelProgressDrag()
       this.pendingSong = song
       this.pendingSongTransition = transition
@@ -604,6 +654,10 @@ export default {
       this.loadingSongOptions = options
       this.loadingSongTransition = transition
       this.loadingQualityChange = qualityChange
+      this.songLoadStage = '正在获取音源…'
+      this.songLoadError = ''
+      this.failedSong = null
+      this.failedSongOptions = null
       if (qualityChange) this.qualityMessage = ''
       const requestId = ++this.songRequestId
       const controller = new AbortController()
@@ -720,6 +774,7 @@ export default {
         if (qualityChange) this.currentTime = previousPlayback.time
         const shouldPlay = restoreState ? restoreState.isPlaying === true : !qualityChange || previousPlayback.playing
         const installSource = async () => {
+          this.songLoadStage = '正在缓冲音频…'
           sourceVersion = ++this.audioSourceVersion
           this.cacheSourceLeaseId = candidateLease
           audioEl.src = playUrl
@@ -795,7 +850,13 @@ export default {
         logger.error('MusicPlayer', '加载歌曲失败:', error)
         const message = error.response?.data?.error_msg || error.response?.data?.msg || error.message
         if (qualityChange) this.qualityMessage = `音质切换失败：${message}。已保留原音源。`
-        else this.showError(`加载歌曲失败: ${message}`)
+        else {
+          this.failedSong = song
+          // 手动重试不延续自动跳歌，但必须保留启动恢复的位置、暂停意图及本次音质。
+          this.failedSongOptions = { quality: requestedQuality, ...(restoreState ? { restoreState } : {}) }
+          this.songLoadError = `“${getSongSearchKeyword(song) || '所选歌曲'}”加载失败：${message}`
+          this.showError(this.songLoadError)
+        }
         return false
       } finally {
         cacheLookupActive = false
@@ -804,6 +865,7 @@ export default {
         previousPlayback ||= this.replacingPlaybackSnapshot
         // 请求代次只决定是否提交；音源代次保证停止/卸载后旧任务不能恢复播放。
         if (!committed && previousPlayback && ownsSource()) {
+          this.songLoadStage = '正在恢复原歌曲…'
           audioEl.pause()
           sourceVersion = ++this.audioSourceVersion
           if (previousPlayback.source) {
@@ -871,6 +933,7 @@ export default {
         if (ownsSource()) this.syncDesktopTime(true)
         this.loadingSongHash = null
         this.loadingSongTarget = null
+        this.songLoadStage = ''
         this.loadingSongOptions = null
         if ((committed || replaying && !failed) && this.isCurrentSongRequest(requestId) && ownsSource()) this.cachePlayedSong()
         if (failed && options.navigation && this.isCurrentSongRequest(requestId) && !this.pendingSong &&
@@ -1021,6 +1084,11 @@ export default {
       this.pendingSong = null
       this.pendingSongOptions = null
       this.loadingSongOptions = null
+      this.loadingSongTarget = null
+      this.songLoadStage = ''
+      this.songLoadError = ''
+      this.failedSong = null
+      this.failedSongOptions = null
       this.replacingPlaybackSnapshot = null
       this.pendingSongTransition = 'select'
       this.trackTransition = 'select'
@@ -1055,6 +1123,11 @@ export default {
       this.clearDesktopPlayback()
     },
 
+    /** 重试最后失败的选择，继续复用请求代次、取消与音源回滚流程。 */
+    retrySongLoad() {
+      if (this.failedSong && !this.isSongPending) return this.requestSong(this.failedSong, 'select', this.failedSongOptions || {})
+    },
+
     // 显示错误提示（非弹窗）
     showError(message) {
       logger.warn('MusicPlayer', '', message)
@@ -1086,8 +1159,8 @@ export default {
       return '无法获取歌曲播放地址，请稍后重试'
     },
     
-    // 加载歌词
-    async loadLyric(song) {
+    /** 先读用户所选版本，再回退离线/在线歌词；后台更新沿歌曲和账号代次隔离，不阻塞已有正文。 */
+    async loadLyric(song, { refresh = true } = {}) {
       if (!song?.hash || this.isDisposed) return
       this.isLyricPlaceholder = true
       const requestId = ++this.lyricRequestId
@@ -1095,8 +1168,23 @@ export default {
         this.currentSong?.hash === song.hash
       const sessionVersion = getPlaylistCacheSessionVersion()
       let lyricsFromCache = false
+      let libraryRecord = null
+      const library = window.electronAPI?.lyricLibrary
+      const libraryEnabled = () => this.settingsStore?.settings?.playback?.lyricLibrary?.enabled !== false
+      const fetchOnline = () => getLyric(song.hash, song.album_audio_id || 0, '', { song })
       const fetchLyrics = async () => {
-        if (!getPlaylistCacheAPI()?.readLyrics) return getLyric(song.hash, song.album_audio_id || 0)
+        if (library?.read && libraryEnabled()) {
+          try {
+            libraryRecord = await library.read(song.hash)
+            if (!isCurrentRequest()) return null
+            const selected = libraryRecord?.versions?.find(version => version.id === libraryRecord.selectedVersionId)
+            if (selected?.data && libraryEnabled()) return selected.data
+            libraryRecord = null
+          } catch (error) {
+            logger.warn('MusicPlayer', '读取歌词库失败，继续加载歌词', { name: error?.name, message: error?.message })
+          }
+        }
+        if (!getPlaylistCacheAPI()?.readLyrics) return fetchOnline()
         try {
           const api = await waitForPlaylistCacheSession()
           if (!isCurrentRequest()) return null
@@ -1113,7 +1201,7 @@ export default {
           logger.warn('MusicPlayer', '读取本地歌词失败，继续在线加载', { name: error?.name, code: error?.code })
         }
         if (!isCurrentRequest() || sessionVersion !== getPlaylistCacheSessionVersion()) return null
-        return getLyric(song.hash, song.album_audio_id || 0)
+        return fetchOnline()
       }
       let timeoutId = null
       try {
@@ -1135,6 +1223,7 @@ export default {
         if (!isCurrentRequest()) return
         if (sessionVersion !== getPlaylistCacheSessionVersion()) return
         this.currentLyricsFromCache = lyricsFromCache
+        this.currentLyricsFromLibrary = Boolean(libraryRecord)
         
         if (process.env.NODE_ENV === 'development') {
           logger.trace('MusicPlayer', '歌词API响应:', lyricResponse)
@@ -1206,7 +1295,48 @@ export default {
             }
             this.setDefaultLyrics(song)
           }
-          this.cachePlayedLyrics()
+          // 手动版本独立于离线缓存，避免关闭歌词库后仍从缓存读回编辑内容。
+          if (!libraryRecord) this.cachePlayedLyrics()
+          if (!this.isLyricPlaceholder && library?.saveOnline && libraryEnabled()) {
+            const payload = data => ({
+              hash: song.hash, title: getSongSearchKeyword(song),
+              artist: getSongArtists(song).map(artist => artist.name).join('、'),
+              sourceId: data.lyricSource?.id || '', matchLevel: data.lyricSource?.matchLevel || 'any', data
+            })
+            if (libraryRecord && refresh && this.settingsStore?.settings?.playback?.lyricLibrary?.autoUpdate !== false &&
+                libraryRecord.versions.some(version => version.source === 'online')) {
+              // 先显示已选版本；后台失败保留歌词，切歌/关闭管理/手动选择会使旧结果失效。
+              void (async () => {
+                try {
+                  const response = await fetchOnline()
+                  if (!isCurrentRequest() || !libraryEnabled() || sessionVersion !== getPlaylistCacheSessionVersion()) return
+                  const updated = await library.saveOnline({ ...payload(response), mode: 'autoUpdate' })
+                  if (!isCurrentRequest() || !libraryEnabled()) return
+                  if (updated && updated.selectedVersionId !== libraryRecord.selectedVersionId) {
+                    await this.loadLyric(song, { refresh: false })
+                  }
+                } catch (error) {
+                  logger.warn('MusicPlayer', '后台更新歌词失败，保留已保存版本', { name: error?.name, message: error?.message })
+                }
+              })()
+            } else if (!libraryRecord && lyricsFromCache && this.settingsStore?.settings?.playback?.lyricLibrary?.autoSave !== false) {
+              // 历史缓存没有候选匹配信息；后台核实在线来源后才纳入歌词库。
+              void (async () => {
+                try {
+                  const response = await fetchOnline()
+                  if (!isCurrentRequest() || !libraryEnabled() || sessionVersion !== getPlaylistCacheSessionVersion()) return
+                  const saved = await library.saveOnline({ ...payload(response), mode: 'autoSave' })
+                  if (saved && isCurrentRequest() && libraryEnabled()) await this.loadLyric(song, { refresh: false })
+                } catch (error) {
+                  logger.warn('MusicPlayer', '补存在线歌词失败，保留离线歌词', { name: error?.name, message: error?.message })
+                }
+              })()
+            } else if (!libraryRecord && !lyricsFromCache && isCurrentRequest()) {
+              void library.saveOnline({ ...payload(lyricResponse), mode: 'autoSave' }).catch(error => {
+                logger.warn('MusicPlayer', '自动保存歌词失败', { name: error?.name, message: error?.message })
+              })
+            }
+          }
         } else {
           if (process.env.NODE_ENV === 'development') {
             logger.trace('MusicPlayer', '完整响应:', JSON.stringify(lyricResponse, null, 2))
@@ -1289,7 +1419,14 @@ export default {
 
     // 桌面窗口使用毫秒时间轴，原始译文与文本由纯解析器统一保留。
     parseLyricsForDesktop(lrcContent, rawLyricData = null) {
-      return parseDesktopLyrics(lrcContent, rawLyricData)
+      const processed = processLyricContent(lrcContent, rawLyricData, this.settingsStore?.settings?.playback || {})
+      const lines = parseDesktopLyrics(processed.content, processed.rawData)
+      if (this.settingsStore?.settings?.playback?.romanization === 'on') {
+        const readings = new Map(readLyricRomanization(processed.content, processed.rawData).map(line => [line.time, line.text]))
+        // 桌面沿用其副行与翻译开关，未开启翻译时仍可独立显示发音。
+        for (const line of lines) if (readings.has(line.time)) line.romanization = readings.get(line.time)
+      }
+      return lines
     },
 
     /** Only confirmed songs publish identity; metadata updates keep their existing timeline. */
@@ -1400,7 +1537,7 @@ export default {
       })
     },
 
-    // 上一曲
+    /** 上一曲；启用末尾重播时，以已确认音源的实际剩余时间决定是否从头播放当前歌。 */
     async playPrevious() {
       if (this.isDisposed || this.playlist.length === 0) return
       
@@ -1408,7 +1545,8 @@ export default {
 
       // 仅用已确认音源的实际时间判断末尾重播，拖动预览和待播歌曲不参与判断。
       const audioEl = this.$refs.audioPlayer
-      if (this.currentSong?.hash === this.loadedSongHash && audioEl?.getAttribute('src') &&
+      if (this.settingsStore.settings.playback.restartOnPreviousNearEnd === true &&
+          this.currentSong?.hash === this.loadedSongHash && audioEl?.getAttribute('src') &&
           Number.isFinite(audioEl.duration) && audioEl.duration > 0 &&
           Number.isFinite(audioEl.currentTime) && audioEl.currentTime >= 0) {
         const remaining = audioEl.duration - audioEl.currentTime
@@ -1825,23 +1963,35 @@ export default {
       if (hadPreview && audio && Number.isFinite(audio.currentTime)) this.currentTime = audio.currentTime
     },
     
-    // 音量调节
-    handleVolumeChange() {
+    /** 底栏、歌词与快捷键共用真实音量入口，并同步静音和持久化。 */
+    handleVolumeChange(value = this.volume) {
       const audioEl = this.$refs.audioPlayer
       if (!audioEl || this.isDisposed) return
-      this.volume = Math.max(0, Math.min(100, Number(this.volume) || 0))
+      if (value == null || String(value).trim() === '' || !Number.isFinite(Number(value))) return
+      if (this.volume > 0) this.lastAudibleVolume = this.volume
+      this.volume = Math.max(0, Math.min(100, Number(value)))
+      if (this.volume > 0) this.lastAudibleVolume = this.volume
       audioEl.volume = this.volume / 100
       this.isMuted = this.volume === 0
       audioEl.muted = this.isMuted
       
       // 保存音量设置到 localStorage
-      localStorage.setItem('player_volume', this.volume)
+      try {
+        localStorage.setItem('player_volume', this.volume)
+      } catch (error) {
+        logger.warn('MusicPlayer', '保存音量失败', error)
+      }
+      this.$emit('playback-state-changed')
     },
     
     // 静音切换
     toggleMute() {
       const audioEl = this.$refs.audioPlayer
       if (!audioEl || this.isDisposed) return
+      if (this.volume === 0) {
+        this.handleVolumeChange(this.lastAudibleVolume)
+        return
+      }
       this.isMuted = !this.isMuted
       audioEl.muted = this.isMuted
     },
@@ -1998,6 +2148,7 @@ export default {
           this.currentSong?.hash !== songHash) return
       
       this.showLyricView = true
+      window.electronAPI?.setLyricViewVisible?.(true)
       this.$emit('lyric-view-changed', true)
     },
 
@@ -2011,7 +2162,10 @@ export default {
 
     /** 快速重新打开时，旧离场回调不能复原标题栏。 */
     handleLyricsHidden() {
-      if (!this.showLyricView && !this.isDisposed) this.$emit('lyric-view-changed', false)
+      if (!this.showLyricView && !this.isDisposed) {
+        window.electronAPI?.setLyricViewVisible?.(false)
+        this.$emit('lyric-view-changed', false)
+      }
     },
 
     /** 所有播放器中的歌名搜索共用出口，收起覆盖层后保留当前音频与播放队列。 */

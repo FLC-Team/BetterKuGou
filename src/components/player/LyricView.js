@@ -1,9 +1,12 @@
 
 import { logger } from '../../utils/logger.js'
 import { useSettingsStore } from '../../stores/settingsStore.js'
+import { readLyricRomanization } from '../../utils/lyricProcessing.js'
+import { parseDesktopLyrics } from '../../utils/desktopLyrics.js'
 import ContextMenu from '../common/ContextMenu.vue'
 import ArtistLinks from '../common/ArtistLinks.vue'
 import ArtworkCover from '../common/ArtworkCover.vue'
+import VolumeControl from './VolumeControl.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import repeatAllIcon from '../../assets/icons/repeat_all.svg'
 import repeatOneIcon from '../../assets/icons/repeat_one.svg'
@@ -17,8 +20,10 @@ const lyricSegmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter
 
 export default {
   name: 'LyricView',
-  components: { ContextMenu, ArtistLinks, ArtworkCover },
+  components: { ContextMenu, ArtistLinks, ArtworkCover, VolumeControl },
   props: {
+    volume: { type: Number, default: 80 },
+    isMuted: { type: Boolean, default: false },
     visible: {
       type: Boolean,
       default: false
@@ -241,8 +246,13 @@ export default {
       if (this.showTranslation && this.parsedLyrics.some(line => line.translation)) {
         height = Math.min(140, Math.max(84, this.viewportHeight * 0.12))
       }
+      if (this.romanizationLines.size) height += 26
       if (this.viewportWidth < 900 || this.viewportHeight < 600) height *= 0.7
       return height
+    },
+    romanizationLines() {
+      if (this.settingsStore?.settings?.playback?.romanization !== 'on') return new Map()
+      return new Map(readLyricRomanization(this.lyrics, this.lyricData).map(line => [line.time / 1000, line.text]))
     },
     // 检测所有桥段（句子间隔>20秒）
     bridges() {
@@ -1235,176 +1245,24 @@ export default {
       }
     },
 
-    // 解析歌词
+    /** 全屏与桌面共用时间轴；译文/发音按源行绑定后再排序，保留 offset 与重复时间标签。 */
     parseLyrics(lrcContent, rawLyricData = null) {
       this.resetLyricInteractions()
-      this.hasTimedLyrics = false
-      logger.trace('LyricView', '解析歌词，内容长度:', lrcContent?.length)
-      logger.trace('LyricView', '歌词内容预览:', lrcContent?.substring(0, 200))
-      logger.trace('LyricView', '原始歌词数据:', rawLyricData)
-      
-      // 重置翻译相关状态
-      this.hasTranslation = false
       this.translationData = null
-      this.isNonChinese = false
-      this.showTranslation = false
-
-      // 检测是否为非中文歌曲
       this.isNonChinese = this.detectNonChineseSong(this.song, lrcContent)
-      logger.trace('LyricView', '是否为非中文歌曲:', this.isNonChinese)
-
-      // 详细检查原始歌词数据结构
-      logger.trace('LyricView', '🔍 检查原始歌词数据结构:')
-      logger.trace('LyricView', '  rawLyricData 是否存在:', !!rawLyricData)
-      logger.trace('LyricView', '  rawLyricData 类型:', typeof rawLyricData)
-      if (rawLyricData) {
-        logger.trace('LyricView', '  rawLyricData 所有键:', Object.keys(rawLyricData))
-        logger.trace('LyricView', '  rawLyricData.language 是否存在:', 'language' in rawLyricData)
-        logger.trace('LyricView', '  rawLyricData 完整内容:', rawLyricData)
-        
-        // 检查是否有其他可能包含翻译的字段
-        const possibleFields = ['trans', 'translation', 'lang', 'multilang', 'lyric_translation', 'lyricTranslation', 'translationData']
-        possibleFields.forEach(field => {
-          if (rawLyricData[field]) {
-            logger.trace('LyricView', `  🔍 发现可能的翻译字段 ${field}:`, rawLyricData[field])
-          }
-        })
-      }
-
-      // 尝试解析翻译数据 - 检查多个可能的数据源
-      let languageField = null
-      
-      // 方法1：直接从rawLyricData.language获取
-      if (rawLyricData && rawLyricData.language) {
-        languageField = rawLyricData.language
-        logger.trace('LyricView', '✅ 从rawLyricData.language获取到翻译数据')
-      }
-      
-      // 方法2：从decodeContent中的[language:...]标签提取
-      if (!languageField && lrcContent) {
-        const languageMatch = lrcContent.match(/\[language:(.*?)\]/s)
-        if (languageMatch && languageMatch[1]) {
-          languageField = languageMatch[1]
-          logger.trace('LyricView', '✅ 从歌词内容的[language:...]标签中提取到翻译数据')
-        }
-      }
-      
-      // 开始解析翻译数据
-      if (languageField) {
-        logger.trace('LyricView', '🔍 开始解析翻译数据，数据长度:', languageField.length)
-        this.translationData = this.parseTranslationData(languageField)
-        if (this.translationData) {
-          const userSetting = this.translationPreferenceDraft ?? this.settingsStore.settings?.playback?.showTranslation ?? true
-          this.showTranslation = userSetting
-          logger.trace('LyricView', '✅ 成功解析翻译数据')
-          logger.trace('LyricView', '  - 翻译版本:', this.translationData.version)
-          logger.trace('LyricView', '  - 是否为非中文歌曲:', this.isNonChinese)
-          logger.trace('LyricView', '  - 用户设置显示翻译:', userSetting)
-          logger.trace('LyricView', '  - 最终显示翻译:', this.showTranslation)
-        } else {
-          logger.trace('LyricView', '❌ 翻译数据存在但解析失败')
-        }
-      } else {
-        logger.trace('LyricView', '❌ 没有找到翻译数据')
-      }
-      
-      if (!lrcContent) {
-        this.parsedLyrics = [{ time: 0, text: '暂无歌词' }]
-        logger.trace('LyricView', '歌词内容为空')
-        return
-      }
-
-      // 清理BOM和多余的空白字符
-      let cleanContent = lrcContent.replace(/^\ufeff/, '') // 移除BOM
-      cleanContent = cleanContent.trim()
-      
-      logger.trace('LyricView', '清理后内容预览:', cleanContent?.substring(0, 200))
-
-      // 处理不同的换行符（\r\n, \n, \r）
-      const lines = cleanContent.split(/\r\n|\n|\r/).filter(line => line.trim())
-      const result = []
-      
-      logger.trace('LyricView', '歌词总行数:', lines.length)
-      logger.trace('LyricView', '前5行原始内容:', lines.slice(0, 5))
-      
-      for (let line of lines) {
-        logger.trace('LyricView', '处理行:', line)
-        
-        // KRC格式：[时间,持续时间]<字符时间信息>歌词内容
-        const krcMatch = line.match(/^\[(\d+),(\d+)\](.*)$/)
-        if (krcMatch) {
-          const startTime = parseInt(krcMatch[1]) / 1000  // 毫秒转秒
-          const duration = parseInt(krcMatch[2]) / 1000   // 毫秒转秒
-          const text = krcMatch[3].trim()
-          
-          logger.trace('LyricView', 'KRC行匹配:', { startTime, duration, text: text.substring(0, 50) })
-          
-          if (text) {
-            // 解析KRC格式的逐字时间信息
-            const words = this.parseKrcWords(text)
-            const lineText = words.map(w => w.word).join('')
-            
-            logger.trace('LyricView', 'KRC 解析结果 - words数量:', words.length)
-            logger.trace('LyricView', 'KRC 解析结果 - lineText:', lineText)
-            logger.trace('LyricView', 'KRC 解析结果 - 是否有空格:', lineText.includes(' '))
-            
-            if (lineText.trim()) {
-              result.push({ 
-                time: startTime, 
-                text: lineText, 
-                words: words // 保存逐字信息
-              })
-              logger.trace('LyricView', '添加KRC歌词行:', lineText)
-            }
-          }
-        } else {
-          // 普通LRC格式：[mm:ss.xx]歌词内容
-          const lrcMatch = line.match(/^\[(\d{2}):(\d{2})(?:\.(\d{2,3}))?\](.*)$/)
-          if (lrcMatch) {
-            const minutes = parseInt(lrcMatch[1])
-            const seconds = parseInt(lrcMatch[2])
-            const milliseconds = lrcMatch[3] ? parseInt(lrcMatch[3].padEnd(3, '0')) : 0
-            const time = minutes * 60 + seconds + milliseconds / 1000
-            const text = lrcMatch[4].trim()
-            
-            logger.trace('LyricView', 'LRC行匹配:', { time, text })
-            
-            if (text) {
-              result.push({ time, text })
-              logger.trace('LyricView', '添加LRC歌词行:', text)
-            }
-          } else {
-            // 跳过元信息行（如[ar:], [ti:]等）
-            if (!line.match(/^\[[a-z]+:/)) {
-              logger.trace('LyricView', '无法匹配的行:', line)
-            }
-          }
-        }
-      }
-      
-      // 按时间排序
-      result.sort((a, b) => a.time - b.time)
-      this.hasTimedLyrics = result.length > 0
-      this.parsedLyrics = result.length > 0 ? result : [{ time: 0, text: '暂无歌词' }]
-      
-      // 检查是否有空格
-      const hasSpaces = result.some(line => line.text.includes(' '))
-      logger.trace('LyricView', '🔍 歌词是否包含空格:', hasSpaces)
-      if (hasSpaces) {
-        const linesWithSpaces = result.filter(line => line.text.includes(' '))
-        logger.trace('LyricView', '包含空格的行数:', linesWithSpaces.length)
-        logger.trace('LyricView', '第一行带空格的歌词:', linesWithSpaces[0]?.text)
-        logger.trace('LyricView', '空格数量:', (linesWithSpaces[0]?.text.match(/ /g) || []).length)
-      }
-      
-      logger.trace('LyricView', '歌词解析完成，共', this.parsedLyrics.length, '行')
-      logger.trace('LyricView', '前3行歌词:', this.parsedLyrics.slice(0, 3))
-
-      // 处理翻译映射
-      if (this.translationData) {
-        this.mapTranslationToLyrics()
-      }
+      const lines = parseDesktopLyrics(lrcContent, rawLyricData).filter(line => line.text.trim())
+      this.parsedLyrics = lines.map(line => ({
+        ...line,
+        time: line.time / 1000,
+        ...(line.duration != null ? { duration: line.duration / 1000 } : {}),
+        ...(line.words ? { words: line.words.map(word => ({
+          ...word, startTime: word.startTime / 1000, endTime: word.endTime / 1000, duration: word.duration / 1000
+        })) } : {})
+      }))
+      this.hasTimedLyrics = this.parsedLyrics.length > 0
+      if (!this.hasTimedLyrics) this.parsedLyrics = [{ time: 0, text: '暂无歌词' }]
       this.hasTranslation = this.parsedLyrics.some(line => Boolean(line.translation))
+      this.showTranslation = this.translationPreferenceDraft ?? this.settingsStore?.settings?.playback?.showTranslation ?? true
     },
 
     // 将翻译数据映射到歌词行

@@ -284,7 +284,7 @@ function mountMusicPage(t, name, data, props, cache) {
   const leaf = { render: () => null }
   const sandbox = vm.createContext({ listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},  module: { exports: {} }, logger,
     window: { innerWidth: 1200, innerHeight: 800 }, localStorage: { getItem: () => null },
-    SongBadges: leaf, ArtistLinks: leaf, ContextMenu: leaf, ArtworkCover: artwork.component,
+    SongBadges: leaf, ArtistLinks: leaf, ContextMenu: leaf, VolumeControl: leaf, ArtworkCover: artwork.component,
     repeatAllIcon: '', repeatOneIcon: '', shuffleIcon: ''
   })
   vm.runInContext(stripImports(source).replace('export default', 'module.exports ='), sandbox)

@@ -99,7 +99,8 @@ import SongBadges from '../components/common/SongBadges.vue'
 import ArtistLinks from '../components/common/ArtistLinks.vue'
 import { logger } from '../utils/logger.js'
 
-import { getRankInfo } from '../api/music.js'
+import { getRankSongs } from '../api/music.js'
+import { getSongArtists } from '../utils/songMetadata.js'
 import { useSettingsStore } from '../stores/settingsStore.js'
 
 export default {
@@ -125,31 +126,85 @@ export default {
       loading: false,
       error: null,
       songs: [],
-      rankInfo: null
+      rankInfo: null,
+      isDisposed: false
     }
   },
   mounted() {
     this.rankInfo = this.rankData
     this.loadData()
   },
+  beforeUnmount() {
+    this.isDisposed = true
+  },
   methods: {
+    /** 按接口总数读取完整榜单，成功后一次替换，失败保留上次可用曲目。 */
     async loadData() {
+      if (this.loading || this.isDisposed) return
+      const rankid = this.rankData.rankid
+      let page = 1
       try {
         this.loading = true
         this.error = null
-        const response = await getRankInfo(this.rankData.rankid, 1, 100)
-        logger.trace('RankDetailView', '排行榜详情响应:', response)
-        
-        if (response.status === 1 && response.data) {
-          this.songs = response.data.songs?.list || response.data.info || []
-        } else {
-          this.error = '加载失败'
+        const songs = []
+        const seenPages = new Set()
+        while (!this.isDisposed) {
+          const response = await getRankSongs(rankid, page, 100)
+          if (this.isDisposed) return
+          const list = response?.data?.songlist
+          if (Number(response?.status) !== 1 || !Array.isArray(list)) {
+            throw new Error('排行榜曲目响应无效')
+          }
+          const rawTotal = response.data.total ?? response.total
+          const total = rawTotal == null || rawTotal === '' ? null : Number(rawTotal)
+          const hasTotal = Number.isInteger(total) && total >= 0
+          if (list.length === 0) {
+            if (hasTotal && songs.length < total) throw new Error('排行榜曲目分页不完整')
+            break
+          }
+          const normalized = list.map(song => this.normalizeRankSong(song))
+          const fingerprint = JSON.stringify(normalized.map(song => [song.hash, song.album_audio_id]))
+          if (seenPages.has(fingerprint)) throw new Error('排行榜返回重复分页')
+          seenPages.add(fingerprint)
+          songs.push(...normalized)
+          if (hasTotal && songs.length >= total) break
+          page += 1
         }
+        if (!this.isDisposed) this.songs = songs
       } catch (error) {
-        logger.error('RankDetailView', '加载排行榜详情失败:', error)
+        if (this.isDisposed) return
+        logger.error('RankDetailView', '加载排行榜曲目失败:', { rankid, page }, error)
         this.error = '加载失败，请重试'
       } finally {
-        this.loading = false
+        if (!this.isDisposed) this.loading = false
+      }
+    },
+    /** 将排行曲目的嵌套音频/专辑字段转为列表和播放器约定，保留权限与歌手身份。 */
+    normalizeRankSong(song) {
+      const audio = song.audio_info || {}
+      const legacy = song.deprecated || {}
+      const album = song.album_info || {}
+      const singerinfo = getSongArtists(song)
+      const singername = singerinfo.map(artist => artist.name).join('、') || song.author_name || song.singername
+      const timelen = Number(audio.duration_128 || song.timelen || legacy.duration || (song.duration || song.time_length || 0) * 1000)
+      const name = song.songname || song.filename || song.name || song.business?.filename
+      const cover = song.imgurl || song.album_img || song.cover || album.sizable_cover || ''
+      return {
+        ...legacy,
+        ...song,
+        hash: song.hash || audio.hash_128 || legacy.hash,
+        name,
+        songname: song.songname || name,
+        filename: song.filename || song.business?.filename || name,
+        singerinfo,
+        singername,
+        author_name: singername,
+        cover,
+        imgurl: cover,
+        album_name: song.album_name || album.album_name || song.remark,
+        privilege: song.privilege ?? song.privilege_download?.privilege,
+        timelen,
+        duration: timelen / 1000
       }
     },
     goAlbum(song) {
@@ -175,15 +230,7 @@ export default {
       logger.trace('RankDetailView', '[RankDetail] 设置 - enqueueFullPlaylist:', this.settings?.playback?.enqueueFullPlaylist)
       
       // 规范化歌曲数据字段
-      const normalizedSong = {
-        ...song,
-        name: song.songname || song.filename || song.name,
-        singername: song.author_name || song.singername,
-        author_name: song.author_name || song.singername,
-        cover: song.imgurl || song.album_img,
-        album_name: song.album_name || song.remark,
-        timelen: song.duration || song.time_length || song.timelen
-      }
+      const normalizedSong = this.normalizeRankSong(song)
       
       // 检查是否开启了"自动将全部歌单歌曲加入播放列表"功能
       if (this.settings?.playback?.enqueueFullPlaylist && this.songs.length > 0) {
@@ -191,15 +238,7 @@ export default {
         const songIndex = this.songs.findIndex(s => s.hash === song.hash)
         
         if (songIndex !== -1) {
-          const normalizedSongs = this.songs.map(s => ({
-            ...s,
-            name: s.songname || s.filename || s.name,
-            singername: s.author_name || s.singername,
-            author_name: s.author_name || s.singername,
-            cover: s.imgurl || s.album_img,
-            album_name: s.album_name || s.remark,
-            timelen: s.duration || s.time_length || s.timelen
-          }))
+          const normalizedSongs = this.songs.map(s => this.normalizeRankSong(s))
           
           const reorderedList = [
             normalizedSongs[songIndex],
@@ -208,15 +247,7 @@ export default {
           ]
           this.$emit('play-all', reorderedList)
         } else {
-          const normalizedSongs = this.songs.map(s => ({
-            ...s,
-            name: s.songname || s.filename || s.name,
-            singername: s.author_name || s.singername,
-            author_name: s.author_name || s.singername,
-            cover: s.imgurl || s.album_img,
-            album_name: s.album_name || s.remark,
-            timelen: s.duration || s.time_length || s.timelen
-          }))
+          const normalizedSongs = this.songs.map(s => this.normalizeRankSong(s))
           this.$emit('play-all', normalizedSongs)
         }
       } else {
@@ -226,15 +257,7 @@ export default {
     
     handlePlayAll() {
       logger.trace('RankDetailView', '[RankDetail] 播放全部')
-      const normalizedSongs = this.songs.map(song => ({
-        ...song,
-        name: song.songname || song.filename || song.name,
-        singername: song.author_name || song.singername,
-        author_name: song.author_name || song.singername,
-        cover: song.imgurl || song.album_img,
-        album_name: song.album_name || song.remark,
-        timelen: song.duration || song.time_length || song.timelen
-      }))
+      const normalizedSongs = this.songs.map(song => this.normalizeRankSong(song))
       this.$emit('play-all', normalizedSongs)
     },
     

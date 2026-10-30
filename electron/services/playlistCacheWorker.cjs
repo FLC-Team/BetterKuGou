@@ -144,7 +144,7 @@ function requestStream(rawUrl, { signal, localApi = false, artwork = false, allo
 
 /** All disk state and downloads live in one Worker; the main process only holds opaque leases. */
 function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls = false, limitBytesOverride, protectedFiles = [], retryBaseDelayMs = 1000, onState = () => {}, onAuthExpired = () => {} }) {
-  const root = path.resolve(cacheRoot)
+  let root = path.resolve(cacheRoot)
   const accounts = new Map()
   const active = new Map()
   const leases = new Map()
@@ -163,6 +163,9 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
   let lastUsageReport = 0
   let capacityChain = Promise.resolve()
   let diskChain = Promise.resolve()
+  let migration = null
+  let migrationWarning = null
+  const retiredDirectories = []
 
   function filePath(account, name) {
     if (!/^[a-f\d]{64}$/.test(account) || !/^[a-f\d]{64}(?:\.[a-z\d]{1,16}){1,2}$/.test(name)) throw cacheError('INVALID_PATH', '缓存文件索引无效')
@@ -303,6 +306,9 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
   function snapshot() {
     return {
       revision: ++revision, generation, userId: session?.userId ?? null, enabled, usedBytes, limitBytes,
+      cacheDirectory: root,
+      migration: migration ? { phase: migration.phase, copiedBytes: migration.copiedBytes, verifiedBytes: migration.verifiedBytes, totalBytes: migration.totalBytes, targetDirectory: migration.targetRoot } : null,
+      migrationWarning,
       cachedSongCount: new Set(Object.values(current?.songs || {}).filter(record => record.status === 'complete' && record.file).map(record => record.hash)).size,
       playlists: (current?.playlists || []).map(playlist => {
         const allHashes = playlist.songs.map(songHash)
@@ -484,7 +490,7 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
 
   function schedule() {
     if (schedulerTimer) { clearTimeout(schedulerTimer); schedulerTimer = null }
-    if (stopped || !enabled || !session || !current || current.paused || current.suppressed) return
+    if (stopped || migration || !enabled || !session || !current || current.paused || current.suppressed) return
     const queue = [...Object.values(current.songs), ...Object.values(current.artworks)].filter(record => recordAllowed(record) && (record.status === 'queued' || record.status === 'waiting-network' && record.nextAttempt <= Date.now()))
     queue.sort((a, b) => (b.requestedAt || 0) - (a.requestedAt || 0))
     for (const record of queue) {
@@ -508,6 +514,266 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
     for (const task of tasks) { if (task.record.status === 'downloading') task.record.status = status; task.controller.abort() }
     await Promise.allSettled(tasks.map(task => task.promise))
     for (const index of new Set(tasks.map(task => task.index))) await persist(index)
+  }
+
+  /** Resolve every existing directory component without following user-supplied links. */
+  async function migrationDirectory(directory, allowMissingLeaf = false) {
+    if (typeof directory !== 'string' || !path.isAbsolute(directory) || directory.includes('\0')) throw cacheError('CACHE_MIGRATION_PATH', '请选择有效的绝对目录。')
+    const resolved = path.resolve(directory)
+    const parts = []
+    for (let currentPath = resolved; ; currentPath = path.dirname(currentPath)) {
+      parts.unshift(currentPath)
+      if (path.dirname(currentPath) === currentPath) break
+    }
+    for (const currentPath of parts) {
+      let stat
+      try { stat = await fsp.lstat(currentPath) } catch (error) {
+        if (allowMissingLeaf && currentPath === resolved && error.code === 'ENOENT') return path.join(await fsp.realpath(path.dirname(resolved)), path.basename(resolved))
+        throw error
+      }
+      if (stat.isSymbolicLink() || !stat.isDirectory()) throw cacheError('CACHE_MIGRATION_PATH', '缓存目录不能是文件、符号链接或目录链接。')
+    }
+    return fsp.realpath(resolved)
+  }
+
+  function migrationPathsOverlap(first, second) {
+    const relative = path.relative(first, second)
+    return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
+  }
+
+  function sameFile(first, second) { return first.dev === second.dev && first.ino === second.ino }
+
+  async function migrationHash(filename, transaction, report = false) {
+    const hash = crypto.createHash('sha256')
+    const handle = await fsp.open(filename, 'r')
+    try {
+      const buffer = Buffer.allocUnsafe(256 * 1024)
+      let position = 0
+      while (true) {
+        if (stopped) throw cacheError('CACHE_MIGRATION_CANCELLED', '应用正在退出，缓存迁移已停止。')
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, position)
+        if (!bytesRead) break
+        position += bytesRead
+        hash.update(buffer.subarray(0, bytesRead))
+        if (report) { transaction.verifiedBytes += bytesRead; migrationProgress(transaction) }
+      }
+      return hash.digest('hex')
+    } finally { await handle.close() }
+  }
+
+  function migrationProgress(transaction, force = false) {
+    if (!force && Date.now() - transaction.lastReport < 100) return
+    transaction.lastReport = Date.now()
+    publish()
+  }
+
+  /** Delete only files created/copied by this transaction; unrelated or replaced files survive. */
+  async function removeMigrationFiles(transaction, directory, source = false) {
+    let complete = true
+    try { await migrationDirectory(directory) } catch (error) { return error.code === 'ENOENT' }
+    for (const entry of transaction.entries) {
+      const filename = path.join(directory, entry.relative)
+      try {
+        await migrationDirectory(path.dirname(filename))
+        const stat = await fsp.lstat(filename)
+        const expected = source ? entry.sourceStat : entry.targetStat
+        if (!expected || !stat.isFile() || stat.isSymbolicLink() || !sameFile(stat, expected)) { complete = false; continue }
+        // A second client or external process might have updated the old cache after the snapshot.
+        if ((source || transaction.published && directory === transaction.targetRoot) && (stat.size !== entry.size || await migrationHash(filename, transaction) !== entry.sha256)) { complete = false; continue }
+        if (source) {
+          const account = path.dirname(entry.relative)
+          const name = path.basename(entry.relative)
+          const index = accounts.get(account)
+          const referenced = name === 'index.json' || isLeased(account, name) || index && [...Object.values(index.songs), ...Object.values(index.artworks)].some(record => record.file === name)
+          if (referenced) {
+            const destination = path.join(root, entry.relative)
+            await migrationDirectory(path.dirname(destination))
+            const targetStat = await fsp.lstat(destination)
+            if (!targetStat.isFile() || targetStat.isSymbolicLink()) { complete = false; continue }
+            const exact = targetStat.size === entry.size && await migrationHash(destination, transaction) === entry.sha256
+            // Normal LRU/queue changes atomically rewrite index.json after commit.
+            if (!exact && !(name === 'index.json' && index && await fsp.readFile(destination, 'utf8') === JSON.stringify(index))) { complete = false; continue }
+          }
+        }
+        await fsp.unlink(filename)
+      } catch (error) { if (error.code !== 'ENOENT') complete = false }
+    }
+    for (const name of transaction.directories.slice().reverse()) {
+      try { await migrationDirectory(path.join(directory, name)); await fsp.rmdir(path.join(directory, name)) } catch (error) { if (error.code !== 'ENOENT') complete = false }
+    }
+    if (source || !transaction.targetExisted || directory !== transaction.targetRoot) {
+      try { await fsp.rmdir(directory) } catch (error) { if (error.code !== 'ENOENT') complete = false }
+    }
+    return complete
+  }
+
+  /** Freeze writes, copy all account data to a private staging folder, then publish a verified target. */
+  async function prepareMigration(payload) {
+    if (migration) throw cacheError('CACHE_MIGRATION_BUSY', '缓存正在迁移，请等待完成。')
+    const sourceRoot = await migrationDirectory(root)
+    const targetRoot = await migrationDirectory(payload?.targetRoot, true)
+    if (migrationPathsOverlap(sourceRoot, targetRoot) || migrationPathsOverlap(targetRoot, sourceRoot)) throw cacheError('CACHE_MIGRATION_PATH', '新目录不能与当前缓存目录相同，也不能互相包含。')
+    let targetExisted = false
+    try {
+      if ((await fsp.readdir(targetRoot)).length) throw cacheError('CACHE_MIGRATION_NOT_EMPTY', '目标缓存目录已有文件，请选择其他位置，原有文件不会被覆盖。')
+      targetExisted = true
+    } catch (error) { if (error.code !== 'ENOENT') throw error }
+    const transaction = { sourceRoot: root, targetRoot, targetExisted, stagingRoot: null, publishing: false, published: false, phase: 'copying', copiedBytes: 0, verifiedBytes: 0, totalBytes: 0, lastReport: 0, entries: [], directories: [] }
+    migration = transaction
+    migrationWarning = null
+    migrationProgress(transaction, true)
+    try {
+      if (schedulerTimer) clearTimeout(schedulerTimer)
+      schedulerTimer = null
+      await cancelActive()
+      await capacityChain
+      await diskChain
+      // Flush normalized indices and the cancelled queue before any file is copied.
+      await withDisk(async () => { for (const index of accounts.values()) await writeIndex(index) })
+      for (const directory of await fsp.readdir(sourceRoot, { withFileTypes: true })) {
+        if (directory.isSymbolicLink()) throw cacheError('CACHE_MIGRATION_PATH', '原缓存中存在链接，请先检查缓存目录。')
+        if (!directory.isDirectory() || !/^[a-f\d]{64}$/.test(directory.name)) continue
+        await migrationDirectory(path.join(sourceRoot, directory.name))
+        transaction.directories.push(directory.name)
+        for (const entry of await fsp.readdir(path.join(sourceRoot, directory.name), { withFileTypes: true })) {
+          if (entry.isSymbolicLink()) throw cacheError('CACHE_MIGRATION_PATH', '原缓存中存在链接，请先检查缓存目录。')
+          if (!entry.isFile() || (entry.name !== 'index.json' && !/^[a-f\d]{64}(?:\.[a-z\d]{1,16}){1,2}$/.test(entry.name))) continue
+          const relative = path.join(directory.name, entry.name)
+          const sourceStat = await fsp.lstat(path.join(sourceRoot, relative))
+          if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) throw cacheError('CACHE_MIGRATION_PATH', '原缓存文件发生变化，请重试。')
+          transaction.entries.push({ relative, size: sourceStat.size, sourceStat })
+          transaction.totalBytes += sourceStat.size
+        }
+      }
+      if (typeof fsp.statfs === 'function') {
+        const disk = await fsp.statfs(path.dirname(targetRoot))
+        if (disk.bavail * disk.bsize < transaction.totalBytes) throw cacheError('CACHE_MIGRATION_SPACE', '目标磁盘空间不足，请更换目录或释放空间后重试。')
+      }
+      transaction.stagingRoot = await fsp.mkdtemp(path.join(path.dirname(targetRoot), `.${path.basename(targetRoot)}.migration-`))
+      for (const name of transaction.directories) await fsp.mkdir(path.join(transaction.stagingRoot, name))
+      migrationProgress(transaction, true)
+      const buffer = Buffer.allocUnsafe(256 * 1024)
+      for (const entry of transaction.entries) {
+        if (stopped) throw cacheError('CACHE_MIGRATION_CANCELLED', '应用正在退出，缓存迁移已停止。')
+        const source = path.join(sourceRoot, entry.relative)
+        const destination = path.join(transaction.stagingRoot, entry.relative)
+        let input, output
+        try {
+          input = await fsp.open(source, 'r')
+          if (!sameFile(await input.stat(), entry.sourceStat)) throw cacheError('CACHE_MIGRATION_CHANGED', '缓存文件在迁移期间发生变化，请重试。')
+          output = await fsp.open(destination, 'wx', 0o600)
+          entry.targetStat = await output.stat()
+          const hash = crypto.createHash('sha256')
+          let position = 0
+          while (true) {
+            if (stopped) throw cacheError('CACHE_MIGRATION_CANCELLED', '应用正在退出，缓存迁移已停止。')
+            const { bytesRead } = await input.read(buffer, 0, buffer.length, position)
+            if (!bytesRead) break
+            hash.update(buffer.subarray(0, bytesRead))
+            for (let written = 0; written < bytesRead;) {
+              const result = await output.write(buffer, written, bytesRead - written, position + written)
+              if (!result.bytesWritten) throw cacheError('CACHE_MIGRATION_WRITE', '无法完整写入目标缓存，请检查磁盘。')
+              written += result.bytesWritten
+            }
+            position += bytesRead
+            transaction.copiedBytes += bytesRead
+            migrationProgress(transaction)
+          }
+          const after = await input.stat()
+          if (position !== entry.size || after.size !== entry.size || after.mtimeMs !== entry.sourceStat.mtimeMs) throw cacheError('CACHE_MIGRATION_CHANGED', '缓存文件在迁移期间发生变化，请重试。')
+          entry.sha256 = hash.digest('hex')
+          await output.sync()
+        } finally {
+          await Promise.all([input?.close(), output?.close()])
+        }
+      }
+      transaction.phase = 'verifying'
+      migrationProgress(transaction, true)
+      for (const entry of transaction.entries) {
+        const filename = path.join(transaction.stagingRoot, entry.relative)
+        if ((await fsp.stat(filename)).size !== entry.size || await migrationHash(filename, transaction, true) !== entry.sha256) throw cacheError('CACHE_MIGRATION_VERIFY', '迁移后的缓存校验失败，仍使用原目录，请重试。')
+      }
+      // Publish only complete data. A crash during copying leaves the chosen target reusable.
+      await migrationDirectory(targetRoot, true)
+      try {
+        if ((await fsp.readdir(targetRoot)).length) throw cacheError('CACHE_MIGRATION_NOT_EMPTY', '目标缓存目录已有文件，请选择其他位置，原有文件不会被覆盖。')
+        await fsp.rmdir(targetRoot)
+      } catch (error) { if (error.code !== 'ENOENT') throw error }
+      // Some Windows filesystem filters refuse renaming a nonempty directory even after all
+      // handles close. Fall back to moving verified files into an exclusively created target.
+      for (let attempt = 0; ; attempt++) {
+        try { await fsp.rename(transaction.stagingRoot, targetRoot); break } catch (error) {
+          if (!['EPERM', 'EBUSY', 'EACCES'].includes(error.code)) throw error
+          if (attempt >= 2) {
+            await fsp.mkdir(targetRoot)
+            transaction.publishing = true
+            for (const name of transaction.directories) await fsp.mkdir(path.join(targetRoot, name))
+            for (const entry of transaction.entries) {
+              const destination = path.join(targetRoot, entry.relative)
+              let occupied = false
+              try { await fsp.lstat(destination); occupied = true } catch (cause) { if (cause.code !== 'ENOENT') throw cause }
+              if (occupied) throw cacheError('CACHE_MIGRATION_NOT_EMPTY', '目标缓存目录出现其他文件，迁移已停止，原有文件不会被覆盖。')
+              await fsp.rename(path.join(transaction.stagingRoot, entry.relative), destination)
+            }
+            for (const name of transaction.directories) await fsp.rmdir(path.join(transaction.stagingRoot, name))
+            await fsp.rmdir(transaction.stagingRoot)
+            break
+          }
+          await new Promise(resolve => setTimeout(resolve, 40 * (attempt + 1)))
+        }
+      }
+      transaction.published = true
+      transaction.phase = 'committing'
+      migrationProgress(transaction, true)
+      return { ...snapshot(), targetRoot }
+    } catch (error) {
+      const cleanupRoots = new Set([transaction.stagingRoot, transaction.published || transaction.publishing ? targetRoot : null].filter(Boolean))
+      for (const directory of cleanupRoots) if (!await removeMigrationFiles(transaction, directory)) migrationWarning = { code: 'CACHE_MIGRATION_CLEANUP', message: '迁移未生效，部分临时副本未能清理；原缓存保持可用。' }
+      migration = null
+      publish()
+      schedule()
+      if (String(error.code).startsWith('CACHE_MIGRATION_')) throw error
+      const reason = error.code === 'ENOSPC' ? '目标磁盘空间不足，请释放空间后重试。' : ['EACCES', 'EPERM', 'EROFS'].includes(error.code) ? '无法写入所选目录，请选择有写入权限的位置。' : '缓存迁移失败，仍使用原目录，请检查磁盘后重试。'
+      throw Object.assign(cacheError('CACHE_MIGRATION_FAILED', reason), { cause: error })
+    }
+  }
+
+  /** Called only after the main process durably saves targetRoot; this phase changes memory only. */
+  function commitMigration() {
+    if (!migration?.published || migration.phase !== 'committing') throw cacheError('CACHE_MIGRATION_STATE', '缓存迁移尚未完成复制校验。')
+    const transaction = migration
+    root = transaction.targetRoot
+    for (const lease of leases.values()) lease.path = filePath(lease.account, lease.file)
+    const deferred = [...deferredDeletes.values()]
+    deferredDeletes.clear()
+    for (const entry of deferred) deferredDeletes.set(filePath(entry.account, entry.file), entry)
+    retiredDirectories.push(transaction)
+    migration = null
+    publish()
+    schedule()
+    return snapshot()
+  }
+
+  /** A failed settings save discards only this transaction's copy and resumes the original queue. */
+  async function rollbackMigration() {
+    if (!migration) return snapshot()
+    const transaction = migration
+    if (transaction.stagingRoot && !await removeMigrationFiles(transaction, transaction.published ? transaction.targetRoot : transaction.stagingRoot)) migrationWarning = { code: 'CACHE_MIGRATION_CLEANUP', message: '迁移未生效，部分临时副本未能清理；原缓存保持可用。' }
+    migration = null
+    publish()
+    schedule()
+    return snapshot()
+  }
+
+  /** The main process waits for reads opened against old paths before requesting source cleanup. */
+  async function finalizeMigration() {
+    for (let index = retiredDirectories.length - 1; index >= 0; index--) {
+      const transaction = retiredDirectories[index]
+      if (await removeMigrationFiles(transaction, transaction.sourceRoot, true)) retiredDirectories.splice(index, 1)
+    }
+    migrationWarning = retiredDirectories.length ? { code: 'CACHE_MIGRATION_CLEANUP', message: '新缓存目录已生效，部分原目录文件被占用或已更改，暂时保留。' } : null
+    publish()
+    return snapshot()
   }
 
   async function configure(settings = {}) {
@@ -749,6 +1015,11 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
 
   async function dispatch(action, payload, requestGeneration) {
     await ready
+    if (action === 'prepareMigration') return prepareMigration(payload)
+    if (action === 'commitMigration') return commitMigration()
+    if (action === 'rollbackMigration') return rollbackMigration()
+    if (action === 'finalizeMigration') return finalizeMigration()
+    if (migration && !['getState', 'stop'].includes(action)) throw cacheError('CACHE_MIGRATION_BUSY', '缓存正在迁移，请等待完成。')
     if (action === 'bootstrap') {
       for (const lease of payload?.leases || []) {
         try { if (filePath(lease.account, lease.file) === lease.path) leases.set(lease.leaseId, lease) } catch { /* Invalid private descriptors are not restored. */ }
@@ -791,7 +1062,7 @@ if (!isMainThread && parentPort) {
         parentPort.postMessage({ id: message.id, type: 'result', result })
         if (message.action === 'stop') parentPort.close()
       } catch (error) {
-        parentPort.postMessage({ id: message.id, type: 'error', error: { code: error.code || 'CACHE_FAILED', message: ['INVALID_SONG', 'INVALID_PLAYLIST', 'INVALID_LYRICS'].includes(error.code) ? error.message : '缓存操作失败，请重试' } })
+        parentPort.postMessage({ id: message.id, type: 'error', error: { code: error.code || 'CACHE_FAILED', message: ['INVALID_SONG', 'INVALID_PLAYLIST', 'INVALID_LYRICS'].includes(error.code) || String(error.code).startsWith('CACHE_MIGRATION_') ? error.message : '缓存操作失败，请重试' } })
       }
     })
   })

@@ -16,7 +16,7 @@ function copyElectronPages() {
     },
     async closeBundle() {
       await mkdir(outputDirectory, { recursive: true })
-      await Promise.all(['loading.html', 'desktopLyric.html'].map(file =>
+      await Promise.all(['loading.html', 'desktopLyric.html', 'islandLyric.html'].map(file =>
         copyFile(path.join(sourceRoot, 'electron', file), path.join(outputDirectory, file))
       ))
     }

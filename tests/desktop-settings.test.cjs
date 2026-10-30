@@ -6,7 +6,7 @@ const vm = require('node:vm')
 const { EventEmitter } = require('node:events')
 
 /** Load real IPC handlers with isolated windows and no OS registration or backend. */
-function desktopFixture() {
+function desktopFixture({ realMain = false } = {}) {
   const ipc = new EventEmitter()
   const handlers = new Map()
   ipc.handle = (channel, handler) => handlers.set(channel, handler)
@@ -26,14 +26,23 @@ function desktopFixture() {
   let writeGate = null
   class Window extends EventEmitter {
     constructor(options = {}) {
-      super(); this.messages = []; this.options = options; this.bounds = { x: options.x, y: options.y, width: options.width, height: options.height }
-      this.destroyed = false; this.shows = 0
-      this.webContents = Object.assign(new EventEmitter(), { mainFrame: {}, send: (...args) => this.messages.push(args) })
+      super(); this.messages = []; this.options = options; this.bounds = { x: options.x ?? 0, y: options.y ?? 0, width: options.width ?? 1280, height: options.height ?? 720 }
+      this.destroyed = false; this.shows = 0; this.visible = options.show !== false
+      this.webContents = Object.assign(new EventEmitter(), { mainFrame: {}, send: (...args) => this.messages.push(args), openDevTools() {} })
       windows.push(this)
     }
     loadFile() { return loadFailure ? Promise.reject(new Error('Missing HTML')) : Promise.resolve() }
+    loadURL() { return Promise.resolve() }
     isDestroyed() { return this.destroyed }
-    show() { this.shows++ }
+    isVisible() { return this.visible }
+    isMinimized() { return this.minimized === true }
+    show() { this.shows++; this.visible = true; this.emit('show') }
+    showInactive() { this.show() }
+    hide() { this.visible = false; this.emit('hide') }
+    minimize() { this.minimized = true; this.emit('minimize') }
+    restore() { this.minimized = false; this.emit('restore') }
+    setOpacity(value) { this.opacity = value }
+    setAlwaysOnTop(value) { this.alwaysOnTop = value }
     getBounds() { return { ...this.bounds } }
     setBounds(bounds) { this.bounds = { ...bounds }; this.emit('resize') }
     setIgnoreMouseEvents(value) { this.ignoresMouse = value }
@@ -50,12 +59,16 @@ function desktopFixture() {
   const silent = Object.fromEntries(['trace', 'warn', 'error', 'info', 'debug'].map(name => [name, () => {}]))
   const sandbox = vm.createContext({
     require(name) {
+      if (name === './services/desktopLyricPolicy') return require('../electron/services/desktopLyricPolicy')
+      if (name === './services/windowsForeground') return require('../electron/services/windowsForeground')
       if (name === 'electron') return { app, BrowserWindow: Window, ipcMain: ipc, screen,
         dialog: { async showMessageBox(options) { dialogs.push(options) } } }
       if (name === './logger') return silent
+      if (name === './services/lyricLibraryService') return { createLyricLibraryService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/playlistCacheService') return { createPlaylistCacheService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/backendService') return { createBackendService: () => ({}) }
       if (name === './settingsStore') return {
+        normalizeDesktopLyrics: require('../electron/settingsStore').normalizeDesktopLyrics,
         getSettings() { if (!initialized) throw new Error('Settings store not initialized'); return snapshot },
         onSettingsChange(callback) { listener = callback; return () => {} },
         async setSettings(patch) {
@@ -72,8 +85,10 @@ function desktopFixture() {
     __dirname: path.resolve(__dirname, '../electron'), process: { platform: 'linux', env: {} }, setTimeout, clearTimeout, setInterval, clearInterval
   })
   vm.runInContext(fs.readFileSync(path.resolve(__dirname, '../electron/main.js'), 'utf8'), sandbox)
-  const api = vm.runInContext('({createDesktopLyricWindow, subscribeToSettingsUpdates, closeDesktopLyricWindow, flushDesktopLyricBounds, getDesktopLyricBounds, runDesktopTrayAction, saveDesktopPreference})', sandbox)
-  const main = new Window()
+  const api = vm.runInContext('({createDesktopLyricWindow, subscribeToSettingsUpdates, closeDesktopLyricWindow, flushDesktopLyricBounds, getDesktopLyricBounds, runDesktopTrayAction, saveDesktopPreference, updateDesktopLyricPolicy})', sandbox)
+  if (realMain) vm.runInContext('createWindow()', sandbox)
+  const main = realMain ? windows[0] : new Window()
+  main.show()
   sandbox.testMain = main
   vm.runInContext('mainWindow = testMain; mainWindowReady = true', sandbox)
   const event = win => ({ sender: win.webContents, senderFrame: win.webContents.mainFrame })
@@ -86,6 +101,78 @@ function desktopFixture() {
     quit() { vm.runInContext('isQuitting = true', sandbox) },
     update(settings) { snapshot = settings; listener?.(snapshot) } }
 }
+
+test('same-display lyric visibility follows hide/minimize/show and clears on document loss, with a strict sender boundary', t => {
+  const fixture = desktopFixture({ realMain: true })
+  t.after(() => fixture.closeDesktopLyricWindow())
+  fixture.ready()
+  fixture.subscribeToSettingsUpdates()
+  fixture.update({ desktopLyrics: { hideOnLyricView: true } })
+  fixture.screen.getDisplayMatching = bounds => ({ id: bounds.x >= 1280 ? 2 : 1, workArea: fixture.screen.area })
+  const win = fixture.open()
+  const tell = (event, value) => fixture.ipc.emit('player:lyric-view-visible', event, value)
+  tell(fixture.event(win), true)
+  tell({ sender: fixture.main.webContents, senderFrame: {} }, true)
+  tell(fixture.mainEvent, 'true')
+  assert.equal(win.visible, true)
+  tell(fixture.mainEvent, true)
+  assert.equal(win.visible, false)
+  fixture.main.hide()
+  assert.equal(win.visible, true)
+  fixture.main.show()
+  assert.equal(win.visible, false)
+  fixture.main.minimize()
+  assert.equal(win.visible, true)
+  fixture.main.restore()
+  assert.equal(win.visible, false)
+  fixture.main.setBounds({ ...fixture.main.getBounds(), x: 1500 })
+  assert.equal(win.visible, true)
+  fixture.main.setBounds({ ...fixture.main.getBounds(), x: 0 })
+  assert.equal(win.visible, false)
+  fixture.main.webContents.emit('did-start-navigation', {}, '/reload', false, true)
+  assert.equal(win.visible, true)
+  tell(fixture.mainEvent, true)
+  assert.equal(win.visible, false)
+  fixture.main.webContents.emit('render-process-gone')
+  assert.equal(win.visible, true)
+  tell(fixture.mainEvent, true)
+  fixture.main.destroy()
+  assert.equal(win.visible, true)
+  assert.deepEqual(win.messages.filter(([channel]) => channel === 'desktop-lyric:runtime-state').map(([, value]) => value.hidden),
+    [false, true, false, true, false, true, false, true, false, true, false, true, false])
+})
+
+test('native opacity, paused hiding and hotspot click-through react to committed settings without persisting runtime state', t => {
+  const fixture = desktopFixture()
+  t.after(() => fixture.closeDesktopLyricWindow())
+  fixture.ready()
+  fixture.subscribeToSettingsUpdates()
+  const settings = { desktopLyrics: { locked: true, hoverFade: true, hoverOpacity: 0, opacity: 70, autoHidePaused: true, alwaysOnTop: false } }
+  fixture.update(settings)
+  const win = fixture.open()
+  assert.equal(win.visible, false)
+  assert.equal(win.alwaysOnTop, false)
+  fixture.ipc.emit('player:playback-state', fixture.mainEvent, 'playing')
+  assert.equal(win.visible, true)
+  assert.equal(win.opacity, 0.7)
+  const bounds = win.getBounds()
+  fixture.screen.point = { x: bounds.x + 100, y: bounds.y + 100 }
+  fixture.updateDesktopLyricPolicy()
+  assert.equal(win.opacity, 0)
+  assert.equal(win.ignoresMouse, true)
+  fixture.screen.point = { x: bounds.x + bounds.width - 30, y: bounds.y + 20 }
+  fixture.updateDesktopLyricPolicy()
+  assert.equal(win.opacity, 0.2)
+  assert.equal(win.ignoresMouse, false)
+  fixture.update({ desktopLyrics: { ...settings.desktopLyrics, hideUnlockButton: true } })
+  assert.equal(win.ignoresMouse, true)
+  fixture.screen.point = { x: bounds.x - 1, y: bounds.y }
+  fixture.updateDesktopLyricPolicy()
+  assert.equal(win.opacity, 0.7)
+  fixture.ipc.emit('player:playback-state', fixture.mainEvent, 'paused')
+  assert.equal(win.visible, false)
+  assert.equal(fixture.writes.length, 0)
+})
 
 test('desktop lyrics tolerate early opening and replay the current lyrics, position and committed preferences', async () => {
   const fixture = desktopFixture()
@@ -101,7 +188,8 @@ test('desktop lyrics tolerate early opening and replay the current lyrics, posit
   fixture.subscribeToSettingsUpdates()
   fixture.update({ desktopLyrics: { fontSize: 'large', theme: 'gradient', locked: false } })
   const display = win.messages.filter(([channel]) => channel === 'desktop-lyric:settings-update').at(-1)[1]
-  assert.deepEqual(JSON.parse(JSON.stringify(display)), { fontSize: 'large', theme: 'gradient', locked: false, showTranslation: true })
+  const { bounds: _bounds, ...expected } = require('../electron/settingsStore').normalizeDesktopLyrics({ fontSize: 'large', theme: 'gradient', locked: false })
+  assert.deepEqual(JSON.parse(JSON.stringify(display)), { ...expected, showTranslation: true })
   await fixture.handlers.get('desktop-lyric:size-changed')({ sender: {} }, 'small')
   await fixture.invoke('desktop-lyric:size-changed', win, 'huge')
   await fixture.invoke('desktop-lyric:theme-changed', win, { theme: 'minimal' })
@@ -119,7 +207,7 @@ test('translation preferences immediately update an already mounted lyric view',
   const source = fs.readFileSync(path.resolve(__dirname, '../src/components/player/LyricView.js'), 'utf8')
     .replace(/^import\b[\s\S]*?from\s+['"][^'"]+['"]\s*;?\s*$/gm, '')
     .replace('export default', 'module.exports =')
-  const sandbox = { module: { exports: {} }, ContextMenu: {}, ArtistLinks: {}, ArtworkCover: {} }
+  const sandbox = { module: { exports: {} }, ContextMenu: {}, VolumeControl: {}, ArtistLinks: {}, ArtworkCover: {} }
   vm.runInNewContext(source, sandbox)
   let measured = 0
   const lyric = { showTranslation: true, styleCache: new Map([['line', 'cached']]), handleLongLyric() { measured++ } }

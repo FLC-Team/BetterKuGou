@@ -1,14 +1,15 @@
 <template>
-  <div class="music-player" :class="{ 'player-style-netease': playerStyle === 'netease', 'player-ready': Boolean(currentSong) }">
+  <div class="music-player" :class="{ 'player-style-netease': playerStyle === 'netease', 'player-ready': Boolean(barSong), 'player-loading': isSongPending }">
     <!-- 默认样式：进度条在顶部 -->
     <div v-if="playerStyle !== 'netease'" class="progress-bar-container">
       <input 
         type="range" 
         class="progress-bar" 
-        :style="{ '--progress': progressPercent + '%' }"
+        :style="{ '--progress': (barSongIsUnconfirmed ? 0 : progressPercent) + '%' }"
         min="0" 
-        :max="duration"
-        :value="displayPlayTime"
+        :max="barSongIsUnconfirmed ? 0 : duration"
+        :disabled="barSongIsUnconfirmed || isSongPending"
+        :value="barSongIsUnconfirmed ? 0 : displayPlayTime"
         @input="handleProgressDrag"
         @change="handleProgressChange"
         @pointercancel="cancelProgressDrag"
@@ -18,44 +19,47 @@
     </div>
 
     <!-- 播放器主体 -->
-    <div class="player-main" :class="{ 'isPlaying': isPlaying }" v-if="currentSong">
+    <div class="player-main" :class="{ 'isPlaying': isPlaying }" v-if="barSong">
       <!-- 左侧：歌曲信息 -->
-      <div class="song-info-section" :data-motion="trackTransition">
+      <div class="song-info-section" :data-motion="barTrackTransition">
         <button
           type="button"
           class="song-cover-button"
           @click="showLyrics"
+          :disabled="barSongIsUnconfirmed"
           title="点击查看歌词"
-          :aria-label="`查看 ${getSongName(currentSong.name)} 的歌词`"
+          :aria-label="`查看 ${getSongName(barSong.name || barSong.filename || barSong.songname || barSong.audio_name)} 的歌词`"
         >
           <Transition name="song-meta">
-            <span :key="currentSong.hash" class="song-cover-frame">
-              <ArtworkCover :src="currentSong.cover" loading="eager" class="song-cover" />
+            <span :key="barSong.hash" class="song-cover-frame">
+              <ArtworkCover :src="barSong.cover" loading="eager" class="song-cover" />
             </span>
           </Transition>
+          <span v-if="isSongPending" class="song-cover-loading" aria-hidden="true"><span class="song-loading-spinner"></span></span>
         </button>
         <div class="song-details">
           <div class="song-text-viewport song-title-viewport">
             <Transition name="song-meta" @before-enter="setSongTitleInteractivity($event, true)" @before-leave="setSongTitleInteractivity($event, false)">
-              <button :key="currentSong.hash" type="button" class="song-name" :title="`搜索 ${getSongName(currentSong.name)}`" :aria-label="`搜索 ${getSongName(currentSong.name)}`" @click.stop="searchSong(currentSong)">{{ getSongName(currentSong.name) }}</button>
+              <button :key="barSong.hash" type="button" class="song-name" :title="`搜索 ${getSongName(barSong.name || barSong.filename || barSong.songname || barSong.audio_name)}`" :aria-label="`搜索 ${getSongName(barSong.name || barSong.filename || barSong.songname || barSong.audio_name)}`" @click.stop="searchSong(barSong)">{{ getSongName(barSong.name || barSong.filename || barSong.songname || barSong.audio_name) }}</button>
             </Transition>
           </div>
           <div class="song-text-viewport song-artist-viewport">
             <Transition name="song-meta" @before-enter="setSongTitleInteractivity($event, true)" @before-leave="setSongTitleInteractivity($event, false)">
-              <div :key="currentSong.hash" class="song-artist"><ArtistLinks :song="currentSong" compact @select="openArtist" /></div>
+              <div :key="barSong.hash" class="song-artist"><ArtistLinks :song="barSong" compact @select="openArtist" /></div>
             </Transition>
           </div>
+          <div v-if="isSongPending" class="song-load-status" role="status" aria-live="polite">{{ songLoadingText }}</div>
         </div>
-        <button class="icon-btn favorite-btn" :class="{ active: isFavorite }" @click="toggleFavorite">
+        <button class="icon-btn favorite-btn" :class="{ active: !barSongIsUnconfirmed && isFavorite }" :disabled="barSongIsUnconfirmed" @click="toggleFavorite">
           <svg viewBox="0 0 1024 1024" width="18" height="18" fill="currentColor">
             <path d="M923 283.6a260.04 260.04 0 00-56.9-82.8 264.4 264.4 0 00-84-55.5A265.34 265.34 0 00679.7 125c-49.3 0-97.4 13.5-139.2 39-10 6.1-19.5 12.8-28.5 20.1-9-7.3-18.5-14-28.5-20.1-41.8-25.5-89.9-39-139.2-39-35.5 0-69.9 6.8-102.4 20.3-31.4 13-59.7 31.7-84 55.5a258.44 258.44 0 00-56.9 82.8c-13.9 32.3-21 66.6-21 101.9 0 33.3 6.8 68 20.3 103.3 11.3 29.5 27.5 60.1 48.2 91 32.8 48.9 77.9 99.9 133.9 151.6 92.8 85.7 184.7 144.9 188.6 147.3l23.7 15.2c10.5 6.7 24 6.7 34.5 0l23.7-15.2c3.9-2.5 95.7-61.6 188.6-147.3 56-51.7 101.1-102.7 133.9-151.6 20.7-30.9 37-61.5 48.2-91 13.5-35.3 20.3-70 20.3-103.3.1-35.3-7-69.6-20.9-101.9z"/>
           </svg>
         </button>
         <!-- 默认样式：时间信息在这里 -->
         <div v-if="playerStyle !== 'netease'" class="time-info">
-          <span class="current-time">{{ formatTime(displayPlayTime) }}</span>
+          <span class="current-time">{{ barSongIsUnconfirmed ? '--:--' : formatTime(displayPlayTime) }}</span>
           <span class="separator">/</span>
-          <span class="total-time">{{ formatTime(duration) }}</span>
+          <span class="total-time">{{ barSongIsUnconfirmed ? '--:--' : formatTime(duration) }}</span>
         </div>
       </div>
 
@@ -63,7 +67,7 @@
       <div class="player-controls-section">
         <!-- 网易云样式：收藏和播放模式按钮与控制按钮在一起 -->
         <div v-if="playerStyle === 'netease'" class="control-buttons netease-controls">
-          <button class="icon-btn favorite-btn" :class="{ active: isFavorite }" @click="toggleFavorite">
+          <button class="icon-btn favorite-btn" :class="{ active: !barSongIsUnconfirmed && isFavorite }" :disabled="barSongIsUnconfirmed" @click="toggleFavorite">
             <svg viewBox="0 0 1024 1024" width="18" height="18" fill="currentColor">
               <path d="M923 283.6a260.04 260.04 0 00-56.9-82.8 264.4 264.4 0 00-84-55.5A265.34 265.34 0 00679.7 125c-49.3 0-97.4 13.5-139.2 39-10 6.1-19.5 12.8-28.5 20.1-9-7.3-18.5-14-28.5-20.1-41.8-25.5-89.9-39-139.2-39-35.5 0-69.9 6.8-102.4 20.3-31.4 13-59.7 31.7-84 55.5a258.44 258.44 0 00-56.9 82.8c-13.9 32.3-21 66.6-21 101.9 0 33.3 6.8 68 20.3 103.3 11.3 29.5 27.5 60.1 48.2 91 32.8 48.9 77.9 99.9 133.9 151.6 92.8 85.7 184.7 144.9 188.6 147.3l23.7 15.2c10.5 6.7 24 6.7 34.5 0l23.7-15.2c3.9-2.5 95.7-61.6 188.6-147.3 56-51.7 101.1-102.7 133.9-151.6 20.7-30.9 37-61.5 48.2-91 13.5-35.3 20.3-70 20.3-103.3.1-35.3-7-69.6-20.9-101.9z"/>
             </svg>
@@ -75,7 +79,7 @@
             </svg>
           </button>
           
-          <button class="control-btn play-btn" @click="togglePlay" :aria-label="isPlaying ? '暂停' : '播放'" :aria-pressed="isPlaying">
+          <button class="control-btn play-btn" :disabled="!currentSong" @click="togglePlay" :aria-label="isPlaying ? '暂停' : '播放'" :aria-pressed="isPlaying" :aria-busy="isSongPending">
             <span class="control-state-stage" aria-hidden="true"><Transition name="control-state"><span :key="isPlaying" class="control-state-icon"><svg v-if="isPlaying" viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor">
               <path d="M304 176h80v672h-80zm336 0h80v672h-80z"/>
             </svg>
@@ -110,7 +114,7 @@
             </svg>
           </button>
           
-          <button class="control-btn play-btn" @click="togglePlay" :aria-label="isPlaying ? '暂停' : '播放'" :aria-pressed="isPlaying">
+          <button class="control-btn play-btn" :disabled="!currentSong" @click="togglePlay" :aria-label="isPlaying ? '暂停' : '播放'" :aria-pressed="isPlaying" :aria-busy="isSongPending">
             <span class="control-state-stage" aria-hidden="true"><Transition name="control-state"><span :key="isPlaying" class="control-state-icon"><svg v-if="isPlaying" viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor">
               <path d="M304 176h80v672h-80zm336 0h80v672h-80z"/>
             </svg>
@@ -128,15 +132,16 @@
         
         <!-- 网易云样式：进度条在播放按钮下方 -->
         <div v-if="playerStyle === 'netease'" class="netease-progress-wrapper">
-          <span class="time-text">{{ formatTime(displayPlayTime) }}</span>
+          <span class="time-text">{{ barSongIsUnconfirmed ? '--:--' : formatTime(displayPlayTime) }}</span>
           <div class="progress-bar-container">
             <input 
               type="range" 
               class="progress-bar" 
-              :style="{ '--progress': progressPercent + '%' }"
+              :style="{ '--progress': (barSongIsUnconfirmed ? 0 : progressPercent) + '%' }"
               min="0" 
-              :max="duration"
-              :value="displayPlayTime"
+              :max="barSongIsUnconfirmed ? 0 : duration"
+              :disabled="barSongIsUnconfirmed || isSongPending"
+              :value="barSongIsUnconfirmed ? 0 : displayPlayTime"
               @input="handleProgressDrag"
               @change="handleProgressChange"
               @pointercancel="cancelProgressDrag"
@@ -144,16 +149,18 @@
               @keydown.esc.stop.prevent="cancelProgressDrag"
             />
           </div>
-          <span class="time-text">{{ formatTime(duration - displayPlayTime) }}</span>
+          <span class="time-text">{{ barSongIsUnconfirmed ? '--:--' : formatTime(duration - displayPlayTime) }}</span>
         </div>
       </div>
 
       <!-- 右侧:音量和其他控制 -->
       <div class="player-extras-section">
         <div class="quality-control" :title="`音质偏好，${qualityStatus}；可用音质取决于歌曲与账号权限`">
-          <select aria-label="音质偏好" :value="qualityPreference" @change="changeQuality($event.target.value)" @keydown.stop>
-            <option v-for="option in qualityOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-          </select>
+          <AnimatedSelect class="quality-select" :model-value="qualityPreference"
+                          :options="qualityDropdownOptions" label="音质偏好" placement="top"
+                          :busy="loadingQualityChange || Boolean(pendingSongOptions?.qualityChange)"
+                          :status="qualityStatus" note="可用音质取决于歌曲与账号权限；同档重选可重试"
+                          @change="changeQuality" />
           <span class="quality-current" role="status">{{ qualityStatus }}</span>
         </div>
         <!-- 默认样式：显示播放模式按钮 -->
@@ -169,22 +176,8 @@
           <img v-else :src="shuffleIcon" alt="随机播放" width="18" height="18" /></span></Transition></span>
         </button>
 
-        <div class="volume-control">
-          <button class="icon-btn" @click="toggleMute" :aria-label="isMuted || volume === 0 ? '取消静音' : '静音'" :aria-pressed="isMuted || volume === 0">
-            <span class="control-state-stage" aria-hidden="true"><Transition name="control-state"><span :key="isMuted || volume === 0 ? 0 : volume <= 30 ? 1 : volume <= 60 ? 2 : 3" class="control-state-icon"><img v-if="isMuted || volume === 0" :src="sound0Icon" alt="静音" width="18" height="18" />
-            <img v-else-if="volume <= 30" :src="sound1Icon" alt="音量低" width="18" height="18" />
-            <img v-else-if="volume <= 60" :src="sound2Icon" alt="音量中" width="18" height="18" />
-            <img v-else :src="sound3Icon" alt="音量高" width="18" height="18" /></span></Transition></span>
-          </button>
-          <input 
-            type="range" 
-            class="volume-slider" 
-            min="0" 
-            max="100" 
-            v-model="volume"
-            @input="handleVolumeChange"
-          />
-        </div>
+        <VolumeControl :volume="volume" :is-muted="isMuted" :active="!showLyricView"
+                       @change="handleVolumeChange" @toggle-mute="toggleMute" />
 
         <button class="icon-btn" @click="togglePlaylist" title="播放列表">
           <img :src="playlistIcon" alt="播放列表" width="18" height="18" />
@@ -192,11 +185,19 @@
       </div>
     </div>
 
-    <Transition name="player-feedback" @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')"><div v-if="qualityFeedback" class="quality-feedback" role="status" :aria-busy="loadingQualityChange || Boolean(pendingSongOptions?.qualityChange)">
+    <Transition name="player-feedback" @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')"><div v-if="qualityFeedback && !songLoadError" class="quality-feedback" role="status" :aria-busy="loadingQualityChange || Boolean(pendingSongOptions?.qualityChange)">
       <span>{{ qualityFeedback }}</span>
       <button type="button" :disabled="loadingQualityChange || Boolean(pendingSongOptions?.qualityChange)" @click="retryQualityChange">{{ loadingQualityChange || pendingSongOptions?.qualityChange ? '切换中…' : '重试' }}</button>
       <button type="button" aria-label="关闭音质提示" @click="qualityMessage = ''; qualitySaveMessage = ''">×</button>
     </div></Transition>
+
+    <Transition name="player-feedback" @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')">
+      <div v-if="songLoadError" class="quality-feedback song-load-error" role="alert">
+        <span>{{ songLoadError }}</span>
+        <button type="button" :disabled="isSongPending" @click="retrySongLoad">{{ isSongPending ? '加载中…' : '重试' }}</button>
+        <button type="button" aria-label="关闭加载提示" @click="songLoadError = ''">×</button>
+      </div>
+    </Transition>
 
     <!-- 音频元素 -->
     <audio 
@@ -245,14 +246,16 @@
           :visible="showLyricView"
           :song="currentSong"
           :track-transition="trackTransition"
-          :lyrics="currentLyrics"
+          :lyrics="displayLyric.content"
           :lyrics-interactive="!isLyricPlaceholder"
-          :lyric-data="currentLyricData"
+          :lyric-data="displayLyric.rawData"
           :current-play-time="currentTime"
           :read-playback-time="getAnimationPlaybackTime"
           :preview-time="seekPreviewTime"
           :duration="duration"
           :is-playing="isPlaying"
+          :volume="volume"
+          :is-muted="isMuted"
           :play-mode="playMode"
           :is-favorite="isFavorite"
           :pause-updates="isLoadingSong || isSwitchingSong"
@@ -263,6 +266,8 @@
           :quality-switching="loadingQualityChange || Boolean(pendingSongOptions?.qualityChange)"
           @close="closeLyrics"
           @toggle-play="togglePlay"
+          @change-volume="handleVolumeChange"
+          @toggle-mute="toggleMute"
           @previous="playPrevious"
           @next="playNext"
           @toggle-play-mode="cyclePlayMode"

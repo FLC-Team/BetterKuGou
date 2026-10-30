@@ -19,6 +19,21 @@ function loadBridge() {
   return { exposed, ipc, sent, invoked }
 }
 
+test('lyric overlay visibility is a fixed boolean report and native runtime subscriptions release without leaking IPC events', () => {
+  const { exposed, sent, ipc } = loadBridge()
+  for (const value of [null, undefined, 'true', 1, {}, []]) exposed.electronAPI.setLyricViewVisible(value)
+  assert.equal(sent.length, 0)
+  exposed.electronAPI.setLyricViewVisible(true)
+  exposed.electronAPI.setLyricViewVisible(false)
+  assert.deepEqual(sent, [['player:lyric-view-visible', true], ['player:lyric-view-visible', false]])
+  const values = []
+  const dispose = exposed.desktopLyricAPI.onRuntimeState((...args) => values.push(args))
+  ipc.emit('desktop-lyric:runtime-state', { sender: 'private event' }, { hidden: true })
+  assert.deepEqual(values, [[{ hidden: true }]])
+  dispose()
+  assert.equal(ipc.listenerCount('desktop-lyric:runtime-state'), 0)
+})
+
 test('window and auxiliary subscriptions hide Electron events and release only their own listener', () => {
   const { exposed, ipc } = loadBridge()
   let calls = 0

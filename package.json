@@ -1,7 +1,7 @@
 {
   "name": "betterkugou",
   "private": true,
-  "version": "0.1.9",
+  "version": "0.2.0",
   "description": "BetterKuGou",
   "author": "鸢夏 <1925019494@qq.com>",
   "main": "electron/main.js",
@@ -118,6 +118,7 @@
   },
   "dependencies": {
     "axios": "^1.7.9",
+    "opencc-js": "1.4.2",
     "postcss": "8.5.6",
     "vue": "^3.5.12"
   },

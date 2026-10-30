@@ -11,6 +11,13 @@ const flush = async () => {
   for (let count = 0; count < 4; count++) await new Promise(resolve => setImmediate(resolve))
 }
 const song = hash => ({ hash, name: hash, album_audio_id: 1 })
+let lyricConversion
+test.before(async () => {
+  const [core, simplified, traditional] = await Promise.all([
+    import('opencc-js/core'), import('opencc-js/to/cn'), import('opencc-js/from/cn')
+  ])
+  lyricConversion = { ConverterFactory: core.ConverterFactory, simplifiedDictionaries: simplified.default, traditionalDictionaries: traditional.default }
+})
 
 function deferred() {
   let resolve
@@ -39,7 +46,8 @@ function loadComponent(filename, overrides = {}) {
   const sandbox = {
     console: quietLogger, logger: quietLogger,
     process: { env: { NODE_ENV: 'test' } }, performance,
-    setTimeout, clearTimeout, setInterval, clearInterval, structuredClone, AbortController, atob, TextDecoder,
+    setTimeout, clearTimeout, setInterval, clearInterval, structuredClone, AbortController, atob, btoa, TextDecoder, TextEncoder,
+    ...lyricConversion,
     requestAnimationFrame: () => 1, cancelAnimationFrame: () => {},
     computed: () => null,
     navigator: { mediaSession: { setActionHandler: (name, callback) => actions.set(name, callback) } },
@@ -52,7 +60,7 @@ function loadComponent(filename, overrides = {}) {
     getPlaylistCacheAPI: () => sandbox.window.electronAPI?.playlistCache || null,
     waitForPlaylistCacheSession: async () => sandbox.window.electronAPI?.playlistCache || null,
     getPlaylistCacheSessionVersion: () => 0,
-    PlaylistDrawer: {}, ContextMenu: {}, LyricView: {}, ArtworkCover: {}, TransitionGroup: {}, SongBadges: {}, ArtistLinks: {},
+    PlaylistDrawer: {}, ContextMenu: {}, AnimatedSelect: {}, LyricView: {}, VolumeControl: {}, ArtworkCover: {}, TransitionGroup: {}, SongBadges: {}, ArtistLinks: {},
     contextMenuManager: menuManager,
     useSettingsStore: () => ({ settings: { playback: { quality: '128' }, custom: {} }, async updateSettings() {} }),
     ...Object.fromEntries(['playlistIcon', 'repeatAllIcon', 'repeatOneIcon', 'shuffleIcon',
@@ -69,8 +77,9 @@ function loadComponent(filename, overrides = {}) {
   const qualitySource = fs.readFileSync(path.join(playerDirectory, '..', '..', 'utils', 'playbackQuality.js'), 'utf8')
     .replace(/\bexport (?=(?:function|const))/g, '')
   vm.runInContext(qualitySource, sandbox)
-  for (const filename of ['songMetadata.js', 'desktopLyrics.js']) {
+  for (const filename of ['songMetadata.js', 'desktopLyrics.js', 'lyricProcessing.js']) {
     const utility = fs.readFileSync(path.join(playerDirectory, '..', '..', 'utils', filename), 'utf8')
+      .replace(/^import[^\n]*\n/gm, '')
       .replace(/\bexport (?=(?:function|const))/g, '')
     vm.runInContext(utility, sandbox)
   }
@@ -1441,6 +1450,7 @@ test('previous restarts the confirmed source in the final ten seconds across mod
         const { player, audio, emitted } = createPlayer(t, {
           getSongUrl: async hash => { requests++; return { status: 1, url: `https://example.test/${hash}.mp3` } }
         })
+        player.settingsStore.settings.playback.restartOnPreviousNearEnd = true
         player.playlist = ['A', 'B', 'C'].map(song)
         await player.requestSong(player.playlist[1])
         await flush()
@@ -1479,9 +1489,53 @@ test('previous restarts the confirmed source in the final ten seconds across mod
   }
 })
 
+test('previous navigates normally near the end unless restart is explicitly enabled', async t => {
+  for (const enabled of [undefined, false, 'true', 1]) {
+    for (const mode of ['loop', 'single', 'shuffle']) {
+      for (const paused of [false, true]) {
+        const { player, audio } = createPlayer(t)
+        if (enabled !== undefined) player.settingsStore.settings.playback.restartOnPreviousNearEnd = enabled
+        player.playlist = ['A', 'B', 'C'].map(song)
+        await player.requestSong(player.playlist[1])
+        player.playMode = mode
+        player.shuffledPlaylist = [...player.playlist]
+        audio.currentTime = 175
+        if (paused) audio.pause()
+
+        await player.playPrevious()
+
+        assert.equal(player.currentSong.hash, 'A', `${enabled}/${mode}/${paused}`)
+        assert.equal(player.currentIndex, 0)
+        assert.equal(audio.src, 'https://example.test/A.mp3')
+        assert.equal(audio.paused, false)
+      }
+    }
+  }
+})
+
+test('changing the restart preference takes effect on the next previous action without remounting', async t => {
+  let requests = 0
+  const { player, audio } = createPlayer(t, {
+    getSongUrl: async hash => { requests++; return { status: 1, url: `https://example.test/${hash}.mp3` } }
+  })
+  player.playlist = ['A', 'B', 'C'].map(song)
+  await player.requestSong(player.playlist[1])
+  for (const [enabled, expectedHash, expectedRequests] of [
+    [false, 'A', 2], [true, 'A', 2], [false, 'C', 3], [true, 'C', 3]
+  ]) {
+    player.settingsStore.settings.playback.restartOnPreviousNearEnd = enabled
+    audio.currentTime = 175
+    await player.playPrevious()
+    assert.equal(player.currentSong.hash, expectedHash)
+    assert.equal(requests, expectedRequests)
+    if (enabled) assert.equal(audio.currentTime, 0)
+  }
+})
+
 test('previous keeps normal navigation outside the real final ten seconds or with unknown duration', async t => {
   for (const [duration, time] of [[180, 169.999], [0, 0], [NaN, 175], [Infinity, 175], [180, NaN], [180, 181]]) {
     const { player, audio } = createPlayer(t)
+    player.settingsStore.settings.playback.restartOnPreviousNearEnd = true
     player.playlist = ['A', 'B', 'C'].map(song)
     await player.requestSong(player.playlist[1])
     player.duration = 180
@@ -1495,6 +1549,7 @@ test('previous keeps normal navigation outside the real final ten seconds or wit
 
 test('previous on a short track follows the same remaining-time rule and a second press navigates after a normal restart', async t => {
   const { player, audio } = createPlayer(t)
+  player.settingsStore.settings.playback.restartOnPreviousNearEnd = true
   player.playlist = ['A', 'B'].map(song)
   await player.requestSong(player.playlist[1])
   audio.duration = 8
@@ -1514,6 +1569,7 @@ test('restart playback failure and cancellation retain the confirmed track and c
   for (const action of ['failure', 'stop', 'selection', 'previous']) {
     const gate = deferred()
     const { player, audio } = createPlayer(t)
+    player.settingsStore.settings.playback.restartOnPreviousNearEnd = true
     player.playlist = ['A', 'B', 'C'].map(song)
     await player.requestSong(player.playlist[1])
     audio.currentTime = 175
@@ -1552,6 +1608,7 @@ test('a previous request during another song load navigates from that target wit
   const { player, audio } = createPlayer(t, {
     getSongUrl: hash => hash === 'B' ? waiting.promise : Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` })
   })
+  player.settingsStore.settings.playback.restartOnPreviousNearEnd = true
   player.playlist = ['A', 'B', 'C'].map(song)
   await player.requestSong(player.playlist[0])
   audio.currentTime = 175
@@ -1573,6 +1630,7 @@ test('an old ended event cannot advance a restarted source while its asynchronou
     const { player, audio } = createPlayer(t, {
       getSongUrl: async hash => { requests++; return { status: 1, url: `https://example.test/${hash}.mp3` } }
     })
+    player.settingsStore.settings.playback.restartOnPreviousNearEnd = true
     player.playlist = ['A', 'B', 'C'].map(song)
     await player.requestSong(player.playlist[0])
     player.playMode = mode
@@ -1760,6 +1818,101 @@ test('volume adjustment keeps mute UI and the audio element consistent', t => {
   assert.equal(audio.muted, true)
 })
 
+test('numeric volume input updates the audio and storage while zero-volume unmute restores the last audible level', t => {
+  const stored = new Map()
+  const { player, audio } = createPlayer(t, {
+    localStorage: { getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, String(value)) }
+  })
+  player.handleVolumeChange(37)
+  assert.equal(player.volume, 37)
+  assert.equal(audio.volume, .37)
+  assert.equal(audio.muted, false)
+  assert.equal(stored.get('player_volume'), '37')
+  player.handleVolumeChange(0)
+  assert.equal(audio.volume, 0)
+  assert.equal(audio.muted, true)
+  player.toggleMute()
+  assert.equal(player.volume, 37)
+  assert.equal(audio.volume, .37)
+  assert.equal(audio.muted, false)
+  assert.equal(stored.get('player_volume'), '37')
+  player.toggleMute()
+  assert.equal(audio.muted, true)
+  assert.equal(player.volume, 37)
+  player.toggleMute()
+  assert.equal(audio.muted, false)
+  assert.equal(audio.volume, .37)
+})
+
+test('volume commits clamp finite inputs and ignore invalid or disposed updates', t => {
+  const { player, audio, component } = createPlayer(t)
+  player.handleVolumeChange(150)
+  assert.equal(player.volume, 100)
+  assert.equal(audio.volume, 1)
+  for (const value of [NaN, Infinity, -Infinity, 'not-a-number', '', ' ', null]) {
+    player.handleVolumeChange(value)
+    assert.equal(player.volume, 100)
+    assert.equal(audio.volume, 1)
+  }
+  player.handleVolumeChange(-20)
+  assert.equal(player.volume, 0)
+  assert.equal(audio.volume, 0)
+  assert.equal(audio.muted, true)
+  component.beforeUnmount.call(player)
+  player.handleVolumeChange(65)
+  assert.equal(audio.volume, 0)
+})
+
+test('production player and lyric templates forward both volume controls to the same audio handler', t => {
+  const { compile } = require('@vue/compiler-dom')
+  const vue = require('vue')
+  const renderTemplate = (file, context) => {
+    const template = fs.readFileSync(path.join(playerDirectory, file), 'utf8')
+      .match(/^<template>([\s\S]*)<\/template>\s*<script/m)[1]
+    const render = new Function('Vue', compile(template, { mode: 'function' }).code)({
+      ...vue, resolveComponent: name => name, withCtx: value => value
+    })
+    const visit = vnode => {
+      if (Array.isArray(vnode)) return vnode.flatMap(visit)
+      if (!vnode || typeof vnode !== 'object') return []
+      return [vnode, ...visit(Array.isArray(vnode.children) ? vnode.children : vnode.children?.default?.())]
+    }
+    return visit(render(context, []))
+  }
+  const { player, audio } = createPlayer(t)
+  player.playerStyle = 'default'
+  player.currentSong = song('A')
+  player.showLyricView = true
+  let nodes = renderTemplate('MusicPlayer.vue', player)
+  const bottom = nodes.find(node => node.type === 'VolumeControl')
+  const fullscreen = nodes.find(node => node.type === 'LyricView')
+  assert.equal(bottom.props.active, false)
+  assert.equal(fullscreen.props.volume, player.volume)
+  bottom.props.onChange(23)
+  assert.equal(audio.volume, .23)
+  fullscreen.props.onChangeVolume(48)
+  assert.equal(audio.volume, .48)
+  fullscreen.props.onToggleMute()
+  assert.equal(audio.muted, true)
+  nodes = renderTemplate('MusicPlayer.vue', player)
+  assert.equal(nodes.find(node => node.type === 'VolumeControl').props.volume, 48)
+  assert.equal(nodes.find(node => node.type === 'LyricView').props['is-muted'], true)
+
+  const { lyric, emitted, component } = createLyric(t)
+  for (const [name, definition] of Object.entries(component.props)) {
+    if (!(name in lyric)) lyric[name] = typeof definition.default === 'function' ? definition.default() : definition.default
+  }
+  lyric.volume = 48
+  lyric.isMuted = true
+  const lyricVolume = renderTemplate('LyricView.vue', lyric).find(node => node.type === 'VolumeControl')
+  assert.equal(lyricVolume.props.variant, 'lyric')
+  assert.equal(lyricVolume.props.volume, 48)
+  assert.equal(lyricVolume.props['is-muted'], true)
+  lyricVolume.props.onChange(29)
+  lyricVolume.props.onToggleMute()
+  assert.deepEqual(emitted.slice(-2), [{ name: 'change-volume', value: 29 }, { name: 'toggle-mute', value: undefined }])
+})
+
 test('media actions are idempotent and all callbacks are released on unmount', async t => {
   const { component, player, audio, actions } = createPlayer(t)
   audio.src = 'https://example.test/A.mp3'
@@ -1820,6 +1973,27 @@ test('an old lyric exit cannot reset the title bar after reopening or unmount', 
   component.beforeUnmount.call(player)
   player.handleLyricsHidden()
   assert.equal(emitted.length, 0)
+})
+
+test('desktop visibility follows committed fullscreen lyric entrance and completed exit', async t => {
+  const { component, player, sandbox } = createPlayer(t)
+  const visibility = []
+  sandbox.window.electronAPI = { setLyricViewVisible: value => visibility.push(value) }
+  player.currentSong = song('A')
+  player.currentLyrics = '[00:00.00]A'
+  await player.showLyrics()
+  assert.deepEqual(visibility, [true])
+  player.closeLyrics()
+  assert.deepEqual(visibility, [true], 'desktop remains hidden while the fullscreen layer is leaving')
+  await player.showLyrics()
+  player.handleLyricsHidden()
+  assert.deepEqual(visibility, [true, true], 'a retired exit cannot reveal desktop lyrics over the reopened view')
+  player.closeLyrics()
+  player.handleLyricsHidden()
+  assert.equal(visibility.at(-1), false)
+  await player.showLyrics()
+  component.beforeUnmount.call(player)
+  assert.equal(visibility.at(-1), false, 'unmount releases fullscreen suppression even without a transition callback')
 })
 
 test('closing while lyrics load prevents a late response from reopening the view', async t => {
@@ -3807,6 +3981,7 @@ test('desktop publishes confirmed song identities and translations, then clears 
 
 test('desktop paused startup and same-song restart send their exact positions without awaiting another timeupdate', async t => {
   const { component, player, audio, sandbox } = createPlayer(t)
+  player.settingsStore.settings.playback.restartOnPreviousNearEnd = true
   qualityAudio(audio, player)
   const times = []
   sandbox.window.electronAPI = { updatePlaybackTime: (time, meta) => times.push({ time, ...meta }) }
@@ -3883,4 +4058,234 @@ test('desktop clock metadata follows readiness, waiting, seeks, rate and confirm
   audio.currentTime = 0
   player.handleDesktopClockChange({ type: 'playing' })
   assert.equal(samples.length, count, 'a candidate or restoring source cannot replace the confirmed desktop anchor')
+})
+
+// Bottom-bar loading feedback must never commit a candidate as the active audio.
+test('bottom bar previews the first selection before its address or audio is ready', async t => {
+  const address = deferred()
+  const { player, audio } = createPlayer(t, { getSongUrl: () => address.promise })
+  const selected = song('first')
+  const loading = player.requestSong(selected)
+  assert.equal(player.barSong, selected)
+  assert.equal(player.isSongPending, true)
+  assert.equal(player.barSongIsUnconfirmed, true)
+  assert.match(player.songLoadingText, /获取音源/)
+  assert.equal(player.currentSong, null)
+  assert.equal(player.getPlaybackSnapshot(), null)
+  assert.equal(player.qualityStatus, '音源加载中…')
+  const playing = deferred()
+  audio.play = () => playing.promise
+  address.resolve({ status: 1, url: 'https://example.test/first.mp3' })
+  await flush()
+  assert.match(player.songLoadingText, /缓冲/)
+  assert.equal(player.currentSong, null)
+  audio.paused = false
+  playing.resolve()
+  assert.equal(await loading, true)
+  assert.equal(player.barSong, selected)
+  assert.equal(player.isSongPending, false)
+  assert.equal(player.barSongIsUnconfirmed, false)
+  assert.equal(player.qualityStatus, '实际音质 · MP3')
+})
+
+test('bottom bar follows the latest pending selection and restores the confirmed track on failure', async t => {
+  const requests = new Map([['B', deferred()], ['C', deferred()]])
+  const { player, audio } = createPlayer(t, {
+    getSongUrl: hash => requests.get(hash)?.promise || Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` })
+  })
+  await player.requestSong(song('A'))
+  audio.currentTime = 27
+  const first = player.requestSong(song('B'), 'next')
+  assert.equal(player.barSong.hash, 'B')
+  assert.equal(player.barTrackTransition, 'next')
+  player.requestSong(song('C'), 'previous')
+  assert.equal(player.barSong.hash, 'C')
+  assert.equal(player.barTrackTransition, 'previous')
+  assert.equal(player.getPlaybackSnapshot().currentSong.hash, 'A')
+  assert.equal(player.getPlaybackSnapshot().playbackState.currentTime, 27)
+  await first
+  await flush()
+  requests.get('C').reject(new Error('测试加载失败'))
+  await flush()
+  assert.equal(player.isSongPending, false)
+  assert.equal(player.barSong.hash, 'A')
+  assert.match(player.songLoadError, /C.*测试加载失败/)
+  assert.equal(player.failedSong.hash, 'C')
+  assert.equal(audio.currentTime, 27)
+  requests.delete('C')
+  await player.retrySongLoad()
+  assert.equal(player.currentSong.hash, 'C')
+  assert.equal(player.songLoadError, '')
+  assert.equal(player.failedSong, null)
+})
+
+test('first-load failure remains visible and retryable; stopping clears all pending feedback', async t => {
+  let fail = true
+  const { player } = createPlayer(t, {
+    getSongUrl: async () => {
+      if (fail) throw new Error('连接失败')
+      return { status: 1, url: 'https://example.test/audio' }
+    }
+  })
+  await player.requestSong(song('A'))
+  assert.equal(player.barSong.hash, 'A')
+  assert.equal(player.currentSong, null)
+  assert.equal(player.isSongPending, false)
+  assert.match(player.songLoadError, /连接失败/)
+  assert.equal(player.qualityStatus, '音源未加载')
+  fail = false
+  await player.retrySongLoad()
+  assert.equal(player.currentSong.hash, 'A')
+  assert.equal(player.qualityStatus, '音源未提供音质信息')
+  player.isComponentReady = false
+  player.requestSong(song('B'))
+  player.stopPlayback()
+  assert.equal(player.barSong, null)
+  assert.equal(player.isSongPending, false)
+  assert.equal(player.songLoadError, '')
+  assert.equal(player.failedSong, null)
+})
+
+test('retrying failed paused startup preserves the saved position and never auto-plays', async t => {
+  let fail = true
+  const { player, audio } = createPlayer(t, {
+    getSongUrl: async () => {
+      if (fail) throw new Error('首次连接失败')
+      return { status: 1, url: 'https://example.test/restored.mp3' }
+    }
+  })
+  qualityAudio(audio, player)
+  const restoreState = { songHash: 'A', currentTime: 42, isPlaying: false, volume: 35 }
+  await player.requestSong(song('A'), 'select', { restoreState })
+  assert.equal(player.failedSongOptions.restoreState, restoreState)
+  fail = false
+  await player.retrySongLoad()
+  assert.equal(player.currentSong.hash, 'A')
+  assert.equal(audio.currentTime, 42)
+  assert.equal(audio.paused, true)
+  assert.equal(audio.playCount, 0)
+  assert.equal(player.failedSongOptions, null)
+})
+
+test('selected library lyrics take priority without leaking edited versions to offline cache', async t => {
+  let online = 0
+  let cached = 0
+  const record = { selectedVersionId: 'edit', versions: [{ id: 'edit', source: 'edited', data: { status: 200, decodeContent: '[00:01.00]編輯歌詞' } }] }
+  const { player, sandbox } = createPlayer(t, { getLyric: async () => { online++; return null } })
+  sandbox.window.electronAPI = { lyricLibrary: { read: async () => record, saveOnline: async () => { throw new Error('unexpected save') } }, playlistCache: { putLyrics: async () => { cached++ } } }
+  player.currentSong = song('A')
+  player.loadedSongHash = 'A'
+  player.loadedCacheSessionVersion = 0
+  player.playedCacheSongs.add('0:A')
+  await player.loadLyric(player.currentSong)
+  player.cachePlayedLyrics()
+  await flush()
+  assert.equal(player.currentLyrics, '[00:01.00]編輯歌詞')
+  assert.equal(player.displayLyric.content, '[00:01.00]编辑歌词')
+  assert.equal(online, 0)
+  assert.equal(cached, 0)
+})
+
+test('library background updates apply an auto-selected revision once without a fetch loop', async t => {
+  const pending = deferred()
+  let online = 0
+  let record = { selectedVersionId: 'old', versions: [{ id: 'old', source: 'online', data: { status: 200, decodeContent: '[00:01.00]old' } }] }
+  const { player, sandbox } = createPlayer(t, { getLyric: () => { online++; return pending.promise } })
+  sandbox.window.electronAPI = { lyricLibrary: {
+    read: async () => record,
+    saveOnline: async payload => {
+      assert.equal(payload.mode, 'autoUpdate')
+      record = { ...record, selectedVersionId: 'new', versions: [...record.versions, { id: 'new', source: 'online', data: payload.data }] }
+      return record
+    }
+  } }
+  player.currentSong = song('A')
+  await player.loadLyric(player.currentSong)
+  assert.equal(player.currentLyrics, '[00:01.00]old')
+  pending.resolve({ status: 200, decodeContent: '[00:01.00]new', lyricSource: { id: 'source', matchLevel: 'exact' } })
+  await flush()
+  assert.equal(player.currentLyrics, '[00:01.00]new')
+  assert.equal(online, 1)
+})
+
+test('switching songs or disabling the library rejects a late background update before saving', async t => {
+  for (const action of ['switch', 'disable', 'stop']) {
+    const pending = deferred()
+    let saves = 0
+    const { player, sandbox } = createPlayer(t, { getLyric: () => pending.promise })
+    sandbox.window.electronAPI = { lyricLibrary: { read: async () => ({ selectedVersionId: 'old', versions: [{ id: 'old', source: 'online', data: { status: 200, decodeContent: '[00:01.00]old' } }] }), saveOnline: async () => { saves++ } } }
+    player.currentSong = song('A')
+    await player.loadLyric(player.currentSong)
+    if (action === 'switch') player.currentSong = song('B')
+    if (action === 'disable') player.settingsStore.settings.playback.lyricLibrary = { enabled: false }
+    if (action === 'stop') player.stopPlayback()
+    pending.resolve({ status: 200, decodeContent: '[00:01.00]late' })
+    await flush()
+    assert.equal(saves, 0, action)
+    assert.notEqual(player.currentLyrics, '[00:01.00]late', action)
+  }
+})
+
+test('disabled management bypasses saved lyrics and auto-save while online lyrics still work', async t => {
+  const { player, sandbox } = createPlayer(t)
+  player.settingsStore.settings.playback.lyricLibrary = { enabled: false }
+  sandbox.window.electronAPI = { lyricLibrary: { read: async () => { throw new Error('must not read') }, saveOnline: async () => { throw new Error('must not save') } } }
+  player.currentSong = song('A')
+  await player.loadLyric(player.currentSong)
+  assert.equal(player.currentLyrics, '[00:00.00]A')
+  assert.equal(player.currentLyricsFromLibrary, false)
+})
+
+test('old offline lyrics acquire verified online provenance before entering the library', async t => {
+  const pending = deferred()
+  const writes = []
+  let record = null
+  const { player, sandbox } = createPlayer(t, { getLyric: () => pending.promise })
+  sandbox.window.electronAPI = {
+    playlistCache: { readLyrics: async () => ({ status: 200, decodeContent: '[00:01.00]cached' }) },
+    lyricLibrary: { read: async () => record, saveOnline: async payload => {
+      writes.push(payload)
+      record = { selectedVersionId: 'verified', versions: [{ id: 'verified', source: 'online', data: payload.data }] }
+      return record
+    } }
+  }
+  player.currentSong = song('A')
+  await player.loadLyric(player.currentSong)
+  assert.equal(player.currentLyrics, '[00:01.00]cached')
+  assert.equal(writes.length, 0)
+  pending.resolve({ status: 200, decodeContent: '[00:01.00]verified', lyricSource: { id: 'source', matchLevel: 'high' } })
+  await flush()
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].matchLevel, 'high')
+  assert.equal(player.currentLyrics, '[00:01.00]verified')
+})
+
+test('manual selection during an online refresh keeps the chosen local version', async t => {
+  const pending = deferred()
+  let saved = 0
+  let record = { selectedVersionId: 'old', versions: [{ id: 'old', source: 'online', data: { status: 200, decodeContent: '[00:01.00]old' } }] }
+  const { player, sandbox } = createPlayer(t, { getLyric: () => pending.promise })
+  sandbox.window.electronAPI = { lyricLibrary: { read: async () => record, saveOnline: async () => { saved++; return record } } }
+  player.currentSong = song('A')
+  await player.loadLyric(player.currentSong)
+  record = { selectedVersionId: 'edit', versions: [{ id: 'edit', source: 'edited', data: { status: 200, decodeContent: '[00:01.00]manual' } }] }
+  await player.loadLyric(player.currentSong, { refresh: false })
+  pending.resolve({ status: 200, decodeContent: '[00:01.00]late' })
+  await flush()
+  assert.equal(saved, 0)
+  assert.equal(player.currentLyrics, '[00:01.00]manual')
+})
+
+test('fullscreen text, translation and romanization share offsets and repeated timestamps', t => {
+  const { lyric } = createLyric(t)
+  lyric.settingsStore.settings.playback.romanization = 'on'
+  lyric.lyrics = '[offset:500]\n[00:02.00][00:04.00]君といる\n[00:01.00]あなた'
+  lyric.lyricData = { language: { content: [
+    { type: 0, lyricContent: [['kimi', 'to', 'iru'], ['anata']] },
+    { type: 1, lyricContent: [['与你一起'], ['你']] }
+  ] } }
+  lyric.parseLyrics(lyric.lyrics, lyric.lyricData)
+  assert.deepEqual(Array.from(lyric.parsedLyrics, line => [line.time, line.translation]), [[.5, '你'], [1.5, '与你一起'], [3.5, '与你一起']])
+  assert.equal(lyric.romanizationLines.get(.5), 'anata')
+  assert.equal(lyric.romanizationLines.get(3.5), 'kimi to iru')
 })

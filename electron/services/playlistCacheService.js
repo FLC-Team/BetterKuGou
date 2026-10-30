@@ -1,4 +1,5 @@
 const { Worker: NodeWorker } = require('node:worker_threads')
+const path = require('node:path')
 const { createMediaResponse } = require('./playlistCacheMedia')
 const defaultLogger = require('../logger')
 
@@ -13,18 +14,34 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
   let settings = {}
   let stopped = false
   let stopPromise = null
-  let state = { revision: 0, generation: 0, userId: null, enabled: true, usedBytes: 0, limitBytes: 2 * 1024 ** 3, playlists: [] }
+  let closing = false
+  let migrationTask = null
+  let migrationGate = null
+  let migrationStatus = null
+  let migrationError = null
+  let migrationWarning = null
+  let cleanupRoot = null
+  let cleanupTask = null
+  const streams = new Set()
+  cacheRoot = path.resolve(cacheRoot)
+  let state = { revision: 0, generation: 0, userId: null, enabled: true, usedBytes: 0, limitBytes: 2 * 1024 ** 3, playlists: [], cacheDirectory: cacheRoot, migration: null }
   const pending = new Map()
   const resources = new Map()
 
   function getState() { return copy(state) }
-  function publish(snapshot) {
-    if (stopped || snapshot?.generation !== generation || String(snapshot?.userId ?? '') !== String(session?.userId ?? '')) return getState()
-    state = { ...copy(snapshot), revision: state.revision + 1 }
+  function emitState(snapshot = state) {
+    state = { ...copy(snapshot), revision: state.revision + 1, cacheDirectory: cacheRoot,
+      migration: copy(migrationStatus), migrationError: copy(migrationError), migrationWarning: copy(migrationWarning) }
     try { onState(getState()) } catch (error) {
       logger.warn('playlistCacheService', '离线缓存状态通知失败', { name: error?.name, code: error?.code })
     }
     return getState()
+  }
+  function publish(snapshot) {
+    if (migrationGate && snapshot?.migration) migrationStatus = copy(snapshot.migration)
+    if (stopped || snapshot?.generation !== generation || String(snapshot?.userId ?? '') !== String(session?.userId ?? '')) return getState()
+    if (snapshot.migrationWarning) migrationWarning = copy(snapshot.migrationWarning)
+    return emitState(snapshot)
   }
 
   function failWorker(instance) {
@@ -73,7 +90,7 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
     return instance
   }
 
-  function rpc(action, payload, taskGeneration = generation) {
+  function sendRpc(action, payload, taskGeneration = generation) {
     if (stopped) return Promise.reject(Object.assign(new Error('缓存服务已停止'), { code: 'CACHE_STOPPED' }))
     return new Promise((resolve, reject) => {
       const id = ++nextId
@@ -83,6 +100,104 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
         reject(error)
       }
     })
+  }
+
+  function rpc(action, payload, taskGeneration = generation) {
+    if (closing) return Promise.reject(Object.assign(new Error('缓存服务已停止'), { code: 'CACHE_STOPPED' }))
+    return migrationGate ? migrationGate.then(() => sendRpc(action, payload, taskGeneration)) : sendRpc(action, payload, taskGeneration)
+  }
+
+  function inside(root, file) {
+    const relative = path.relative(root, file)
+    return relative === '' || relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+  }
+
+  /** 新读流已使用新目录，只有迁移前打开的文件句柄需要延迟回收。 */
+  function finishMigrationCleanup() {
+    if (!cleanupRoot || cleanupTask || stopped || [...streams].some(stream => inside(cleanupRoot, stream.path))) return cleanupTask
+    cleanupTask = sendRpc('finalizeMigration').then(result => {
+      if (result?.migrationWarning) migrationWarning = copy(result.migrationWarning)
+    }).catch(error => {
+      migrationWarning = { code: 'CACHE_MIGRATION_CLEANUP', message: '缓存已迁移，旧目录的部分文件暂未清理，可在文件释放后重新更改位置重试。' }
+      logger.warn('playlistCacheService', '迁移后清理旧缓存失败', { name: error?.name, code: error?.code })
+    }).finally(() => {
+      cleanupRoot = null
+      cleanupTask = null
+      migrationStatus = null
+      if (!stopped) emitState()
+    })
+    return cleanupTask
+  }
+
+  /** 复制并校验→原子保存路径→切换租约；提交后异常只重建服务，绝不删除新缓存。 */
+  function changeDirectory(targetRoot, persistDirectory) {
+    if (closing || stopped) return Promise.reject(Object.assign(new Error('缓存服务已停止'), { code: 'CACHE_STOPPED' }))
+    if (migrationGate || cleanupRoot) return Promise.reject(Object.assign(new Error('缓存目录正在迁移或等待旧文件释放，请稍候。'), { code: 'CACHE_MIGRATION_BUSY' }))
+    if (typeof targetRoot !== 'string' || !path.isAbsolute(targetRoot) || targetRoot.includes('\0') || typeof persistDirectory !== 'function') {
+      return Promise.reject(Object.assign(new Error('请选择有效的缓存文件夹。'), { code: 'CACHE_MIGRATION_PATH' }))
+    }
+    if (path.resolve(targetRoot) === cacheRoot) return Promise.resolve(getState())
+    let unlock
+    migrationGate = new Promise(resolve => { unlock = resolve })
+    migrationStatus = { phase: 'copying', copiedBytes: 0, totalBytes: 0 }
+    migrationError = null
+    migrationWarning = null
+    emitState()
+    const sourceRoot = cacheRoot
+    migrationTask = (async () => {
+      let saved = false
+      try {
+        const prepared = await sendRpc('prepareMigration', { targetRoot })
+        const destination = prepared.targetRoot
+        if (!destination || !path.isAbsolute(destination)) throw new Error('缓存迁移未返回有效目录')
+        migrationStatus = { ...migrationStatus, phase: 'committing' }
+        emitState()
+        await persistDirectory(destination)
+        saved = true
+        cacheRoot = destination
+        for (const item of resources.values()) {
+          if (inside(sourceRoot, item.resource.path)) item.resource.path = path.join(destination, path.relative(sourceRoot, item.resource.path))
+        }
+        try {
+          publish(await sendRpc('commitMigration'))
+          cleanupRoot = sourceRoot
+          migrationStatus = { ...migrationStatus, phase: 'cleanup' }
+          emitState()
+          await finishMigrationCleanup()
+        } catch (error) {
+          // 磁盘路径已提交，目标完整；丢失 commit 回执时以目标重建并保留源副本。
+          const failed = worker
+          if (failed) {
+            failWorker(failed)
+            await failed.terminate().catch(() => {})
+          }
+          migrationWarning = { code: 'CACHE_MIGRATION_RECOVERED', message: '新缓存位置已保存；缓存服务已恢复，旧目录保留了一份副本。' }
+          migrationStatus = null
+          emitState({ ...state, error: null })
+          publish(await sendRpc('getState'))
+        }
+        return getState()
+      } catch (error) {
+        if (!saved) {
+          try { await sendRpc('rollbackMigration') } catch (rollbackError) {
+            logger.warn('playlistCacheService', '恢复原缓存目录失败', { name: rollbackError?.name, code: rollbackError?.code })
+          }
+          migrationStatus = null
+          migrationError = { code: error?.code?.startsWith('CACHE_MIGRATION_') ? error.code : 'CACHE_MIGRATION_FAILED',
+            message: error?.code?.startsWith('CACHE_MIGRATION_') ? error.message : '迁移失败，原缓存位置和文件已保留，请检查空间及目录权限后重试。' }
+          emitState()
+          throw Object.assign(new Error(migrationError.message), { code: migrationError.code, cause: error })
+        }
+        migrationStatus = null
+        migrationWarning = { code: 'CACHE_MIGRATION_RECOVERED', message: '新缓存位置已保存，缓存服务暂时不可用，请重试或重启应用；旧目录仍保留副本。' }
+        return emitState()
+      } finally {
+        migrationGate = null
+        migrationTask = null
+        unlock()
+      }
+    })()
+    return migrationTask
   }
 
   async function call(action, payload) {
@@ -107,7 +222,7 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
     if (next?.userId === session?.userId && next?.token === session?.token) return call('getState')
     session = next
     generation++
-    publish({ ...state, generation, userId: next?.userId ?? null, playlists: [], error: null })
+    publish({ ...state, generation, userId: next?.userId ?? null, playlists: [], cachedSongCount: 0, error: null })
     const result = await rpc('setSession', next)
     publish(result)
     return getState()
@@ -139,16 +254,20 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
     const item = resources.get(leaseId)
     if (!item || item.releasing || stopped) return new Response(null, { status: 404 })
     const streaming = (request.method || 'GET') === 'GET'
+    const stream = { path: item.resource.path }
+    if (streaming) streams.add(stream)
     if (streaming) item.active++
     let finished = false
     const finish = () => {
       if (finished || !streaming) return
       finished = true
       item.active--
+      streams.delete(stream)
       if (item.releasing && item.active === 0) releaseSource(leaseId).catch(() => {})
+      finishMigrationCleanup()
     }
     try {
-      const response = createMediaResponse(request, item.resource, finish)
+      const response = createMediaResponse(request, { ...item.resource, path: stream.path }, finish)
       if (response.status >= 400) finish()
       return response
     } catch { finish(); return new Response(null, { status: 500 }) }
@@ -157,9 +276,17 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
   /** Cancel network IO before allowing the application lifecycle to release the Worker. */
   function stop() {
     if (stopPromise) return stopPromise
+    closing = true
+    if (migrationTask || cleanupTask) {
+      stopPromise = Promise.allSettled([migrationTask, cleanupTask].filter(Boolean)).then(stopWorker)
+    } else stopPromise = stopWorker()
+    return stopPromise
+  }
+
+  function stopWorker() {
     const instance = worker
-    if (!instance) { stopped = true; stopPromise = Promise.resolve(); return stopPromise }
-    stopPromise = new Promise(resolve => {
+    if (!instance) { stopped = true; return Promise.resolve() }
+    const completion = new Promise(resolve => {
       let timer
       let done = false
       const finish = () => {
@@ -177,11 +304,11 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
       try { instance.postMessage({ id: ++nextId, action: 'stop', generation }) } catch { Promise.resolve(instance.terminate()).then(finish, finish) }
     })
     stopped = true
-    return stopPromise
+    return completion
   }
 
   return {
-    configure, setSession, getState, stop, handleRequest, releaseSource,
+    configure, setSession, getState, stop, handleRequest, releaseSource, changeDirectory,
     readPlaylist: id => call('readPlaylist', { id }), putPlaylist: value => call('putPlaylist', value),
     cacheSong: value => call('cacheSong', value), getSource: value => acquire('getSource', value),
     readLyrics: hash => call('readLyrics', { hash }), putLyrics: value => call('putLyrics', value),

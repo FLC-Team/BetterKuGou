@@ -112,6 +112,8 @@
             </button>
           </div>
           <div class="lyric-tools">
+            <VolumeControl variant="lyric" :volume="volume" :is-muted="isMuted" :active="visible"
+                           @change="$emit('change-volume', $event)" @toggle-mute="$emit('toggle-mute')" />
             <div ref="qualityControl" class="lyric-quality" @focusout="handleQualityFocusout" @keydown.stop>
               <button ref="qualityTrigger" type="button" class="lyric-tool quality-trigger"
                       :class="{ 'is-open': qualityMenuOpen, 'is-switching': qualitySwitching }"
@@ -210,6 +212,7 @@
               </div>
             </div>
             
+            <div v-if="romanizationLines.get(line.time)" class="romanization-lyric" lang="ja-Latn">{{ romanizationLines.get(line.time) }}</div>
             <!-- 翻译歌词 -->
             <div v-if="line.translation" class="translation-stage" :class="{ 'is-visible': showTranslation }" :aria-hidden="!showTranslation"><div class="translation-clip"><div class="translation-lyric">{{ line.translation }}</div></div></div>
           </div>

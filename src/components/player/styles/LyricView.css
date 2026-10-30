@@ -85,7 +85,7 @@
 .control-btn.play-btn:hover { background: var(--lyric-play-hover); }
 .favorite-btn.active { color: var(--lyric-favorite); }
 .mode-icon { display: block; width: 20px; height: 20px; background: currentColor; mask: var(--mode-icon) center / contain no-repeat; -webkit-mask: var(--mode-icon) center / contain no-repeat; }
-.lyric-tools { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 14px; }
+.lyric-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin-top: 14px; }
 .lyric-quality { position: relative; }
 .lyric-tool { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 30px; padding: 0 12px; border: 1px solid var(--lyric-track); border-radius: 20px; color: var(--lyric-text-secondary); background: transparent; font: inherit; font-size: 11px; cursor: pointer; transition: color 0.15s ease, background-color 0.15s ease; }
 .lyric-tool:hover, .lyric-tool.is-open { color: var(--lyric-text); background: var(--lyric-hover); }
@@ -183,6 +183,9 @@
 .main-lyric { width: 100%; overflow: hidden; padding: 7px 0; }
 .lyric-text { width: max-content; min-width: 100%; white-space: nowrap; text-align: center; }
 .translation-lyric { font-size: 0.55em; font-weight: 400; line-height: 1.4; color: var(--lyric-translation); overflow-wrap: anywhere; margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.romanization-lyric { font-size: 0.48em; font-weight: 400; line-height: 1.45; color: var(--lyric-translation); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; animation: lyric-reading-in .2s ease both; }
+@keyframes lyric-reading-in { from { opacity: 0; translate: 0 -3px; } to { opacity: 1; translate: 0 0; } }
+@media (prefers-reduced-motion: reduce) { .romanization-lyric { animation: none; } }
 .karaoke-char { display: inline-block; vertical-align: baseline; white-space: pre; font-weight: 500; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
 .karaoke-char[data-fill-state="singing"] { background: linear-gradient(90deg, var(--lyric-accent) var(--fill-progress, 0%), var(--lyric-pending) var(--fill-progress, 0%)); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
 /* 桥段是一小段光点编舞；外层只定位，避免与手动浏览、歌词滚动争用 transform。 */

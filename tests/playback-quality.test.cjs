@@ -147,9 +147,48 @@ test('actual quality uses response metadata and never infers lossless from a req
   assert.equal(readPlaybackQuality({ extname: 'flac', bitrate: 952000 }).label, '无损 FLAC')
   assert.equal(readPlaybackQuality({ extname: 'MP3', bitrate: '320000' }).label, '320 kbps')
   assert.equal(readPlaybackQuality({ extname: 'mp3', bitrate: 128 }).label, '128 kbps')
-  assert.equal(readPlaybackQuality({ quality: 'flac', url: 'https://example.test/audio.flac' }).confirmed, false)
-  assert.equal(readPlaybackQuality({ quality: 'flac', url: 'https://example.test/audio.flac' }).label, '待确认')
+  assert.equal(readPlaybackQuality({ quality: 'flac' }).confirmed, false)
+  assert.equal(readPlaybackQuality({ quality: 'flac', url: 'https://example.test/audio' }).label, '待确认')
   assert.equal(readPlaybackQuality({ bitrate: 'unknown' }).label, '待确认')
+})
+
+test('actual quality recognizes legacy metadata and the selected playback URL without inventing a bitrate', () => {
+  const { readPlaybackQuality } = loadModule('src/utils/playbackQuality.js', {}, ['readPlaybackQuality'])
+  assert.equal(readPlaybackQuality({ extName: ' .FLAC ', bitRate: 952000 }).label, '无损 FLAC')
+  assert.equal(readPlaybackQuality({ extname: '', bitrate: 0, extName: 'MP3', bitRate: '320' }).label, '320 kbps')
+  for (const url of ['https://example.test/audio.FLAC?signature=example#time', ['http://example.test/audio.flac']]) {
+    const quality = readPlaybackQuality({ url })
+    assert.equal(quality.label, '无损 FLAC')
+    assert.equal(quality.confirmed, true)
+    assert.equal(quality.bitrate, null)
+  }
+  const mp3 = readPlaybackQuality({ quality: 'flac', url: ['https://example.test/audio.mp3', 'https://example.test/backup.flac'] })
+  assert.equal(mp3.label, 'MP3')
+  assert.equal(mp3.bitrate, null, 'a file extension cannot confirm 128 or 320 kbps')
+  assert.equal(readPlaybackQuality({ extname: 'mp3', url: 'https://example.test/audio.flac' }).format, 'mp3', 'explicit metadata has priority')
+})
+
+test('quality remains unknown for preferences, URL parameters, other candidates and malformed metadata', () => {
+  const { readPlaybackQuality } = loadModule('src/utils/playbackQuality.js', {}, ['readPlaybackQuality'])
+  for (const response of [
+    { quality: '320' },
+    { url: 'https://example.test/audio?filename=audio.flac' },
+    { url: 'https://example.test/audio#track.flac' },
+    { url: 'https://audio.flac' },
+    { url: ['https://example.test/audio', 'https://example.test/backup.flac'] },
+    { url: ['', 'https://example.test/backup.flac'] },
+    { url: 'audio.flac' },
+    { url: 'https://example.test/audio.exe', quality: 'flac' },
+    { extname: 'unknown', bitrate: true },
+    { extname: {}, bitrate: Infinity },
+    { data: { extname: 'flac', bitrate: 952000 } },
+    { bitrate: -320 },
+    null
+  ]) {
+    const quality = readPlaybackQuality(response)
+    assert.equal(quality.confirmed, false, JSON.stringify(response))
+    assert.equal(quality.label, '待确认')
+  }
 })
 
 test('renderer quality preferences default old settings and normalize imported unsupported values', async () => {

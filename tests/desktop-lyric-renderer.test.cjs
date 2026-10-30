@@ -199,6 +199,69 @@ test('intro previews the first line and translation toggles never hide the avail
   view.dispose()
 })
 
+test('desktop romanization and translation combine but their display preferences remain independent', () => {
+  const view = rendererFixture()
+  song(view)
+  const first = { ...krc(0, ['君', 'の']), romanization: 'ki mi no', translation: '你的' }
+  const second = { ...krc(4000, ['夢', 'へ']), romanization: 'yu me e', translation: '向着梦想' }
+  view.emit('onLyricUpdate', [first, second])
+  assert.equal(view.node('nextLyric').textContent, 'ki mi no · 你的')
+  view.emit('onSettingsUpdate', { showTranslation: false })
+  assert.equal(view.node('nextLyric').textContent, 'ki mi no')
+  assert.equal(view.node('nextLyric').dataset.kind, 'translation')
+  view.emit('onSettingsUpdate', { showTranslation: true })
+  assert.equal(view.node('nextLyric').textContent, 'ki mi no · 你的')
+  view.emit('onSettingsUpdate', { hideTranslation: true })
+  assert.equal(view.node('nextLyric').textContent, '夢へ')
+  assert.equal(view.node('nextLyric').dataset.kind, 'next')
+  view.emit('onSettingsUpdate', { hideTranslation: false })
+  assert.equal(view.node('nextLyric').textContent, 'ki mi no · 你的')
+  view.emit('onTimeUpdate', 4500)
+  view.flush()
+  assert.equal(view.node('currentLyric').textContent, '夢へ')
+  assert.equal(view.node('nextLyric').textContent, 'yu me e · 向着梦想')
+  view.dispose()
+})
+
+test('romanization can disappear during playback without changing the current karaoke position', () => {
+  const view = rendererFixture()
+  song(view)
+  view.emit('onSettingsUpdate', { showTranslation: false })
+  const first = { ...krc(0, ['君', 'の']), romanization: 'ki mi no', translation: '你的' }
+  const next = krc(4000, ['夢', 'へ'])
+  view.emit('onLyricUpdate', [first, next])
+  view.emit('onTimeUpdate', 1500)
+  view.flush()
+  assert.deepEqual(view.fills(), ['100%', '50%'])
+  view.emit('onLyricUpdate', [{ ...first, romanization: undefined }, next])
+  view.flush()
+  assert.equal(view.node('nextLyric').textContent, '夢へ')
+  assert.deepEqual(view.fills(), ['100%', '50%'])
+  view.emit('onSettingsUpdate', { showTranslation: true })
+  assert.equal(view.node('nextLyric').textContent, '你的')
+  assert.deepEqual(view.fills(), ['100%', '50%'])
+  view.dispose()
+})
+
+test('romanization is literal text, invalid annotation types are ignored and new tracks clear old annotations', () => {
+  const view = rendererFixture()
+  song(view)
+  view.emit('onSettingsUpdate', { showTranslation: false })
+  view.emit('onLyricUpdate', [
+    { time: 0, text: '君の', romanization: '<img src=x> kimi no' },
+    { time: 1000, text: '夢へ', romanization: { value: 'unsafe' }, translation: 123 },
+    { time: 2000, text: '次の歌詞' }
+  ])
+  assert.equal(view.node('nextLyric').textContent, '<img src=x> kimi no')
+  assert.equal(view.node('nextLyric').children.length, 0)
+  view.emit('onTimeUpdate', 1500)
+  view.flush()
+  assert.equal(view.node('nextLyric').textContent, '次の歌詞')
+  song(view, 'replacement')
+  assert.equal(view.node('nextLyric').textContent, '')
+  view.dispose()
+})
+
 test('long original and translation follow time, paused resize and font changes without an independent clock', () => {
   const view = rendererFixture({ reducedMotion: true })
   song(view)

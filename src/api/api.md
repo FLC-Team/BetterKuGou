@@ -15,7 +15,8 @@
 - Axios 响应拦截器返回 `response.data`，调用方检查业务状态字段。
 - `auth.js` 请求超时为 10 秒，认证信息从 LocalStorage 读取。
 - `music.js` 为需要登录的请求附加已保存的酷狗认证信息。
-- `getLyric()` 先搜索候选歌词，再按 ID 与 accesskey 请求内容。
+- `getLyric(hash, album_audio_id, keywords, options)` 先搜索候选再取详情；按明确 hash/音频 ID、规范歌名与歌手证据分为 exact/high/medium/any，优先选择匹配更高的有效候选。返回仅含候选 ID 和匹配等级的 lyricSource，不携带搜索访问密钥；options.song 使用既有元数据解析，options.signal 贯穿搜索与详情。
+- `getRankInfo()` 读取榜单介绍；`getRankSongs(rankid, page, pagesize)` 从 `/rank/audio` 读取曲目，返回 `data.songlist` 和总数，页面按总数分页，不能把介绍中的摘要当作可播放歌曲。
 - `getSongUrl(hash, album_id, album_audio_id, quality, options)` 提供播放器使用的旧版播放地址封装，普通音质限于字符串 128/320/flac/high，缺省或非法值回退 128；不请求试听，不将魔法音乐或蝰蛇音效作为普通音质。
 - `getSongDetail(hash, options)` 和 `getSongUrl` 的可选 `options.signal` 直接传给 Axios；切歌取消时终止旧 HTTP 请求，省略该选项保持原调用行为。
 - `findArtistByName(name)` 只查询被选中的单个姓名，按 Unicode、空白和大小写规范化后精确匹配搜索结果，并要求有效歌手 ID；无匹配返回 null，请求或响应格式失败继续拒绝 Promise，由歌手页面显示重试入口。
