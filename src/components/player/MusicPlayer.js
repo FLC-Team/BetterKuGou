@@ -104,6 +104,7 @@ export default {
       // MediaSession 相关
       lastPositionUpdate: null, // 上次位置更新的时间（秒）
       lastDesktopTimeUpdate: null, // 上次桌面歌词时间更新的时间戳（毫秒）
+      desktopAudioWaiting: false,
       // 切歌控制
       isSwitchingSong: false, // 是否正在切歌（防止并发）
       isLoadingSong: false, // 是否正在加载歌曲（防止重复加载）
@@ -713,6 +714,7 @@ export default {
           duration: this.duration,
           playing: !audioEl.paused
         }
+        this.syncDesktopTime(true, { freeze: true })
         this.replacingPlaybackSnapshot = previousPlayback
         this.isReplacingQualitySource = qualityChange
         if (qualityChange) this.currentTime = previousPlayback.time
@@ -1304,7 +1306,7 @@ export default {
     },
 
     /** Continuous playback is throttled; seeks, pauses and source commits always send their final position. */
-    syncDesktopTime(force = false) {
+    syncDesktopTime(force = false, { discontinuity = false, freeze = false } = {}) {
       const audio = this.$refs.audioPlayer
       if (this.isDisposed || this.isReplacingQualitySource || this.replacingPlaybackSnapshot ||
           !this.loadedSongHash || this.loadedSongHash !== this.currentSong?.hash || !audio?.getAttribute('src') ||
@@ -1315,13 +1317,25 @@ export default {
       const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : this.duration
       window.electronAPI?.updatePlaybackTime?.(Math.max(0, audio.currentTime) * 1000, {
         trackId: this.loadedSongHash,
-        duration: Number.isFinite(duration) && duration > 0 ? duration * 1000 : 0
+        duration: Number.isFinite(duration) && duration > 0 ? duration * 1000 : 0,
+        advancing: !freeze && !this.desktopAudioWaiting && !audio.paused && !audio.seeking && !audio.ended && audio.readyState >= 3,
+        playbackRate: Number.isFinite(audio.playbackRate) && audio.playbackRate > 0 ? audio.playbackRate : 1,
+        discontinuity
       })
+    },
+
+    /** Buffering and seeking stop desktop interpolation immediately; only actual media readiness resumes it. */
+    handleDesktopClockChange(event) {
+      if (this.isDisposed) return
+      if (event?.type === 'waiting') this.desktopAudioWaiting = true
+      else if (event?.type === 'playing') this.desktopAudioWaiting = false
+      this.syncDesktopTime(true, { discontinuity: event?.type === 'seeking', freeze: event?.type === 'seeking' })
     },
 
     /** A null track clears the main-process snapshot and any open or subsequently reopened desktop lyrics. */
     clearDesktopPlayback() {
       this.lastDesktopTimeUpdate = null
+      this.desktopAudioWaiting = false
       window.electronAPI?.updateTrack?.(null)
     },
 
@@ -2038,7 +2052,7 @@ export default {
       audioEl.currentTime = target
       this.currentTime = target
       this.updatePositionState()
-      this.syncDesktopTime(true)
+      this.syncDesktopTime(true, { discontinuity: true })
       logger.trace('MusicPlayer', '跳转歌曲进度', { time: target })
     },
 
@@ -2299,8 +2313,9 @@ export default {
     /** 原生 seeked 同时覆盖歌词、进度条及系统媒体跳转，恢复/换源期间不采集中间值。 */
     handleSeeked() {
       if (this.isDisposed || this.isLoadingSong || this.isSwitchingSong) return
+      this.desktopAudioWaiting = this.$refs.audioPlayer?.readyState < 3
       this.handleTimeUpdate()
-      this.syncDesktopTime(true)
+      this.syncDesktopTime(true, { discontinuity: true })
       this.$emit('playback-state-changed')
     },
     

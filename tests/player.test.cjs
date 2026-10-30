@@ -295,7 +295,7 @@ function createLyric(t) {
   function setLine(index, text, textWidth = 100, viewportWidth = 300) {
     const characters = [...text].map((_, charIndex) => ({
       dataset: { charIndex: String(charIndex) },
-      classList: { contains: () => false }, style: {}
+      classList: { contains: () => false }, style: { setProperty(name, value) { this[name] = value } }
     }))
     const innerText = { scrollWidth: textWidth, style: {} }
     const viewport = { clientWidth: viewportWidth }
@@ -2765,6 +2765,79 @@ test('the final LRC line highlights progressively through the remaining song dur
   assert.ok(characters.every(character => character.style.color === 'var(--lyric-accent)'))
 })
 
+test('fullscreen KRC divides each word into graphemes without breaking emoji or spaces', t => {
+  const { lyric } = createLyric(t)
+  const line = { time: 2, text: '你 好👨‍👩‍👧‍👦e\u0301', words: [
+    { word: '你 好', startTime: 0, endTime: 3 },
+    { word: '👨‍👩‍👧‍👦e\u0301', startTime: 4, endTime: 6 }
+  ] }
+  const letters = lyric.getLyricCharacters(line)
+  assert.deepEqual(Array.from(letters, letter => letter.text), ['你', ' ', '好', '👨‍👩‍👧‍👦', 'e\u0301'])
+  assert.deepEqual(Array.from(letters, letter => [letter.start, letter.end]), [[0, 1], [1, 2], [2, 3], [4, 5], [5, 6]])
+  assert.equal(lyric.getLyricCharacters(line), letters)
+  assert.deepEqual(Array.from(lyric.parseKrcWords('👨‍👩‍👧‍👦e\u0301'), word => word.word), ['👨‍👩‍👧‍👦', 'e\u0301'])
+})
+
+test('fullscreen fills each KRC grapheme from left to right and resets partial fills on seeks', t => {
+  const { lyric, setLine } = createLyric(t)
+  const line = { time: 0, text: '甲乙', words: [{ word: '甲乙', startTime: 0, endTime: 2 }] }
+  lyric.parsedLyrics = [line, { time: 3, text: '后句' }]
+  const { characters } = setLine(0, '甲乙')
+  lyric.getLyricCharacters(line).forEach((letter, index) => {
+    Object.assign(characters[index].dataset, { start: String(letter.start), end: String(letter.end) })
+  })
+  lyric.syncPlaybackTime(0.5)
+  assert.equal(characters[0].style['--fill-progress'], '50%')
+  assert.equal(characters[0].dataset.fillState, 'singing')
+  assert.equal(characters[1].style['--fill-progress'], '0%')
+  lyric.syncPlaybackTime(1.5)
+  assert.equal(characters[0].style['--fill-progress'], '100%')
+  assert.equal(characters[1].style['--fill-progress'], '50%')
+  lyric.syncPlaybackTime(0, true)
+  assert.ok(characters.every(character => character.style['--fill-progress'] === '0%' && character.dataset.fillState === ''))
+  assert.ok(characters.every(character => !character.style.transform && !character.style.fontWeight))
+})
+
+test('same-track lyric replacement refreshes cached characters after Vue patches the ready layer', async t => {
+  const { lyric, component, setLine } = createLyric(t)
+  lyric.parsedLyrics = [{ time: 0, text: '旧句' }, { time: 4, text: '后句' }]
+  setLine(0, '旧句')
+  lyric.currentPlayTime = 1.5
+  lyric.syncDisplayedTime()
+  lyric.parsedLyrics = [{ time: 0, text: '新的四字' }, { time: 4, text: '后句' }]
+  component.watch.parsedLyrics.call(lyric)
+  lyric.syncDisplayedTime() // pre-patch watcher still sees the old two DOM nodes
+  const { characters } = setLine(0, '新的四字')
+  await flush()
+  assert.deepEqual(characters.map(character => character.style['--fill-progress']), ['100%', '50%', '0%', '0%'])
+})
+
+test('fullscreen visual frames sample audio between public updates without reactive time or layout reads', t => {
+  const { lyric, frames, setLine } = createLyric(t)
+  lyric.parsedLyrics = [{ time: 0, text: '甲乙' }, { time: 2, text: '后句' }]
+  const { characters, innerText, viewport } = setLine(0, '甲乙', 500, 300)
+  let measurements = 0
+  Object.defineProperty(innerText, 'scrollWidth', { get() { measurements++; return 500 } })
+  Object.defineProperty(viewport, 'clientWidth', { get() { measurements++; return 300 } })
+  let audioTime = 0.1
+  lyric.readPlaybackTime = () => audioTime
+  lyric.currentPlayTime = 0
+  lyric.startUpdateLoop()
+  frames.step()
+  const initialReads = measurements
+  assert.equal(characters[0].style['--fill-progress'], '10%')
+  audioTime = 0.2
+  frames.step()
+  assert.equal(characters[0].style['--fill-progress'], '20%')
+  assert.equal(lyric.internalPlayTime, 0)
+  assert.equal(measurements, initialReads, 'steady frames must reuse measured widths')
+  frames.step()
+  assert.equal(characters[0].style['--fill-progress'], '20%', 'stationary audio must not drift')
+  lyric.previewTime = 1.5
+  frames.step()
+  assert.equal(characters[1].style['--fill-progress'], '50%', 'preview takes priority over audio')
+})
+
 test('long lyrics move only inner text and remain synchronized when paused, seeking and resizing', async t => {
   const { lyric, sandbox, setLine } = createLyric(t)
   lyric.parsedLyrics = [{ time: 0, text: 'long text' }, { time: 10, text: 'next' }]
@@ -3683,7 +3756,7 @@ test('desktop seeks, pause and resume bypass continuous-time throttling and reta
   assert.equal(times.at(-1).time, 60000)
   audio.currentTime = 90
   player.handleSeeked()
-  assert.deepEqual(times.at(-1), { time: 90000, trackId: 'A', duration: 180000 })
+  assert.deepEqual(times.at(-1), { time: 90000, trackId: 'A', duration: 180000, advancing: false, playbackRate: 1, discontinuity: true })
   await audio.play()
   assert.equal(times.at(-1).time, 90000)
 })
@@ -3741,7 +3814,7 @@ test('desktop paused startup and same-song restart send their exact positions wi
   component.watch.song.handler.call(player, song('A'))
   await flush()
   assert.equal(audio.paused, true)
-  assert.deepEqual(times.at(-1), { time: 42000, trackId: 'A', duration: 180000 })
+  assert.deepEqual(times.at(-1), { time: 42000, trackId: 'A', duration: 180000, advancing: false, playbackRate: 1, discontinuity: false })
   player.playlist = [song('A')]
   audio.currentTime = 175
   player.currentTime = 175
@@ -3764,4 +3837,50 @@ test('base64-only lyric responses preserve UTF-8 text before desktop parsing', a
   await flush()
   assert.equal(player.currentLyrics, text)
   assert.equal(lyrics.at(-1)[0].text, ' 你好 😀 < B  ')
+})
+
+test('desktop clock metadata follows readiness, waiting, seeks, rate and confirmed-source protection', async t => {
+  const { player, audio, sandbox } = createPlayer(t)
+  const samples = []
+  sandbox.window.electronAPI = { updatePlaybackTime: (time, meta) => samples.push({ time, ...meta }) }
+  audio.readyState = 4
+  audio.playbackRate = 1
+  await player.requestSong(song('A'))
+  await flush()
+  audio.currentTime = 12
+  player.handleDesktopClockChange({ type: 'playing' })
+  assert.equal(samples.at(-1).advancing, true)
+  player.handleDesktopClockChange({ type: 'waiting' })
+  assert.equal(samples.at(-1).advancing, false)
+  player.syncDesktopTime(true)
+  assert.equal(samples.at(-1).advancing, false, 'timeupdate cannot override a waiting event')
+  player.handleDesktopClockChange({ type: 'playing' })
+  assert.equal(samples.at(-1).advancing, true)
+  audio.playbackRate = 1.5
+  player.handleDesktopClockChange({ type: 'ratechange' })
+  assert.equal(samples.at(-1).playbackRate, 1.5)
+  audio.seeking = true
+  player.handleDesktopClockChange({ type: 'seeking' })
+  assert.equal(samples.at(-1).advancing, false)
+  assert.equal(samples.at(-1).discontinuity, true)
+  audio.currentTime = 30
+  audio.seeking = false
+  player.handleSeeked()
+  assert.equal(samples.at(-1).advancing, true)
+  assert.equal(samples.at(-1).discontinuity, true)
+  assert.equal(samples.at(-1).time, 30000)
+  audio.pause()
+  assert.equal(samples.at(-1).advancing, false)
+  await audio.play()
+  audio.readyState = 2
+  player.syncDesktopTime(true)
+  assert.equal(samples.at(-1).advancing, false)
+  audio.readyState = 4
+  player.syncDesktopTime(true, { freeze: true })
+  assert.equal(samples.at(-1).advancing, false)
+  const count = samples.length
+  player.replacingPlaybackSnapshot = { hash: 'A', time: 30 }
+  audio.currentTime = 0
+  player.handleDesktopClockChange({ type: 'playing' })
+  assert.equal(samples.length, count, 'a candidate or restoring source cannot replace the confirmed desktop anchor')
 })

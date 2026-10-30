@@ -198,49 +198,15 @@
             <!-- 主要歌词（原文） -->
             <div class="main-lyric">
               <div class="lyric-text">
-              <!-- 渲染歌词内容 -->
-              <template v-if="line.words && line.words.length > 0">
-                <template v-for="(word, wordIndex) in line.words" :key="wordIndex">
-                  <template v-for="(char, charIdx) in word.word.split('')" :key="`${wordIndex}-${charIdx}`">
-                    <span 
-                      v-if="char === ' '"
-                      class="lyric-word karaoke-char is-space"
-                      :data-word-index="wordIndex"
-                      :data-line-index="index"
-                      :data-start="word.startTime"
-                      :data-end="word.endTime"
-                      :data-line-start="line.time"
-                      :style="{ display: 'inline-block', width: '0.25em', minWidth: '0.25em' }"
-                    >&#8203;</span>
-                    <span 
-                      v-else
-                      class="lyric-word karaoke-char"
-                      :data-word-index="wordIndex"
-                      :data-line-index="index"
-                      :data-start="word.startTime"
-                      :data-end="word.endTime"
-                      :data-line-start="line.time"
-                    >{{ char }}</span>
-                  </template>
-                </template>
-              </template>
-              <template v-else>
-                <template v-for="(char, charIndex) in line.text" :key="charIndex">
-                  <span 
-                    v-if="char === ' '"
-                    class="lyric-char karaoke-char is-space"
-                    :data-char-index="charIndex"
-                    :data-line-index="index"
-                    :style="{ display: 'inline-block', width: '0.25em', minWidth: '0.25em' }"
-                  >&#8203;</span>
-                  <span 
-                    v-else
-                    class="lyric-char karaoke-char"
-                    :data-char-index="charIndex"
-                    :data-line-index="index"
-                  >{{ char }}</span>
-                </template>
-              </template>
+                <span
+                  v-for="(char, charIndex) in getLyricCharacters(line)"
+                  :key="charIndex"
+                  class="karaoke-char"
+                  :data-char-index="charIndex"
+                  :data-line-index="index"
+                  :data-start="char.start"
+                  :data-end="char.end"
+                >{{ char.text }}</span>
               </div>
             </div>
             

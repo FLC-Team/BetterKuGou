@@ -132,6 +132,12 @@
     let lineOverflow = 0
     let nextOverflow = 0
     let activeResize = null
+    const maxInterpolationMs = 300
+    let timeAnchor = 0
+    let timeAnchorAt = 0
+    let clockAdvancing = false
+    let playbackRate = 1
+    let timeDiscontinuity = true
 
     /** Preserve the existing replacement feedback while cancelling obsolete animations. */
     function animateReplacement(element) {
@@ -180,13 +186,55 @@
       if (feedbackLeaving) { controlFeedback.textContent = ''; feedbackLeaving = false }
     }
 
-    /** Consume the latest position once per frame, including the final paused seek. */
+    /** Interpolate only a short distance from an authoritative audio sample, never the playback state itself. */
+    function visualPlaybackTime(now = performance.now()) {
+      const elapsed = clockAdvancing ? Math.min(maxInterpolationMs, Math.max(0, now - timeAnchorAt)) * playbackRate : 0
+      const time = timeAnchor + elapsed
+      return currentDuration > 0 ? Math.min(time, currentDuration) : time
+    }
+
+    /** Consume IPC samples at display cadence; stop at the bounded horizon or immediately on pause/buffering. */
     function scheduleRender() {
       if (disposed || updateRAFId !== null) return
       updateRAFId = requestAnimationFrame(() => {
         updateRAFId = null
-        if (!disposed) updateCurrentLyric()
+        if (disposed) return
+        const now = performance.now()
+        currentTime = visualPlaybackTime(now)
+        updateCurrentLyric()
+        if (clockAdvancing && now - timeAnchorAt < maxInterpolationMs &&
+            !(currentDuration > 0 && currentTime >= currentDuration)) scheduleRender()
       })
+    }
+
+    /** A discontinuity invalidates pending line promotion as well as interpolation from the old position. */
+    function resetVisualClock(time = currentTime) {
+      clockAdvancing = false
+      timeAnchor = currentTime = time
+      timeAnchorAt = performance.now()
+      timeDiscontinuity = true
+      stopLyricMotion()
+    }
+
+    function stopLyricMotion() {
+      ;[currentLyric, nextLyric, currentViewport, nextViewport].forEach(element => {
+        feedbackAnimations.get(element)?.cancel()
+        feedbackAnimations.delete(element)
+      })
+    }
+
+    /** The preview rises into the current row; horizontal playback transforms stay on the inner text. */
+    function animateLinePromotion(preview) {
+      if (motionPreference?.matches || !currentViewport.animate) return
+      const current = currentViewport.getBoundingClientRect()
+      const distance = preview.top + preview.height / 2 - current.top - current.height / 2
+      const scale = Math.max(0.5, Math.min(1, preview.height / Math.max(1, current.height)))
+      const animation = currentViewport.animate([
+        { translate: `0 ${distance}px`, scale, opacity: 0.86 },
+        { translate: '0 0', scale: 1, opacity: 1 }
+      ], { duration: 280, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' })
+      feedbackAnimations.set(currentViewport, animation)
+      animation.onfinish = () => { if (feedbackAnimations.get(currentViewport) === animation) feedbackAnimations.delete(currentViewport) }
     }
 
     function invalidateLayout() {
@@ -421,7 +469,7 @@
       const nextSong = song && typeof song === 'object' ? song : null
       if (songKey(nextSong) !== songKey(currentSong)) {
         currentLyrics = []
-        currentTime = 0
+        resetVisualClock(0)
         currentDuration = 0
         currentLyricIndex = -2
         charEntries = []
@@ -437,6 +485,7 @@
 
     /** Accept plain strings only; lyric content never enters an HTML parser. */
     function updateLyrics(lyrics) {
+      resetVisualClock()
       currentLyrics = Array.isArray(lyrics) ? lyrics.filter(line => line && Number.isFinite(line.time) && line.time >= 0).map(line => ({
         ...line,
         text: typeof line.text === 'string' ? line.text : '',
@@ -451,7 +500,20 @@
 
     function updateCurrentTime(time, meta = {}) {
       if (!Number.isFinite(time) || time < 0) return
-      currentTime = time
+      const now = performance.now()
+      const visualTime = visualPlaybackTime(now)
+      const difference = time - visualTime
+      const advancing = meta.advancing === true && isPlaying
+      const nextRate = Number.isFinite(meta.playbackRate) && meta.playbackRate > 0 ? meta.playbackRate : 1
+      // Small delivery jitter must not briefly switch back to the previous line at a boundary.
+      const correction = !meta.discontinuity && advancing && clockAdvancing && time > timeAnchor && difference < 0 && difference >= -50
+        ? -difference / nextRate : 0
+      const repeatedSample = !meta.discontinuity && advancing && clockAdvancing && time === timeAnchor && nextRate === playbackRate
+      if (meta.discontinuity || (!repeatedSample && (difference < -100 || difference > 500))) resetVisualClock(time)
+      timeAnchor = currentTime = time
+      if (!repeatedSample) timeAnchorAt = now - correction
+      clockAdvancing = advancing
+      playbackRate = nextRate
       if (Number.isFinite(meta?.duration) && meta.duration >= 0) currentDuration = meta.duration
       scheduleRender()
     }
@@ -460,7 +522,10 @@
       if (typeof state.playing === 'boolean') isPlaying = state.playing
       if (typeof state.available === 'boolean') playbackAvailable = state.available
       if (Number.isFinite(state.duration) && state.duration >= 0) currentDuration = state.duration
-      if (Number.isFinite(state.time) && state.time >= 0) currentTime = state.time
+      // Ordinary state broadcasts may carry an older cached time; only pause/replay replaces the audio anchor.
+      if (!isPlaying || state.discontinuity) {
+        resetVisualClock(Number.isFinite(state.time) && state.time >= 0 ? state.time : visualPlaybackTime())
+      }
       refreshControls()
       scheduleRender()
     }
@@ -492,7 +557,6 @@
       } else {
         currentLyric.textContent = line ? (line.text || '♪') : (currentLyrics.length ? '♪ 前奏' : currentSong ? '暂无歌词' : '请播放音乐以显示歌词')
       }
-      animateReplacement(currentLyric)
       layoutDirty = true
     }
 
@@ -526,7 +590,8 @@
       }
       const position = Math.max(0, Math.min(1, (progress - 0.12) / 0.76))
       currentLyric.style.transform = `translateX(${-Math.round(lineOverflow * position)}px)`
-      nextLyric.style.transform = `translateX(${-Math.round(nextOverflow * position)}px)`
+      // A translation belongs to this line; the upcoming lyric must remain readable from its beginning.
+      nextLyric.style.transform = `translateX(${-Math.round(nextOverflow * (nextLyric.dataset.kind === 'translation' ? position : 0))}px)`
     }
 
     function updateCurrentLyric() {
@@ -539,21 +604,32 @@
       }
       const index = low - 1
       const line = currentLyrics[index]
-      if (index !== currentLyricIndex) {
+      const lineChanged = index !== currentLyricIndex
+      const sequential = lineChanged && !timeDiscontinuity && isPlaying && index === currentLyricIndex + 1
+      const preview = sequential && ['next', 'intro'].includes(nextLyric.dataset.kind) && nextLyric.textContent === line?.text &&
+        !motionPreference?.matches && nextViewport.getBoundingClientRect ? nextViewport.getBoundingClientRect() : null
+      if (lineChanged) {
+        stopLyricMotion()
         currentLyricIndex = index
         renderLine(line)
+        if (preview) animateLinePromotion(preview)
+        else if (sequential) animateReplacement(currentLyric)
       }
       updateKaraokeProgress()
       const translation = showTranslation && line?.translation.trim() ? line.translation : ''
       const nextLine = currentLyrics[index + 1]
       const secondary = translation || nextLine?.text || ''
       const kind = translation ? 'translation' : nextLine ? (index < 0 ? 'intro' : 'next') : 'empty'
-      if (nextLyric.textContent !== secondary || nextLyric.dataset.kind !== kind) {
-        animateText(nextLyric, secondary)
+      const identity = translation ? `translation:${index}` : `line:${index + 1}`
+      if (nextLyric.textContent !== secondary || nextLyric.dataset.kind !== kind || nextLyric.dataset.identity !== identity) {
+        nextLyric.textContent = secondary
+        if (!timeDiscontinuity) animateReplacement(nextLyric)
         nextLyric.dataset.kind = kind
+        nextLyric.dataset.identity = identity
         layoutDirty = true
       }
       updateLongLines(lineProgress(line, index))
+      timeDiscontinuity = false
     }
 
     document.addEventListener('DOMContentLoaded', init)

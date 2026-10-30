@@ -71,6 +71,7 @@ let taskbarIcons = null
 let currentDesktopLyrics = []
 let currentDesktopTime = 0
 let currentDesktopDuration = 0
+let currentDesktopPlaybackRate = 1
 let desktopAppearanceGeneration = 0
 const desktopWindowStates = new WeakMap()
 let desktopBoundsTimer = null
@@ -316,8 +317,11 @@ function replayDesktopLyrics() {
   syncDesktopLyricSettings()
   sendDesktopLyric('desktop-lyric:song-update', currentTrack.title === '暂无播放' ? null : currentTrack)
   sendDesktopLyric('desktop-lyric:lyric-update', currentDesktopLyrics)
-  sendDesktopLyric('desktop-lyric:time-update', currentDesktopTime, { duration: currentDesktopDuration })
-  sendDesktopLyric('desktop-lyric:playback-update', desktopPlaybackSnapshot())
+  // 缓存只用于首帧定位；新的真实音频采样到达前，旧时间不得授权继续插值。
+  const timing = { duration: currentDesktopDuration, playbackRate: currentDesktopPlaybackRate,
+    advancing: false, discontinuity: true }
+  sendDesktopLyric('desktop-lyric:time-update', currentDesktopTime, timing)
+  sendDesktopLyric('desktop-lyric:playback-update', { ...desktopPlaybackSnapshot(), ...timing })
 }
 
 /** 就绪与关闭回调绑定创建时窗口；旧窗口不能清除或重新显示新窗口。 */
@@ -1566,7 +1570,7 @@ ipcMain.on('player:track-update', (event, payload) => {
   const trackChanged = payload === null || (next.trackId || currentTrack.trackId
     ? next.trackId !== currentTrack.trackId
     : next.title !== currentTrack.title || next.artist !== currentTrack.artist)
-  if (trackChanged) { currentDesktopLyrics = []; currentDesktopTime = 0; currentDesktopDuration = 0 }
+  if (trackChanged) { currentDesktopLyrics = []; currentDesktopTime = 0; currentDesktopDuration = 0; currentDesktopPlaybackRate = 1 }
   if (payload === null) isPlaying = false
   currentTrack = next
   updateTrayMenu()
@@ -1574,7 +1578,7 @@ ipcMain.on('player:track-update', (event, payload) => {
   sendDesktopLyric('desktop-lyric:song-update', payload === null ? null : currentTrack)
   if (trackChanged) {
     sendDesktopLyric('desktop-lyric:lyric-update', [])
-    sendDesktopLyric('desktop-lyric:time-update', 0, { duration: 0 })
+    sendDesktopLyric('desktop-lyric:time-update', 0, { duration: 0, playbackRate: 1, advancing: false, discontinuity: true })
   }
   sendDesktopLyric('desktop-lyric:playback-update', desktopPlaybackSnapshot())
 })
@@ -1596,13 +1600,15 @@ ipcMain.on('player:lyric-update', (event, lyrics, trackId) => {
   sendDesktopLyric('desktop-lyric:lyric-update', lyrics)
 })
 
-// 接收并转发播放时间
+// 只转发当前音源的音频时间与动画授权；主进程不推算播放位置。
 ipcMain.on('player:time-update', (event, time, meta) => {
   if (isQuitting || !isMainWindowSender(event) || !Number.isFinite(time) || time < 0 ||
       (meta?.trackId !== undefined && meta.trackId !== currentTrack.trackId)) return
   currentDesktopTime = time
   if (Number.isFinite(meta?.duration) && meta.duration >= 0) currentDesktopDuration = meta.duration
-  sendDesktopLyric('desktop-lyric:time-update', time, { duration: currentDesktopDuration })
+  currentDesktopPlaybackRate = Number.isFinite(meta?.playbackRate) && meta.playbackRate > 0 ? meta.playbackRate : 1
+  sendDesktopLyric('desktop-lyric:time-update', time, { duration: currentDesktopDuration,
+    playbackRate: currentDesktopPlaybackRate, advancing: meta?.advancing === true, discontinuity: meta?.discontinuity === true })
 })
 
 // 桌面歌词窗口内部事件处理

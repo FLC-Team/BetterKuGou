@@ -110,7 +110,10 @@ const electronAPI = {
     if (Number.isFinite(time) && time >= 0) {
       ipcRenderer.send('player:time-update', time, {
         trackId: typeof meta?.trackId === 'string' ? meta.trackId : undefined,
-        duration: Number.isFinite(meta?.duration) && meta.duration >= 0 ? meta.duration : undefined
+        duration: Number.isFinite(meta?.duration) && meta.duration >= 0 ? meta.duration : undefined,
+        advancing: meta?.advancing === true,
+        playbackRate: Number.isFinite(meta?.playbackRate) && meta.playbackRate > 0 ? meta.playbackRate : 1,
+        discontinuity: meta?.discontinuity === true
       })
     }
   },

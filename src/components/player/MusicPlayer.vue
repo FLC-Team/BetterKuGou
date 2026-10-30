@@ -206,6 +206,10 @@
       @play="handlePlay"
       @pause="handlePause"
       @timeupdate="handleTimeUpdate"
+      @waiting="handleDesktopClockChange"
+      @playing="handleDesktopClockChange"
+      @seeking="handleDesktopClockChange"
+      @ratechange="handleDesktopClockChange"
       @seeked="handleSeeked"
       @error="handleAudioError"
     ></audio>

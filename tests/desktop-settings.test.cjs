@@ -219,6 +219,50 @@ test('same-title tracks use identity and reject stale lyric/time reports; stoppi
   assert.equal(reopened.messages.find(([channel]) => channel === 'desktop-lyric:playback-update')[1].playing, false)
 })
 
+test('desktop time forwards only valid animation metadata and reopening never advances a cached position', () => {
+  const fixture = desktopFixture()
+  const win = fixture.open()
+  fixture.ipc.emit('player:track-update', fixture.mainEvent, { trackId: 'current', title: 'Controlled track' })
+  fixture.ipc.emit('player:playback-state', fixture.mainEvent, 'playing')
+  const latestTime = target => target.messages.filter(([channel]) => channel === 'desktop-lyric:time-update').at(-1)
+  const plain = value => JSON.parse(JSON.stringify(value))
+  fixture.ipc.emit('player:time-update', fixture.mainEvent, 1250, {
+    trackId: 'current', duration: 30000, advancing: true, playbackRate: 1.5, discontinuity: false, ignored: 'not forwarded'
+  })
+  assert.deepEqual(plain(latestTime(win)), ['desktop-lyric:time-update', 1250,
+    { duration: 30000, playbackRate: 1.5, advancing: true, discontinuity: false }])
+  fixture.ipc.emit('player:time-update', fixture.mainEvent, 9900, { trackId: 'old', advancing: true, playbackRate: 2 })
+  fixture.ipc.emit('player:time-update', fixture.event(win), 9900, { trackId: 'current', advancing: true })
+  fixture.ipc.emit('player:time-update', { sender: fixture.main.webContents, senderFrame: {} }, 9900, { advancing: true })
+  assert.equal(latestTime(win)[1], 1250, 'stale tracks and non-main top frames cannot change the timing anchor')
+
+  fixture.closeDesktopLyricWindow()
+  const reopened = fixture.open()
+  const timing = { duration: 30000, playbackRate: 1.5, advancing: false, discontinuity: true }
+  assert.deepEqual(plain(latestTime(reopened)), ['desktop-lyric:time-update', 1250, timing])
+  assert.deepEqual(plain(reopened.messages.find(([channel]) => channel === 'desktop-lyric:playback-update')[1]), {
+    playing: true, time: 1250, available: true, ...timing
+  })
+  fixture.ipc.emit('player:time-update', fixture.mainEvent, 1500, {
+    trackId: 'current', advancing: true, playbackRate: 1.5, discontinuity: false
+  })
+  assert.equal(latestTime(reopened)[2].advancing, true, 'only a fresh real sample permits interpolation')
+  fixture.ipc.emit('player:time-update', fixture.mainEvent, 2000, {
+    trackId: 'current', duration: NaN, advancing: 'true', playbackRate: -1, discontinuity: 'true'
+  })
+  assert.deepEqual(plain(latestTime(reopened)[2]), {
+    duration: 30000, playbackRate: 1, advancing: false, discontinuity: false
+  })
+  fixture.ipc.emit('player:time-update', fixture.mainEvent, 4000, {
+    trackId: 'current', advancing: false, playbackRate: Infinity, discontinuity: true
+  })
+  assert.equal(latestTime(reopened)[2].discontinuity, true)
+  assert.equal(latestTime(reopened)[2].playbackRate, 1)
+  fixture.ipc.emit('player:track-update', fixture.mainEvent, { trackId: 'next', title: 'Next track' })
+  assert.deepEqual(plain(latestTime(reopened)), ['desktop-lyric:time-update', 0,
+    { duration: 0, playbackRate: 1, advancing: false, discontinuity: true }])
+})
+
 test('close during loading and old close callbacks cannot revive or detach a new desktop window', async () => {
   const fixture = desktopFixture()
   fixture.delayClose(true)
