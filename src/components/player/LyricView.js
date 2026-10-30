@@ -1,9 +1,12 @@
 
 import { logger } from '../../utils/logger.js'
 import { useSettingsStore } from '../../stores/settingsStore.js'
+import { readLyricRomanization } from '../../utils/lyricProcessing.js'
+import { parseDesktopLyrics } from '../../utils/desktopLyrics.js'
 import ContextMenu from '../common/ContextMenu.vue'
 import ArtistLinks from '../common/ArtistLinks.vue'
 import ArtworkCover from '../common/ArtworkCover.vue'
+import VolumeControl from './VolumeControl.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import repeatAllIcon from '../../assets/icons/repeat_all.svg'
 import repeatOneIcon from '../../assets/icons/repeat_one.svg'
@@ -11,11 +14,16 @@ import shuffleIcon from '../../assets/icons/shuffle.svg'
 
 // DOM 与帧缓存不进入 Vue 响应式依赖，避免桥段每帧重建整首歌词的虚拟节点。
 const bridgeAnimationFrames = new WeakMap()
+const lyricAnimationFrames = new WeakMap()
+const lyricCharacters = new WeakMap()
+const lyricSegmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null
 
 export default {
   name: 'LyricView',
-  components: { ContextMenu, ArtistLinks, ArtworkCover },
+  components: { ContextMenu, ArtistLinks, ArtworkCover, VolumeControl },
   props: {
+    volume: { type: Number, default: 80 },
+    isMuted: { type: Boolean, default: false },
     visible: {
       type: Boolean,
       default: false
@@ -238,8 +246,13 @@ export default {
       if (this.showTranslation && this.parsedLyrics.some(line => line.translation)) {
         height = Math.min(140, Math.max(84, this.viewportHeight * 0.12))
       }
+      if (this.romanizationLines.size) height += 26
       if (this.viewportWidth < 900 || this.viewportHeight < 600) height *= 0.7
       return height
+    },
+    romanizationLines() {
+      if (this.settingsStore?.settings?.playback?.romanization !== 'on') return new Map()
+      return new Map(readLyricRomanization(this.lyrics, this.lyricData).map(line => [line.time / 1000, line.text]))
     },
     // 检测所有桥段（句子间隔>20秒）
     bridges() {
@@ -333,6 +346,14 @@ export default {
 
   },
   watch: {
+    parsedLyrics() {
+      // 同一首歌的 ready 层可能复用 DOM；等 Vue 补齐新字节点后再缓存。
+      this.$nextTick(() => {
+        if (this.isDisposed) return
+        this.clearLyricAnimationFrame()
+        if (this.visible && !this.pauseUpdates) this.syncDisplayedTime()
+      })
+    },
     'settingsStore.settings.playback.showTranslation'(value) {
       if (this.translationPreferenceDraft != null) return
       this.showTranslation = value ?? true
@@ -757,6 +778,7 @@ export default {
     /** 新歌及其异步歌词各自定位；不继承上一首的桥段、高亮或长句位移。 */
     resetTrackLyrics() {
       bridgeAnimationFrames.delete(this)
+      this.clearLyricAnimationFrame()
       this.resetLyricInteractions()
       this.lyricLineRefs = {}
       this.scrollingLyricElement = null
@@ -827,8 +849,14 @@ export default {
         return
       }
       
-      // 同步父组件传入的时间
-      this.syncDisplayedTime()
+      // 公共时间只负责布局状态；逐帧采样真实音频，只写当前行 DOM，不重建整首歌词。
+      const displayedTime = this.seekPreviewTime ?? this.previewTime ?? this.currentPlayTime
+      if (displayedTime !== this.lastPlaybackTime) this.syncDisplayedTime()
+      const sampledTime = this.seekPreviewTime ?? this.previewTime ?? this.readPlaybackTime?.() ?? this.currentPlayTime
+      const time = Number.isFinite(sampledTime) ? sampledTime : displayedTime
+      this.updateKaraokeStylesDirectly(time)
+      this.syncLongLyric(time)
+      this.updateBridgeAnimation()
       
       // 性能监控
       if (process.env.NODE_ENV === 'development') {
@@ -878,6 +906,7 @@ export default {
     // 停止更新循环
     stopUpdateLoop() {
       bridgeAnimationFrames.delete(this)
+      this.clearLyricAnimationFrame()
       if (this.updateLoopRafId) {
         if (process.env.NODE_ENV === 'development') {
           logger.debug('LyricView', '🛑 停止歌词更新循环 - rafId:', this.updateLoopRafId)
@@ -894,15 +923,7 @@ export default {
       this.isBridgeActive = !!bridge
       this.bridgeInfo = bridge || null
       this.bridgeProgress = bridge ? Math.max(0, Math.min(100, (this.internalPlayTime - bridge.startTime) / bridge.duration * 100)) : 0
-      if (bridge && !wasActive) {
-        const chars = this.$refs.lyricsContainer?.querySelectorAll('[data-line-index="' + Math.max(0, bridge.startLyricIndex) + '"]') || []
-        chars.forEach(char => {
-          char.style.color = 'var(--lyric-line)'
-          char.style.fontWeight = '500'
-          char.style.textShadow = ''
-          char.style.transform = ''
-        })
-      }
+      if (bridge && !wasActive) this.resetKaraokeCharacters()
     },
 
     /** 从同一音频位置计算编舞；只读动画采样不写回整页响应式时间。 */
@@ -1224,176 +1245,24 @@ export default {
       }
     },
 
-    // 解析歌词
+    /** 全屏与桌面共用时间轴；译文/发音按源行绑定后再排序，保留 offset 与重复时间标签。 */
     parseLyrics(lrcContent, rawLyricData = null) {
       this.resetLyricInteractions()
-      this.hasTimedLyrics = false
-      logger.trace('LyricView', '解析歌词，内容长度:', lrcContent?.length)
-      logger.trace('LyricView', '歌词内容预览:', lrcContent?.substring(0, 200))
-      logger.trace('LyricView', '原始歌词数据:', rawLyricData)
-      
-      // 重置翻译相关状态
-      this.hasTranslation = false
       this.translationData = null
-      this.isNonChinese = false
-      this.showTranslation = false
-
-      // 检测是否为非中文歌曲
       this.isNonChinese = this.detectNonChineseSong(this.song, lrcContent)
-      logger.trace('LyricView', '是否为非中文歌曲:', this.isNonChinese)
-
-      // 详细检查原始歌词数据结构
-      logger.trace('LyricView', '🔍 检查原始歌词数据结构:')
-      logger.trace('LyricView', '  rawLyricData 是否存在:', !!rawLyricData)
-      logger.trace('LyricView', '  rawLyricData 类型:', typeof rawLyricData)
-      if (rawLyricData) {
-        logger.trace('LyricView', '  rawLyricData 所有键:', Object.keys(rawLyricData))
-        logger.trace('LyricView', '  rawLyricData.language 是否存在:', 'language' in rawLyricData)
-        logger.trace('LyricView', '  rawLyricData 完整内容:', rawLyricData)
-        
-        // 检查是否有其他可能包含翻译的字段
-        const possibleFields = ['trans', 'translation', 'lang', 'multilang', 'lyric_translation', 'lyricTranslation', 'translationData']
-        possibleFields.forEach(field => {
-          if (rawLyricData[field]) {
-            logger.trace('LyricView', `  🔍 发现可能的翻译字段 ${field}:`, rawLyricData[field])
-          }
-        })
-      }
-
-      // 尝试解析翻译数据 - 检查多个可能的数据源
-      let languageField = null
-      
-      // 方法1：直接从rawLyricData.language获取
-      if (rawLyricData && rawLyricData.language) {
-        languageField = rawLyricData.language
-        logger.trace('LyricView', '✅ 从rawLyricData.language获取到翻译数据')
-      }
-      
-      // 方法2：从decodeContent中的[language:...]标签提取
-      if (!languageField && lrcContent) {
-        const languageMatch = lrcContent.match(/\[language:(.*?)\]/s)
-        if (languageMatch && languageMatch[1]) {
-          languageField = languageMatch[1]
-          logger.trace('LyricView', '✅ 从歌词内容的[language:...]标签中提取到翻译数据')
-        }
-      }
-      
-      // 开始解析翻译数据
-      if (languageField) {
-        logger.trace('LyricView', '🔍 开始解析翻译数据，数据长度:', languageField.length)
-        this.translationData = this.parseTranslationData(languageField)
-        if (this.translationData) {
-          const userSetting = this.translationPreferenceDraft ?? this.settingsStore.settings?.playback?.showTranslation ?? true
-          this.showTranslation = userSetting
-          logger.trace('LyricView', '✅ 成功解析翻译数据')
-          logger.trace('LyricView', '  - 翻译版本:', this.translationData.version)
-          logger.trace('LyricView', '  - 是否为非中文歌曲:', this.isNonChinese)
-          logger.trace('LyricView', '  - 用户设置显示翻译:', userSetting)
-          logger.trace('LyricView', '  - 最终显示翻译:', this.showTranslation)
-        } else {
-          logger.trace('LyricView', '❌ 翻译数据存在但解析失败')
-        }
-      } else {
-        logger.trace('LyricView', '❌ 没有找到翻译数据')
-      }
-      
-      if (!lrcContent) {
-        this.parsedLyrics = [{ time: 0, text: '暂无歌词' }]
-        logger.trace('LyricView', '歌词内容为空')
-        return
-      }
-
-      // 清理BOM和多余的空白字符
-      let cleanContent = lrcContent.replace(/^\ufeff/, '') // 移除BOM
-      cleanContent = cleanContent.trim()
-      
-      logger.trace('LyricView', '清理后内容预览:', cleanContent?.substring(0, 200))
-
-      // 处理不同的换行符（\r\n, \n, \r）
-      const lines = cleanContent.split(/\r\n|\n|\r/).filter(line => line.trim())
-      const result = []
-      
-      logger.trace('LyricView', '歌词总行数:', lines.length)
-      logger.trace('LyricView', '前5行原始内容:', lines.slice(0, 5))
-      
-      for (let line of lines) {
-        logger.trace('LyricView', '处理行:', line)
-        
-        // KRC格式：[时间,持续时间]<字符时间信息>歌词内容
-        const krcMatch = line.match(/^\[(\d+),(\d+)\](.*)$/)
-        if (krcMatch) {
-          const startTime = parseInt(krcMatch[1]) / 1000  // 毫秒转秒
-          const duration = parseInt(krcMatch[2]) / 1000   // 毫秒转秒
-          const text = krcMatch[3].trim()
-          
-          logger.trace('LyricView', 'KRC行匹配:', { startTime, duration, text: text.substring(0, 50) })
-          
-          if (text) {
-            // 解析KRC格式的逐字时间信息
-            const words = this.parseKrcWords(text)
-            const lineText = words.map(w => w.word).join('')
-            
-            logger.trace('LyricView', 'KRC 解析结果 - words数量:', words.length)
-            logger.trace('LyricView', 'KRC 解析结果 - lineText:', lineText)
-            logger.trace('LyricView', 'KRC 解析结果 - 是否有空格:', lineText.includes(' '))
-            
-            if (lineText.trim()) {
-              result.push({ 
-                time: startTime, 
-                text: lineText, 
-                words: words // 保存逐字信息
-              })
-              logger.trace('LyricView', '添加KRC歌词行:', lineText)
-            }
-          }
-        } else {
-          // 普通LRC格式：[mm:ss.xx]歌词内容
-          const lrcMatch = line.match(/^\[(\d{2}):(\d{2})(?:\.(\d{2,3}))?\](.*)$/)
-          if (lrcMatch) {
-            const minutes = parseInt(lrcMatch[1])
-            const seconds = parseInt(lrcMatch[2])
-            const milliseconds = lrcMatch[3] ? parseInt(lrcMatch[3].padEnd(3, '0')) : 0
-            const time = minutes * 60 + seconds + milliseconds / 1000
-            const text = lrcMatch[4].trim()
-            
-            logger.trace('LyricView', 'LRC行匹配:', { time, text })
-            
-            if (text) {
-              result.push({ time, text })
-              logger.trace('LyricView', '添加LRC歌词行:', text)
-            }
-          } else {
-            // 跳过元信息行（如[ar:], [ti:]等）
-            if (!line.match(/^\[[a-z]+:/)) {
-              logger.trace('LyricView', '无法匹配的行:', line)
-            }
-          }
-        }
-      }
-      
-      // 按时间排序
-      result.sort((a, b) => a.time - b.time)
-      this.hasTimedLyrics = result.length > 0
-      this.parsedLyrics = result.length > 0 ? result : [{ time: 0, text: '暂无歌词' }]
-      
-      // 检查是否有空格
-      const hasSpaces = result.some(line => line.text.includes(' '))
-      logger.trace('LyricView', '🔍 歌词是否包含空格:', hasSpaces)
-      if (hasSpaces) {
-        const linesWithSpaces = result.filter(line => line.text.includes(' '))
-        logger.trace('LyricView', '包含空格的行数:', linesWithSpaces.length)
-        logger.trace('LyricView', '第一行带空格的歌词:', linesWithSpaces[0]?.text)
-        logger.trace('LyricView', '空格数量:', (linesWithSpaces[0]?.text.match(/ /g) || []).length)
-      }
-      
-      logger.trace('LyricView', '歌词解析完成，共', this.parsedLyrics.length, '行')
-      logger.trace('LyricView', '前3行歌词:', this.parsedLyrics.slice(0, 3))
-
-      // 处理翻译映射
-      if (this.translationData) {
-        this.mapTranslationToLyrics()
-      }
+      const lines = parseDesktopLyrics(lrcContent, rawLyricData).filter(line => line.text.trim())
+      this.parsedLyrics = lines.map(line => ({
+        ...line,
+        time: line.time / 1000,
+        ...(line.duration != null ? { duration: line.duration / 1000 } : {}),
+        ...(line.words ? { words: line.words.map(word => ({
+          ...word, startTime: word.startTime / 1000, endTime: word.endTime / 1000, duration: word.duration / 1000
+        })) } : {})
+      }))
+      this.hasTimedLyrics = this.parsedLyrics.length > 0
+      if (!this.hasTimedLyrics) this.parsedLyrics = [{ time: 0, text: '暂无歌词' }]
       this.hasTranslation = this.parsedLyrics.some(line => Boolean(line.translation))
+      this.showTranslation = this.translationPreferenceDraft ?? this.settingsStore?.settings?.playback?.showTranslation ?? true
     },
 
     // 将翻译数据映射到歌词行
@@ -1491,7 +1360,7 @@ export default {
         // 移除所有<>标签，获取纯文本
         const cleanText = text.replace(/<[^>]*>/g, '')
         if (cleanText) {
-          const chars = cleanText.split('')
+          const chars = lyricSegmenter ? Array.from(lyricSegmenter.segment(cleanText), part => part.segment) : Array.from(cleanText)
           const charDuration = 3 / chars.length // 假设每行3秒
           
           chars.forEach((char, index) => {
@@ -1626,142 +1495,87 @@ export default {
       return Math.max(0, Math.min(1, charProgress))
     },
 
-    /** 只更新当前行的逐字状态；颜色使用 CSS 变量，切换主题无需重读样式或重置播放。 */
-    updateKaraokeStylesDirectly() {
-      if (!this.parsedLyrics.length) return
-      
+    /** 按字素分配 KRC 词内时间；保留组合字符、emoji 和原始空格。 */
+    getLyricCharacters(line) {
+      if (lyricCharacters.has(line)) return lyricCharacters.get(line)
+      const split = text => lyricSegmenter ? Array.from(lyricSegmenter.segment(text), part => part.segment) : Array.from(text)
+      const characters = line.words?.length ? line.words.flatMap(word => {
+        const letters = split(word.word)
+        const duration = Math.max(0, word.endTime - word.startTime)
+        return letters.map((text, index) => ({ text,
+          start: word.startTime + duration * index / letters.length,
+          end: word.startTime + duration * (index + 1) / letters.length }))
+      }) : split(line.text).map(text => ({ text }))
+      lyricCharacters.set(line, characters)
+      return characters
+    },
+
+    /** DOM/尺寸缓存留在响应式状态外；换行、字体及窗口尺寸变化才重新测量。 */
+    getLyricAnimationFrame() {
+      let frame = lyricAnimationFrames.get(this)
+      if (!frame) {
+        frame = { entries: [], index: -1, line: null, container: null, text: null, layoutDirty: true, observer: null }
+        lyricAnimationFrames.set(this, frame)
+      }
+      return frame
+    },
+    resetKaraokeCharacters() {
+      const frame = lyricAnimationFrames.get(this)
+      frame?.entries.forEach(entry => {
+        entry.element.style.color = 'var(--lyric-line)'
+        entry.element.dataset.fillState = ''
+        entry.progress = null
+      })
+    },
+    clearLyricAnimationFrame() {
+      this.resetKaraokeCharacters()
+      lyricAnimationFrames.get(this)?.observer?.disconnect()
+      lyricAnimationFrames.delete(this)
+    },
+
+    /** 真实音频时间只更新当前行的填充边界；暂停/倒退立即重算，不改变字重或字形位置。 */
+    updateKaraokeStylesDirectly(time = this.internalPlayTime) {
       const container = this.$refs.lyricsContainer
-      if (!container) return
-
-      // 使用内部时间而不是 prop（避免 Vue 响应式）
-      const currentTime = this.internalPlayTime
-
-      // 找到当前歌词行（考虑桥段的影响）
-      let newIndex = 0
-      for (let i = 0; i < this.parsedLyrics.length; i++) {
-        if (currentTime >= this.parsedLyrics[i].time) {
-          newIndex = i
-        } else {
-          break
-        }
+      if (!this.parsedLyrics.length || !container || !Number.isFinite(time)) return
+      let low = 0
+      let high = this.parsedLyrics.length
+      while (low < high) {
+        const middle = (low + high) >>> 1
+        // 行和桥段共同沿公共位置切换，逐帧视觉采样不能提前改变行过渡状态。
+        if (this.parsedLyrics[middle].time <= this.internalPlayTime) low = middle + 1
+        else high = middle
       }
-      
-      // 如果正在桥段中，保持在上一句不动，直到桥段结束
-      if (this.isBridgeActive && this.bridgeInfo) {
-        // 保持在桥段起始行（上一句）
-        if (this.bridgeInfo.startLyricIndex === -1) {
-          // 开头桥段，还没有第一句，保持在第一句之前
-          newIndex = 0
-        } else {
-          // 句间桥段，保持在上一句
-          newIndex = this.bridgeInfo.startLyricIndex
-        }
+      const newIndex = this.isBridgeActive && this.bridgeInfo
+        ? Math.max(0, this.bridgeInfo.startLyricIndex) : Math.max(0, low - 1)
+      const frame = this.getLyricAnimationFrame()
+      const line = this.parsedLyrics[newIndex]
+      if (frame.index !== newIndex || frame.line !== line || frame.container !== container || !frame.entries.length) {
+        this.resetKaraokeCharacters()
+        frame.index = newIndex
+        frame.line = line
+        frame.container = container
+        frame.entries = Array.from(container.querySelectorAll(`[data-line-index="${newIndex}"]`), element => ({ element, progress: null }))
       }
-
-      const lineChanged = newIndex !== this.currentLyricIndex
-
-      // 如果行改变，清理旧行样式并恢复位置
-      if (lineChanged && this.currentLyricIndex >= 0) {
-        const oldLineChars = container.querySelectorAll(`[data-line-index="${this.currentLyricIndex}"]`)
-        oldLineChars.forEach(char => {
-          char.style.color = 'var(--lyric-line)'
-          char.style.fontWeight = '500'
-          char.style.textShadow = ''
-          char.style.transform = '' // 恢复位置
-          char.style.transition = 'all 0.3s ease-out' // 平滑恢复
-        })
-      }
-
-      // 更新索引
-      if (lineChanged) {
-        this.currentLyricIndex = newIndex
-        this.scrollToCurrentLyric()
-        this.handleLongLyric() // 处理长歌词滚动
-      }
-
-      // 只更新当前行的字符（关键优化！）
-      const currentLineChars = container.querySelectorAll(`[data-line-index="${this.currentLyricIndex}"]`)
-      
-      // 如果正在桥段中，不更新字符样式（保持恢复后的状态）
-      if (this.isBridgeActive) {
-        return
-      }
-      
-      currentLineChars.forEach(char => {
-        // 跳过空格字符的样式更新
-        if (char.classList.contains('is-space')) {
-          return
-        }
-        
-        if (char.dataset.start !== undefined) {
-          // KRC模式 - 逐字时间
-          const lineStart = parseFloat(char.dataset.lineStart)
-          const wordStart = lineStart + parseFloat(char.dataset.start)
-          const wordEnd = lineStart + parseFloat(char.dataset.end)
-          
-          if (currentTime < wordStart) {
-            // 未开始
-            char.style.color = 'var(--lyric-pending)'
-            char.style.fontWeight = '500'
-            char.style.textShadow = ''
-            char.style.transform = ''
-            char.style.transition = 'transform 0.15s ease-out'
-          } else if (currentTime >= wordEnd) {
-            // 已完成 - 保持高亮和悬浮
-            char.style.color = 'var(--lyric-accent)'
-            char.style.fontWeight = '600'
-            char.style.textShadow = '0 0 12px color-mix(in srgb, var(--lyric-accent) 60%, transparent), var(--shadow-slider)'
-            char.style.transform = 'translateY(-3px)'
-            char.style.transition = 'transform 0.15s ease-out'
-          } else {
-            // 进行中 - 使用双色文字而非渐变（保持字体粗细）
-            const progress = (currentTime - wordStart) / (wordEnd - wordStart)
-            const fillPercentage = Math.floor(progress * 20) * 5
-            
-            // 使用 text-shadow 叠加实现渐变效果，保持字体清晰
-            const highlightIntensity = progress
-            char.style.color = `color-mix(in srgb, var(--lyric-accent) ${highlightIntensity * 100}%, var(--lyric-text))`
-            char.style.fontWeight = '600'
-            char.style.textShadow = `0 0 ${8 * progress}px color-mix(in srgb, var(--lyric-accent) ${50 * progress}%, transparent)`
-            char.style.transform = 'translateY(-3px)'
-            char.style.transition = 'transform 0.15s ease-out'
-          }
-        } else {
-          // LRC模式 - 按字符索引
-          const charIndex = parseInt(char.dataset.charIndex)
-          const currentLine = this.parsedLyrics[this.currentLyricIndex]
-          
-          const nextTime = this.parsedLyrics[this.currentLyricIndex + 1]?.time ?? this.duration
-          if (nextTime > currentLine.time) {
-            const lineProgress = Math.max(0, Math.min(1, (currentTime - currentLine.time) / (nextTime - currentLine.time)))
-            const currentCharIndex = Math.floor(lineProgress * currentLine.text.length)
-            
-            if (charIndex < currentCharIndex) {
-              // 已完成 - 保持高亮和悬浮
-              char.style.color = 'var(--lyric-accent)'
-              char.style.fontWeight = '600'
-              char.style.textShadow = '0 0 12px color-mix(in srgb, var(--lyric-accent) 60%, transparent), var(--shadow-slider)'
-              char.style.transform = 'translateY(-5px)'
-              char.style.transition = 'transform 0.15s ease-out'
-            } else if (charIndex === currentCharIndex) {
-              // 进行中
-              const charProgress = (lineProgress * currentLine.text.length) - currentCharIndex
-              const highlightIntensity = charProgress
-              char.style.color = `color-mix(in srgb, var(--lyric-accent) ${highlightIntensity * 100}%, var(--lyric-text))`
-              char.style.fontWeight = '600'
-              char.style.textShadow = `0 0 ${10 * charProgress}px color-mix(in srgb, var(--lyric-accent) ${50 * charProgress}%, transparent)`
-              char.style.transform = 'translateY(-5px)'
-              char.style.transition = 'transform 0.15s ease-out'
-            } else {
-              // 未开始
-              char.style.color = 'var(--lyric-pending)'
-              char.style.fontWeight = '500'
-              char.style.textShadow = ''
-              char.style.transform = ''
-              char.style.transition = 'transform 0.15s ease-out'
-            }
-          }
-        }
+      if (newIndex !== this.currentLyricIndex) this.currentLyricIndex = newIndex
+      if (this.isBridgeActive) return
+      const nextTime = this.parsedLyrics[newIndex + 1]?.time ?? this.duration
+      const count = this.getLyricCharacters(line).length
+      const charDuration = count ? Math.max(0, nextTime - line.time) / count : 0
+      frame.entries.forEach((entry, index) => {
+        const { element } = entry
+        const timed = element.dataset.start !== undefined
+        const start = line.time + (timed ? Number(element.dataset.start) : index * charDuration)
+        const end = timed ? line.time + Number(element.dataset.end) : start + charDuration
+        const progress = time < start || (!timed && charDuration <= 0) ? 0
+          : end > start ? Math.max(0, Math.min(1, (time - start) / (end - start))) : 1
+        const fill = Math.round(progress * 1000) / 10
+        const state = progress > 0 && progress < 1 ? 'singing' : ''
+        if (entry.progress === fill && entry.state === state) return
+        element.dataset.fillState = state
+        element.style.color = progress >= 1 ? 'var(--lyric-accent)' : 'var(--lyric-pending)'
+        element.style.setProperty('--fill-progress', `${fill}%`)
+        entry.progress = fill
+        entry.state = state
       })
     },
 
@@ -1812,26 +1626,41 @@ export default {
       }
     },
 
-    /** 横向位移只作用于内层文本，按当前播放位置计算，暂停和跳转保持同步。 */
-    syncLongLyric() {
+    /** 横移与逐字高亮共用真实播放时间，只在当前行或尺寸变化时读取布局。 */
+    syncLongLyric(time = this.internalPlayTime) {
       const lineElement = this.lyricLineRefs[this.currentLyricIndex]
-      const text = lineElement?.querySelector('.lyric-text')
-      if (this.scrollingLyricElement && this.scrollingLyricElement !== text) {
-        this.scrollingLyricElement.style.transform = ''
+      const frame = this.getLyricAnimationFrame()
+      if (frame.lineElement !== lineElement) {
+        if (frame.text) frame.text.style.transform = ''
+        frame.observer?.disconnect()
+        frame.lineElement = lineElement
+        frame.text = lineElement?.querySelector('.lyric-text')
+        frame.viewport = lineElement?.querySelector('.main-lyric')
+        frame.layoutDirty = true
+        if (typeof ResizeObserver === 'function' && frame.text && frame.viewport) {
+          frame.observer = new ResizeObserver(() => { frame.layoutDirty = true })
+          frame.observer.observe(frame.text)
+          frame.observer.observe(frame.viewport)
+        }
       }
+      const { text, viewport } = frame
       this.scrollingLyricElement = text || null
-      const viewport = lineElement?.querySelector('.main-lyric')
       const line = this.parsedLyrics[this.currentLyricIndex]
       if (!text || !viewport || !line) return
-      const overflow = Math.max(0, text.scrollWidth - viewport.clientWidth)
+      if (frame.layoutDirty) {
+        frame.overflow = Math.max(0, text.scrollWidth - viewport.clientWidth)
+        frame.layoutDirty = false
+      }
       const nextTime = this.parsedLyrics[this.currentLyricIndex + 1]?.time ?? this.duration
       const lastWord = line.words?.[line.words.length - 1]
       const endTime = lastWord?.endTime > 0 ? Math.min(nextTime, line.time + lastWord.endTime) : nextTime
       const lineDuration = endTime - line.time
-      const progress = lineDuration > 0 ? Math.max(0, Math.min(1, (this.internalPlayTime - line.time) / lineDuration)) : 0
-      text.style.transform = 'translateX(' + (-overflow * progress) + 'px)'
+      const progress = lineDuration > 0 ? Math.max(0, Math.min(1, (time - line.time) / lineDuration)) : 0
+      const transform = 'translateX(' + (-frame.overflow * progress) + 'px)'
+      if (text.style.transform !== transform) text.style.transform = transform
     },
     handleLongLyric() {
+      this.getLyricAnimationFrame().layoutDirty = true
       this.$nextTick(() => {
         if (!this.isDisposed && this.visible) this.syncLongLyric()
       })

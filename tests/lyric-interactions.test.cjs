@@ -67,7 +67,7 @@ function environment(options = {}) {
   const document = { body: { style: { overflow: 'auto' } }, activeElement: null }
   const sandbox = {
     window, document, navigator: options.browser ? { clipboard: { writeText: async text => clipboard.push(text) } } : {},
-    process: { env: { NODE_ENV: 'test' } }, performance, ContextMenu: { render: () => null }, ArtistLinks: { render: () => null }, ArtworkCover: { render: () => null }, contextMenuManager: menuManager,
+    process: { env: { NODE_ENV: 'test' } }, performance, ContextMenu: { render: () => null }, VolumeControl: { render: () => null }, ArtistLinks: { render: () => null }, ArtworkCover: { render: () => null }, contextMenuManager: menuManager,
     useSettingsStore: () => settingsStore, repeatAllIcon: '', repeatOneIcon: '', shuffleIcon: '',
     logger: Object.fromEntries(['trace', 'debug', 'info', 'error', 'warn'].map(level => [level, (...args) => {
       if (level === 'warn') warnings.push(args)
@@ -79,6 +79,8 @@ function environment(options = {}) {
     atob: value => Buffer.from(value, 'base64').toString('binary')
   }
   vm.createContext(sandbox)
+  const timeline = fs.readFileSync(path.join(directory, '../../utils/desktopLyrics.js'), 'utf8').replace(/\bexport (?=(?:function|const))/g, '')
+  vm.runInContext(timeline, sandbox)
   vm.runInContext(source, sandbox, { filename: 'LyricView.js' })
   return { ...sandbox, time, frames, listeners, warnings, clipboard, menuManager, settingsStore, component: sandbox.component }
 }

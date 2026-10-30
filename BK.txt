@@ -2,7 +2,10 @@
 
 本文件保留既有历史资料。当前项目逻辑与维护规则以 BK.md、各目录同名 .md、AGENTS.md 和 agent.md 为准。
 
-## 更新日期：2026-10-15
+## 更新日期：2026-10-30
+
+全屏与桌面歌词采用逐字左右填亮；全屏复用真实音频逐帧采样，桌面用有上限的权威时间插值，下一句保持句首并自然上移。当前时序、缓存和生命周期说明见 src/components/player/player.md 与 electron/electron.md。
+桌面歌词设置由 DesktopLyricSettings 编辑原有草稿，双端 normalizeDesktopLyrics 校验后持久化；独立窗口消费显示/动效/字体配色/阴影，主进程策略处理暂停与同屏全屏隐藏、悬停透明、置顶和解锁热点。Windows 外部全屏观察器按需运行，隐藏窗口停止绘制，节能模式降低刷新频率。详见 electron/services/services.md 与 src/stores/stores.md。
 
 ## 模块结构
 

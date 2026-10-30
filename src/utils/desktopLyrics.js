@@ -58,7 +58,8 @@ export function parseDesktopLyrics(content, rawData = null) {
     const leadingTags = line.match(/^(?:\[\d{1,3}:\d{2}(?:\.\d{1,3})?\])+/)?.[0] || ''
     const timestamps = krc ? [] : Array.from(leadingTags.matchAll(/\[(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?\]/g))
     if (!krc && (!timestamps.length || timestamps[0].index !== 0)) continue
-    const translation = translations[sourceIndex++] || ''
+    const rawTranslation = translations[sourceIndex++] || ''
+    const translation = rawTranslation.trim() ? rawTranslation : ''
     if (krc) {
       const start = Number(krc[1])
       const duration = Number(krc[2])

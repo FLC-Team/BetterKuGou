@@ -18,7 +18,7 @@ async function until(callback, timeout = 5000) {
   assert.fail('Timed out waiting for a cache service operation')
 }
 
-async function fixture(t) {
+async function fixture(t, options = {}) {
   const toolsRoot = path.resolve(__dirname, '../.agent/tools')
   await fs.mkdir(toolsRoot, { recursive: true })
   const directory = await fs.mkdtemp(path.join(toolsRoot, 'playlist-cache-service-'))
@@ -43,6 +43,13 @@ async function fixture(t) {
     constructor(workerPath, options) {
       super(workerPath, { ...options, workerData: { ...options.workerData, apiBase: origin, allowLocalTestUrls: true } })
       workers.push(this)
+    }
+    postMessage(message) {
+      if (options.failCommit && message.action === 'commitMigration') {
+        options.failCommit = false
+        throw new Error('Simulated lost commit message')
+      }
+      return super.postMessage(message)
     }
   }
   const states = []
@@ -79,7 +86,9 @@ test('real Worker returns private leases and protocol serves GET, HEAD, seek ran
   assert.equal(source.file, undefined)
   assert.equal(source.account, undefined)
   assert.equal(source.detail.album_audio_id, 7)
-  assert.doesNotMatch(JSON.stringify(f.service.getState()), /placeholder-token|playlist-cache-service-|\.wav|http:/)
+  const { cacheDirectory, ...publicState } = f.service.getState()
+  assert.equal(cacheDirectory, f.directory)
+  assert.doesNotMatch(JSON.stringify(publicState), /placeholder-token|playlist-cache-service-|\.wav|http:/)
   const full = await f.service.handleRequest(new Request(source.url))
   assert.equal(full.status, 200)
   assert.equal(full.headers.get('content-length'), '4096')
@@ -139,6 +148,114 @@ test('stop is shared and releases the real Worker without leaving a background t
   assert.equal(stop, f.service.stop())
   await stop
   assert.equal(f.workers[0].threadId, -1)
+})
+
+async function migrationTarget(t) {
+  const parent = await fs.mkdtemp(path.resolve(__dirname, '../.agent/tools/cache-destination-'))
+  t.after(() => fs.rm(parent, { recursive: true, force: true }))
+  return path.join(parent, 'offline-playlists')
+}
+
+test('migration keeps granted URLs playable, copies lyrics and lists, and cleans the original root', async t => {
+  const f = await fixture(t)
+  const target = await migrationTarget(t)
+  await f.service.cacheSong({ song: { hash: 'song-a' } })
+  const source = await until(() => f.service.getSource({ hash: 'song-a', quality: '128' }))
+  await f.service.putLyrics({ hash: 'song-a', data: { decodeContent: '[00:00]cached lyrics' } })
+  const oldResponse = await f.service.handleRequest(new Request(source.url))
+  let saved = null
+  const result = await f.service.changeDirectory(target, async directory => {
+    assert.equal(f.service.getState().cacheDirectory, f.directory)
+    assert.ok((await fs.readdir(directory)).length)
+    saved = directory
+  })
+  assert.equal(saved, target)
+  assert.equal(result.cacheDirectory, target)
+  assert.deepEqual(Buffer.from(await oldResponse.arrayBuffer()), f.audio)
+  const range = await f.service.handleRequest(new Request(source.url, { headers: { Range: 'bytes=1-10' } }))
+  assert.equal(range.status, 206)
+  assert.deepEqual(Buffer.from(await range.arrayBuffer()), f.audio.subarray(1, 11))
+  assert.equal((await f.service.readPlaylist(null)).songs[0].hash, 'song-a')
+  assert.equal((await f.service.readLyrics('song-a')).decodeContent, '[00:00]cached lyrics')
+  await until(() => !f.service.getState().migration)
+  await assert.rejects(fs.access(f.directory), { code: 'ENOENT' })
+  assert.ok(f.states.some(state => state.migration?.phase === 'verifying'))
+  await f.service.releaseSource(source.leaseId)
+})
+
+test('failed migration setting commits roll back, preserve source media, and permit retry', async t => {
+  const f = await fixture(t)
+  const target = await migrationTarget(t)
+  await f.service.cacheSong({ song: { hash: 'song-a' } })
+  const source = await until(() => f.service.getSource({ hash: 'song-a', quality: '128' }))
+  await assert.rejects(f.service.changeDirectory(target, async () => { throw Object.assign(new Error('Disk full'), { code: 'ENOSPC' }) }), { code: 'CACHE_MIGRATION_FAILED' })
+  assert.equal(f.service.getState().cacheDirectory, f.directory)
+  assert.match(f.service.getState().migrationError.message, /原缓存/)
+  assert.deepEqual(Buffer.from(await (await f.service.handleRequest(new Request(source.url))).arrayBuffer()), f.audio)
+  await assert.rejects(fs.access(target), { code: 'ENOENT' })
+  await f.service.changeDirectory(target, async () => {})
+  assert.equal(f.service.getState().cacheDirectory, target)
+  assert.equal(f.service.getState().migrationError, null)
+})
+
+test('a lost Worker commit after settings were saved rebuilds from the new root without deleting either copy', async t => {
+  const f = await fixture(t, { failCommit: true })
+  const target = await migrationTarget(t)
+  await f.service.cacheSong({ song: { hash: 'song-a' } })
+  const source = await until(() => f.service.getSource({ hash: 'song-a', quality: '128' }))
+  const state = await f.service.changeDirectory(target, async () => {})
+  assert.equal(state.cacheDirectory, target)
+  assert.equal(state.migrationWarning.code, 'CACHE_MIGRATION_RECOVERED')
+  assert.equal(f.workers.length, 2)
+  await fs.access(f.directory)
+  await fs.access(target)
+  assert.deepEqual(Buffer.from(await (await f.service.handleRequest(new Request(source.url))).arrayBuffer()), f.audio)
+  const fresh = await f.service.getSource({ hash: 'song-a', quality: '128' })
+  assert.ok(fresh)
+  await f.service.releaseSource(source.leaseId)
+  await f.service.releaseSource(fresh.leaseId)
+})
+
+test('migration queues account changes and cache writes while existing playback stays available', async t => {
+  const f = await fixture(t)
+  const target = await migrationTarget(t)
+  await f.service.cacheSong({ song: { hash: 'song-a' } })
+  const source = await until(() => f.service.getSource({ hash: 'song-a', quality: '128' }))
+  let finishSave
+  const save = new Promise(resolve => { finishSave = resolve })
+  let saving = false
+  const migration = f.service.changeDirectory(target, async () => { saving = true; await save })
+  await until(() => saving)
+  await assert.rejects(f.service.changeDirectory(target, async () => {}), { code: 'CACHE_MIGRATION_BUSY' })
+  let loggedOut = false
+  const logout = f.service.setSession(null).then(() => { loggedOut = true })
+  assert.equal(f.service.getState().userId, null)
+  assert.deepEqual(Buffer.from(await (await f.service.handleRequest(new Request(source.url))).arrayBuffer()), f.audio)
+  assert.equal(loggedOut, false)
+  finishSave()
+  await migration
+  await logout
+  assert.equal(await f.service.getSource({ hash: 'song-a', quality: '128' }), null)
+  assert.deepEqual(Buffer.from(await (await f.service.handleRequest(new Request(source.url))).arrayBuffer()), f.audio)
+  await f.service.releaseSource(source.leaseId)
+})
+
+test('shutdown waits for an in-progress migration commit before releasing the Worker', async t => {
+  const f = await fixture(t)
+  const target = await migrationTarget(t)
+  let finishSave, saving = false
+  const save = new Promise(resolve => { finishSave = resolve })
+  const migration = f.service.changeDirectory(target, async () => { saving = true; await save })
+  await until(() => saving)
+  const stop = f.service.stop()
+  assert.equal(stop, f.service.stop())
+  assert.notEqual(f.workers[0].threadId, -1)
+  finishSave()
+  await migration
+  await stop
+  assert.equal(f.service.getState().cacheDirectory, target)
+  assert.equal(f.workers[0].threadId, -1)
+  await fs.access(target)
 })
 
 test('late RPC sources and authentication events cannot cross an account generation', async () => {

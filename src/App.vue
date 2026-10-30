@@ -155,10 +155,6 @@ function sameInstallSession(saved, current, capturedAt) {
   return Math.abs(currentTime - savedTime) <= .05
 }
 
-async function openThemeStudio() {
-  if (settingsViewRef.value && !await settingsViewRef.value.flushEditableSettings()) return
-  themeStudioOpen.value = true
-}
 async function prepareThemeRecovery(base) {
   return settingsViewRef.value?.prepareThemeRecovery(base)
 }
@@ -692,6 +688,7 @@ const AUTO_LYRIC_DELAY = 60 * 1000 // 60秒
 const handleLyricViewChanged = (isVisible) => {
   logger.trace('App', '🎵 [App.vue] handleLyricViewChanged - 歌词界面状态变化:', isVisible)
   isLyricViewVisible.value = isVisible
+  window.electronAPI?.islandLyric?.setLyricViewOpen?.(Boolean(isVisible))
 
   // 如果用户手动切换歌词界面，重置自动全屏计时器
   if (!isVisible && settings.playback?.fullscreenLyrics && currentSong.value) {
@@ -879,13 +876,13 @@ const handleKeyDown = (event) => {
   } else if (pressedKey === shortcuts.volumeUp && shortcuts.volumeUp !== 'Escape') {
     event.preventDefault()
     if (musicPlayerRef.value) {
-      musicPlayerRef.value.volume = Math.min(100, musicPlayerRef.value.volume + 5)
+      musicPlayerRef.value.handleVolumeChange(Math.min(100, musicPlayerRef.value.volume + 5))
     }
     handled = true
   } else if (pressedKey === shortcuts.volumeDown && shortcuts.volumeDown !== 'Escape') {
     event.preventDefault()
     if (musicPlayerRef.value) {
-      musicPlayerRef.value.volume = Math.max(0, musicPlayerRef.value.volume - 5)
+      musicPlayerRef.value.handleVolumeChange(Math.max(0, musicPlayerRef.value.volume - 5))
     }
     handled = true
   } else if (pressedKey === shortcuts.toggleLyrics && shortcuts.toggleLyrics !== 'Escape') {
@@ -999,12 +996,12 @@ onMounted(() => {
           break
         case 'volumeUp':
           if (musicPlayerRef.value) {
-            musicPlayerRef.value.volume = Math.min(100, musicPlayerRef.value.volume + 5)
+            musicPlayerRef.value.handleVolumeChange(Math.min(100, musicPlayerRef.value.volume + 5))
           }
           break
         case 'volumeDown':
           if (musicPlayerRef.value) {
-            musicPlayerRef.value.volume = Math.max(0, musicPlayerRef.value.volume - 5)
+            musicPlayerRef.value.handleVolumeChange(Math.max(0, musicPlayerRef.value.volume - 5))
           }
           break
         case 'toggleLyrics':
@@ -1529,7 +1526,7 @@ function performMemoryCleanup() {
     </Transition>
   </div>
   <ThemeStudio v-if="themeStudioOpen" @close="themeStudioOpen = false" />
-  <ThemeRecovery :prepare-restore="prepareThemeRecovery" @open-editor="openThemeStudio" />
+  <ThemeRecovery :prepare-restore="prepareThemeRecovery" />
 </template>
 
 <style src="./App.css" scoped></style>

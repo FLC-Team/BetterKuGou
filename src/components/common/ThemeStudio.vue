@@ -6,8 +6,8 @@
       <Transition name="studio-collapse"><div v-show="!minimized" class="studio-body" :inert="minimized || closing || undefined"><fieldset class="studio-controls" :disabled="saving">
         <p>可先收起面板并导航到任意页面，再拾取元素。预览不写入设置，应用后随主题保存和分享。</p>
         <div class="studio-actions"><button type="button" @click="startPicking">{{ picking ? '正在拾取（Esc 取消）' : '拾取界面元素' }}</button><button type="button" @click="loadCurrent" :disabled="saving">载入当前主题</button><button type="button" @click="restoreDefault" :disabled="saving">恢复内置外观</button></div>
-        <label>编辑窗口<select v-model="target" @change="chooseFirstRegion"><option value="main">主窗口 / 全屏歌词 / 菜单 / 队列</option><option value="desktop">独立桌面歌词</option></select></label>
-        <label>界面区域<select v-model="region" @change="selectRegion"><option value="">自定义 / 拾取的元素</option><optgroup v-for="group in regionGroups" :key="group" :label="group"><option v-for="item in regions.filter(item => item.group === group && item.target === target)" :key="item.selector" :value="item.selector">{{ item.label }}</option></optgroup></select></label>
+        <label>编辑窗口<AnimatedSelect :model-value="target" class="studio-select" label="编辑窗口" :options="targetOptions" :disabled="saving" safety @change="chooseTarget" /></label>
+        <label>界面区域<AnimatedSelect v-model="region" class="studio-select" label="界面区域" :options="regionOptions" :disabled="saving" safety @change="selectRegion" /></label>
         <label>选择器<input v-model="selector" spellcheck="false" @change="readProperties" aria-label="要自定义的元素选择器"></label>
         <small>拾取按页面与元素类型生成选择器，同类型曲目共享样式；可添加 :hover、:focus-visible 或 ::before。当前匹配 {{ matchCount }} 个元素。</small>
         <AnimatedDetails open><template #summary>可视化样式 · 留空恢复继承</template><div class="region-fields"><label v-for="field in properties" :key="field.property">{{ field.label }}<span class="property-input"><input v-if="field.kind === 'color'" type="color" :value="/^#[\da-f]{6}$/i.test(values[field.property] || '') ? values[field.property] : '#ffffff'" :aria-label="field.label + '色板'" @change="changeProperty(field.property, $event.target.value)"><input :value="values[field.property] || ''" :type="field.kind === 'number' ? 'number' : 'text'" :min="field.kind === 'number' ? 0 : undefined" :max="field.kind === 'number' ? 1 : undefined" :step="field.kind === 'number' ? 0.05 : undefined" :placeholder="field.kind === 'length' ? '例：24px / 50%' : '留空使用原样式'" :aria-label="field.label" spellcheck="false" @change="changeProperty(field.property, $event.target.value)"></span></label></div></AnimatedDetails>
@@ -16,7 +16,7 @@
         <p v-if="target === 'desktop'">此预览显示示例歌词；应用后会更新真实桌面歌词窗口。小 / 中 / 大与经典 / 渐变 / 简约模式继续保留，CSS 按你的规则覆盖。</p>
         <div class="studio-actions sticky-actions"><button type="button" @click="preview" :disabled="saving">预览主窗口</button><button type="button" @click="cancelPreview">取消预览</button><button type="button" class="primary" @click="apply" :disabled="saving">{{ saving ? '保存中…' : '应用并保存主题' }}</button></div>
         <Transition name="ui-fade" mode="out-in"><p v-if="message" :key="messageId" :class="{ error }" :role="error ? 'alert' : 'status'">{{ message }}</p></Transition>
-        <small>任何时候可用独立「外观恢复」按钮或 Ctrl + Alt + Shift + R 恢复内置外观；草稿关闭后不保存。</small>
+        <small>任何时候可用 Ctrl + Alt + Shift + R 恢复内置外观；草稿关闭后不保存。</small>
       </fieldset></div></Transition>
     </section>
     </Transition>
@@ -28,6 +28,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import AnimatedDetails from './AnimatedDetails.vue'
+import AnimatedSelect from './AnimatedSelect.vue'
 import { useSettingsStore } from '../../stores/settingsStore.js'
 import { createThemePackage, previewThemePackage, cancelThemePreview } from '../../utils/themeManager.js'
 import { compileThemeCss, getThemeCssRule, updateThemeCssRule, normalizeThemePackage } from '../../themes/themePackages.js'
@@ -41,6 +42,7 @@ const target = ref('main')
 const region = ref('.app-container')
 const selector = ref('.app-container')
 const regions = THEME_REGIONS
+const targetOptions = [{ value: 'main', label: '主窗口 / 全屏歌词 / 菜单 / 队列' }, { value: 'desktop', label: '独立桌面歌词' }]
 const properties = REGION_PROPERTIES
 const values = reactive({})
 const minimized = ref(false)
@@ -56,7 +58,7 @@ let disposed = false
 let previewTimer = null
 const activeCss = computed({ get: () => target.value === 'main' ? css.value : desktopCss.value, set: value => { if (target.value === 'main') css.value = value; else desktopCss.value = value } })
 const dirty = computed(() => css.value !== (snapshot.value.css || '') || desktopCss.value !== (snapshot.value.desktopCss || ''))
-const regionGroups = computed(() => [...new Set(regions.filter(item => item.target === target.value).map(item => item.group))])
+const regionOptions = computed(() => [{ value: '', label: '自定义 / 拾取的元素' }, ...regions.filter(item => item.target === target.value).map(item => ({ value: item.selector, label: item.label, group: item.group }))])
 const matchCount = computed(() => {
   if (target.value === 'desktop') return '示例'
   try { return document.querySelectorAll(selector.value).length } catch { return '无效' }
@@ -79,6 +81,12 @@ function readProperties() {
 }
 function selectRegion() { if (region.value) selector.value = region.value; readProperties() }
 function chooseFirstRegion() { region.value = regions.find(item => item.target === target.value).selector; selectRegion() }
+/** 重选当前窗口保留已拾取元素；只有用户切换窗口才重置区域。 */
+function chooseTarget(value) {
+  if (value === target.value) return
+  target.value = value
+  chooseFirstRegion()
+}
 function changeProperty(property, value) {
   try {
     activeCss.value = updateThemeCssRule(activeCss.value, selector.value, { [property]: value })
@@ -141,8 +149,10 @@ header > div { flex: 1; min-width: 0; } strong { font-size: 15px; } small { disp
 .studio-body { flex: 1 1 auto; padding: 15px; overflow: auto; min-height: 0; min-width: 0; max-height: calc(100vh - 180px); }
 .studio-controls { min-width: 0; border: 0; padding: 0; margin: 0; }
 p { margin: 0 0 12px; font-size: 11px; } label { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; font-size: 11px; color: #d8e2f2; }
-button, input, select, textarea { color: #e9edf4; background: #252f40; border: 1px solid #65738a; border-radius: 6px; font: 11px/1.5 system-ui, sans-serif; min-width: 0; max-width: 100%; }
-button { padding: 7px 9px; cursor: pointer; } button:disabled { opacity: .5; cursor: wait; } input, select, textarea { padding: 8px; width: 100%; box-sizing: border-box; }
+button, input, textarea { color: #e9edf4; background: #252f40; border: 1px solid #65738a; border-radius: 6px; font: 11px/1.5 system-ui, sans-serif; min-width: 0; max-width: 100%; }
+button { padding: 7px 9px; cursor: pointer; } button:disabled { opacity: .5; cursor: wait; } input, textarea { padding: 8px; width: 100%; box-sizing: border-box; }
+.bk-theme-studio :deep(.studio-select) { color: #e9edf4; background: #252f40; border: 1px solid #65738a; border-radius: 6px; font: 11px/1.5 system-ui, sans-serif; min-width: 0; max-width: 100%; padding: 8px; width: 100%; box-sizing: border-box; }
+.bk-theme-studio :deep(.studio-select:hover), .bk-theme-studio :deep(.studio-select.is-open) { background: #31445f; border-color: #9ccaff; }
 textarea { resize: vertical; font: 11px/1.8 Consolas, monospace; }
 .studio-actions { display: flex; flex-wrap: wrap; gap: 7px; margin: 10px 0 14px; } .primary { background: #376ea9; border-color: #8eb2ed; }
 .sticky-actions { position: sticky; bottom: -15px; padding: 12px 0; margin-bottom: 0; background: #1b2230; }
@@ -159,10 +169,10 @@ textarea { resize: vertical; font: 11px/1.8 Consolas, monospace; }
 .studio-collapse-enter-from, .studio-collapse-leave-to { max-height: 0; padding-block: 0; opacity: 0; }
 .picker-hint-enter-active, .picker-hint-leave-active { transition: opacity .18s ease, translate .18s ease; }
 .picker-hint-enter-from, .picker-hint-leave-to { opacity: 0; translate: 0 -8px; }
-button, input, select, textarea { transition: border-color .16s ease, background-color .16s ease, scale .16s ease; }
+button, input, textarea { transition: border-color .16s ease, background-color .16s ease, scale .16s ease; }
 button:hover:not(:disabled) { background: #31445f; border-color: #9ccaff; }
 button:active:not(:disabled) { scale: .96; }
-button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid #9ccaff; outline-offset: 3px; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid #9ccaff; outline-offset: 3px; }
 @media (max-width: 600px) { .region-fields { grid-template-columns: 1fr; } }
-@media (prefers-reduced-motion: reduce) { .bk-theme-studio, .studio-body, .bk-picker-hint, .bk-picker-highlight, button, input, select, textarea { transition-duration: .001ms !important; } }
+@media (prefers-reduced-motion: reduce) { .bk-theme-studio, .studio-body, .bk-picker-hint, .bk-picker-highlight, button, input, textarea { transition-duration: .001ms !important; } }
 </style>

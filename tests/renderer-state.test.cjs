@@ -600,6 +600,49 @@ test('titlebar renders an accessible back button that follows history availabili
   }).then(() => { assert.equal(findBack(container), undefined) })
 })
 
+test('renderer settings migrate the previous restart preference and preserve explicit toggles', async () => {
+  for (const value of [undefined, true, false, 'true', 'false', 1, 0, null, {}, []]) {
+    const playback = value === undefined ? {} : { restartOnPreviousNearEnd: value }
+    const loaded = loadStore({ get: async () => ({ schemaVersion: 1, playback }) })
+    await loaded.initSettings()
+    const store = loaded.useSettingsStore()
+    assert.equal(store.defaults().playback.restartOnPreviousNearEnd, false)
+    assert.equal(store.settings.playback.restartOnPreviousNearEnd, value === true)
+    for (const enabled of [true, false]) {
+      await store.updateSettings({ playback: { restartOnPreviousNearEnd: enabled } })
+      await store.updateSettings({ playback: { quality: '320' } })
+      assert.equal(store.settings.playback.restartOnPreviousNearEnd, enabled)
+    }
+  }
+})
+
+test('previous restart settings retain a failed draft and save both toggles through the existing queue', async () => {
+  const fixture = await queuedSettingsFixture()
+  const view = loadSettingsView(fixture.store)
+  try {
+    assert.equal(view.localSettings.playback.restartOnPreviousNearEnd, false)
+    view.localSettings.playback.restartOnPreviousNearEnd = true
+    const failed = view.flushEditableSettings()
+    await fixture.flush()
+    fixture.requests[0].reject(new Error('Disk full'))
+    assert.equal(await failed, false)
+    assert.equal(view.localSettings.playback.restartOnPreviousNearEnd, true)
+    assert.equal(fixture.store.settings.playback.restartOnPreviousNearEnd, false)
+    assert.equal(view.saveState.value, 'error')
+    const retry = view.flushEditableSettings()
+    await fixture.flush()
+    fixture.commit(1)
+    assert.equal(await retry, true)
+    assert.equal(fixture.current().playback.restartOnPreviousNearEnd, true)
+    view.localSettings.playback.restartOnPreviousNearEnd = false
+    const disabling = view.flushEditableSettings()
+    await fixture.flush()
+    fixture.commit(2)
+    assert.equal(await disabling, true)
+    assert.equal(fixture.current().playback.restartOnPreviousNearEnd, false)
+  } finally { view.dispose() }
+})
+
 test('settings initialization writes once and leaves browser paths unset', async () => {
   let writes = 0
   const storeModule = loadStore({ get: async () => null, set: async () => { writes++ } })
@@ -1117,6 +1160,29 @@ test('focused controls retain native Space activation while page shortcuts still
   } finally {
     await app.dispose()
   }
+})
+
+test('local and global volume shortcuts call the audio update entry and leave typed volume drafts alone', async t => {
+  let globalShortcut
+  const app = loadApp({ onGlobalShortcut(callback) { globalShortcut = callback; return () => {} } })
+  t.after(() => app.dispose())
+  app.mount()
+  const changes = []
+  app.musicPlayerRef.value = {
+    volume: 98,
+    handleVolumeChange(value) { changes.push(value); this.volume = value }
+  }
+  app.settings.shortcuts.keys = { volumeUp: 'Up', volumeDown: 'Down' }
+  const event = (key, tagName = 'BODY') => ({ key, target: { tagName, closest: () => null },
+    preventDefault() {}, stopPropagation() {} })
+  app.handleKeyDown(event('ArrowUp'))
+  app.handleKeyDown(event('ArrowDown'))
+  app.musicPlayerRef.value.volume = 2
+  globalShortcut('volumeDown')
+  globalShortcut('volumeUp')
+  assert.deepEqual(changes, [100, 95, 0, 5])
+  app.handleKeyDown(event('ArrowUp', 'INPUT'))
+  assert.deepEqual(changes, [100, 95, 0, 5], 'the numeric editor keeps its native input behavior')
 })
 
 test('corrupt and non-object authentication caches fall back safely', () => {

@@ -112,6 +112,8 @@
             </button>
           </div>
           <div class="lyric-tools">
+            <VolumeControl variant="lyric" :volume="volume" :is-muted="isMuted" :active="visible"
+                           @change="$emit('change-volume', $event)" @toggle-mute="$emit('toggle-mute')" />
             <div ref="qualityControl" class="lyric-quality" @focusout="handleQualityFocusout" @keydown.stop>
               <button ref="qualityTrigger" type="button" class="lyric-tool quality-trigger"
                       :class="{ 'is-open': qualityMenuOpen, 'is-switching': qualitySwitching }"
@@ -198,52 +200,19 @@
             <!-- 主要歌词（原文） -->
             <div class="main-lyric">
               <div class="lyric-text">
-              <!-- 渲染歌词内容 -->
-              <template v-if="line.words && line.words.length > 0">
-                <template v-for="(word, wordIndex) in line.words" :key="wordIndex">
-                  <template v-for="(char, charIdx) in word.word.split('')" :key="`${wordIndex}-${charIdx}`">
-                    <span 
-                      v-if="char === ' '"
-                      class="lyric-word karaoke-char is-space"
-                      :data-word-index="wordIndex"
-                      :data-line-index="index"
-                      :data-start="word.startTime"
-                      :data-end="word.endTime"
-                      :data-line-start="line.time"
-                      :style="{ display: 'inline-block', width: '0.25em', minWidth: '0.25em' }"
-                    >&#8203;</span>
-                    <span 
-                      v-else
-                      class="lyric-word karaoke-char"
-                      :data-word-index="wordIndex"
-                      :data-line-index="index"
-                      :data-start="word.startTime"
-                      :data-end="word.endTime"
-                      :data-line-start="line.time"
-                    >{{ char }}</span>
-                  </template>
-                </template>
-              </template>
-              <template v-else>
-                <template v-for="(char, charIndex) in line.text" :key="charIndex">
-                  <span 
-                    v-if="char === ' '"
-                    class="lyric-char karaoke-char is-space"
-                    :data-char-index="charIndex"
-                    :data-line-index="index"
-                    :style="{ display: 'inline-block', width: '0.25em', minWidth: '0.25em' }"
-                  >&#8203;</span>
-                  <span 
-                    v-else
-                    class="lyric-char karaoke-char"
-                    :data-char-index="charIndex"
-                    :data-line-index="index"
-                  >{{ char }}</span>
-                </template>
-              </template>
+                <span
+                  v-for="(char, charIndex) in getLyricCharacters(line)"
+                  :key="charIndex"
+                  class="karaoke-char"
+                  :data-char-index="charIndex"
+                  :data-line-index="index"
+                  :data-start="char.start"
+                  :data-end="char.end"
+                >{{ char.text }}</span>
               </div>
             </div>
             
+            <div v-if="romanizationLines.get(line.time)" class="romanization-lyric" lang="ja-Latn">{{ romanizationLines.get(line.time) }}</div>
             <!-- 翻译歌词 -->
             <div v-if="line.translation" class="translation-stage" :class="{ 'is-visible': showTranslation }" :aria-hidden="!showTranslation"><div class="translation-clip"><div class="translation-lyric">{{ line.translation }}</div></div></div>
           </div>

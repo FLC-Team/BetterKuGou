@@ -20,18 +20,14 @@
 
         <section class="settings-section" id="playback-section" :ref="sectionRefs.playback" data-section="playback" aria-labelledby="playback-heading">
           <header class="section-header"><span class="section-number">01</span><div><h2 id="playback-heading">播放与歌词</h2><p>留住每次聆听时，你熟悉的习惯。</p></div></header>
-          <div class="setting-item"><div class="setting-info"><label class="setting-label" for="preferred-quality">优先音质</label><p class="setting-desc">后续歌曲优先使用所选音质；当前歌曲可在播放栏快速切换。可用音质取决于歌曲与账号权限。</p></div><select id="preferred-quality" class="setting-select" v-model="localSettings.playback.quality"><option value="128">标准 128 kbps</option><option value="320">高品 320 kbps</option><option value="flac">无损 FLAC</option><option value="high">无损 HIGH</option></select></div>
+          <div class="setting-item"><div class="setting-info"><label class="setting-label" for="preferred-quality">优先音质</label><p class="setting-desc">后续歌曲优先使用所选音质；当前歌曲可在播放栏快速切换。可用音质取决于歌曲与账号权限。</p></div><AnimatedSelect id="preferred-quality" class="setting-select" v-model="localSettings.playback.quality" label="优先音质" :options="qualityOptions" /></div>
           <div v-for="option in playbackOptions" :key="option.id" class="setting-item">
             <div class="setting-info"><label class="setting-label" :for="'playback-' + option.id">{{ option.label }}</label><p class="setting-desc" :id="'playback-' + option.id + '-desc'">{{ option.description }}</p></div>
             <label class="setting-switch"><input :id="'playback-' + option.id" type="checkbox" v-model="localSettings.playback[option.id]" :aria-describedby="'playback-' + option.id + '-desc'"><span class="slider"></span></label>
           </div>
-          <div class="setting-group">
-            <div class="group-heading"><div><h3>桌面歌词</h3><p class="setting-desc">悬浮显示当前歌词，拖动调整位置，右下角手柄调整大小；关闭后保留位置、尺寸和样式。</p></div><div class="setting-actions"><button type="button" class="outline-btn" @click="showDesktopLyrics" :disabled="!desktopLyricsAvailable || desktopActionPending">{{ desktopActionPending ? '处理中…' : '打开桌面歌词' }}</button><button type="button" class="outline-btn" @click="resetDesktopLyrics" :disabled="!desktopLyricsAvailable || desktopActionPending">找回并解锁</button></div></div>
-            <div class="setting-item"><div class="setting-info"><label class="setting-label" for="desktop-size">歌词大小</label><p class="setting-desc">小 / 中 / 大，默认为中。</p></div><select id="desktop-size" class="setting-select" v-model="localSettings.desktopLyrics.fontSize"><option value="small">小</option><option value="medium">中（默认）</option><option value="large">大</option></select></div>
-            <div class="setting-item"><div class="setting-info"><label class="setting-label" for="desktop-theme">歌词样式</label><p class="setting-desc">保留桌面歌词原有的三种配色。</p></div><select id="desktop-theme" class="setting-select" v-model="localSettings.desktopLyrics.theme"><option value="classic">经典（默认）</option><option value="gradient">渐变</option><option value="minimal">简约</option></select></div>
-            <div class="setting-item"><div class="setting-info"><label class="setting-label" for="desktop-lock">锁定桌面歌词</label><p class="setting-desc" id="desktop-lock-desc">仅显示歌词，鼠标可穿透操作下方窗口；可在这里或托盘菜单解锁。</p></div><label class="setting-switch"><input id="desktop-lock" type="checkbox" v-model="localSettings.desktopLyrics.locked" aria-describedby="desktop-lock-desc"><span class="slider"></span></label></div>
-            <p v-if="!desktopLyricsAvailable" class="note-text">桌面歌词窗口仅在桌面客户端中可用。</p>
-          </div>
+          <LyricSettings ref="lyricSettingsRef" v-model="localSettings.playback" :before-action="flushEditableSettings" :inert="isImporting" />
+          <DesktopLyricSettings v-model="localSettings.desktopLyrics" :before-action="flushEditableSettings" />
+          <div class="setting-group"><IslandLyricSettings v-model="localSettings.islandLyrics" :before-action="flushEditableSettings" :available="islandLyricsAvailable" /></div>
         </section>
 
         <section class="settings-section" id="custom-section" :ref="sectionRefs.custom" data-section="custom" aria-labelledby="custom-heading">
@@ -52,7 +48,7 @@
         <section class="settings-section" id="software-section" :ref="sectionRefs.software" data-section="software" aria-labelledby="software-heading">
           <header class="section-header"><span class="section-number">04</span><div><h2 id="software-heading">启动与应用</h2><p>下一次打开，接着上一次的心情。</p></div></header>
           <div v-for="option in softwareOptions" :key="option.id" class="setting-item"><div class="setting-info"><label class="setting-label" :for="'software-' + option.id">{{ option.label }}</label><p class="setting-desc" :id="'software-' + option.id + '-desc'">{{ option.description }}</p></div><label class="setting-switch"><input :id="'software-' + option.id" type="checkbox" v-model="localSettings.software[option.id]" :aria-describedby="'software-' + option.id + '-desc'"><span class="slider"></span></label></div>
-          <div class="setting-item"><div class="setting-info"><label class="setting-label" for="default-page">启动页面</label><p class="setting-desc">默认打开推荐；收藏页需要登录账号。</p></div><select id="default-page" class="setting-select" v-model="localSettings.software.defaultPage"><option value="home">推荐首页</option><option value="favorites">我的收藏</option></select></div>
+          <div class="setting-item"><div class="setting-info"><label class="setting-label" for="default-page">启动页面</label><p class="setting-desc">默认打开推荐；收藏页需要登录账号。</p></div><AnimatedSelect id="default-page" class="setting-select" v-model="localSettings.software.defaultPage" label="启动页面" :options="defaultPageOptions" /></div>
           <AppUpdates v-model="localSettings.software.updates" :before-action="flushEditableSettings" @current-version="appVersion = $event" />
           <div class="setting-group"><div class="group-heading"><div><h3>备份与迁移</h3><p class="setting-desc">导入或导出完整设置。分享配色请使用上方的主题包。</p></div></div><div class="setting-actions"><button class="outline-btn" :class="{ 'is-busy': isExporting }" :aria-busy="isExporting" type="button" @click="handleExportSettings" :disabled="isExporting || isImporting">{{ isExporting ? '导出中…' : '导出设置' }}</button><button class="outline-btn" :class="{ 'is-busy': isImporting }" :aria-busy="isImporting" type="button" @click="handleImportSettings" :disabled="isImporting || isExporting">{{ isImporting ? '导入中…' : '导入设置' }}</button></div></div>
           <div class="about-links"><button type="button" @click="openFeedbackUrl">反馈与建议 ↗</button><button type="button" @click="openLicenseUrl">使用协议 ↗</button><button type="button" @click="openProjectUrl">项目主页 ↗</button></div>
@@ -79,6 +75,10 @@ import ThemePackages from '../components/common/ThemePackages.vue'
 import ThemeAdjustments from '../components/common/ThemeAdjustments.vue'
 import AppUpdates from '../components/common/AppUpdates.vue'
 import PlaylistCacheSettings from '../components/common/PlaylistCacheSettings.vue'
+import LyricSettings from '../components/common/LyricSettings.vue'
+import DesktopLyricSettings from '../components/common/DesktopLyricSettings.vue'
+import IslandLyricSettings from '../components/common/IslandLyricSettings.vue'
+import AnimatedSelect from '../components/common/AnimatedSelect.vue'
 import packageInfo from '../../package.json'
 import { applyTheme } from '../utils/themeManager.js'
 
@@ -98,11 +98,19 @@ const sections = [
   { id: 'software', label: '启动与应用' },
   { id: 'download', label: '下载与缓存' }
 ]
-const editableGroups = ['playback', 'download', 'custom', 'shortcuts', 'software', 'desktopLyrics']
+const editableGroups = ['playback', 'download', 'custom', 'shortcuts', 'software', 'desktopLyrics', 'islandLyrics']
+const islandLyricsAvailable = Boolean(window.electronAPI?.islandLyric?.show)
+const qualityOptions = [
+  { value: '128', label: '标准 128 kbps' },
+  { value: '320', label: '高品 320 kbps' },
+  { value: 'flac', label: '无损 FLAC' },
+  { value: 'high', label: '无损 HIGH' }
+]
+const defaultPageOptions = [{ value: 'home', label: '推荐首页' }, { value: 'favorites', label: '我的收藏' }]
 const playbackOptions = [
   { id: 'fullscreenLyrics', label: '播放时自动打开全屏歌词', description: '每次开始播放，自动进入全屏歌词界面。' },
   { id: 'enqueueFullPlaylist', label: '播放时加入整个歌单', description: '点播歌单中的歌曲时，将同歌单的全部曲目加入播放列表。' },
-  { id: 'showTranslation', label: '显示歌词翻译', description: '歌曲提供翻译时，在原文下显示；全屏和桌面歌词共用此偏好，也可在各自工具栏切换。' }
+  { id: 'restartOnPreviousNearEnd', label: '歌曲即将结束时，上一首从头播放', description: '开启后，歌曲剩余不超过 10 秒时点击上一首，将从头播放当前歌曲；关闭时正常切换到上一首。' }
 ]
 const softwareOptions = [
   { id: 'autoLaunch', label: '开机自启动', description: '登录系统时自动运行 BetterKuGou。' },
@@ -111,10 +119,9 @@ const softwareOptions = [
   { id: 'restorePlaybackState', label: '恢复上次的播放状态', description: '记住播放或暂停、音量和循环模式。' }
 ]
 const customColors = [{ id: 'primary', label: '主题色' }, { id: 'hover', label: '悬浮强调色' }, { id: 'background', label: '背景色' }]
-const desktopLyricsAvailable = Boolean(window.electronAPI?.desktopLyric?.show)
-const desktopActionPending = ref(false)
 
 const activeSection = ref('playback')
+const lyricSettingsRef = ref(null)
 const settingsMain = ref(null)
 const sectionRefs = {
   playback: ref(null),
@@ -284,6 +291,11 @@ async function flushEditableSettings() {
   return true
 }
 
+/** 离页及整份设置替换共用正文保护，不能将未保存歌词当作偏好自动覆盖。 */
+function prepareLyricLibraryLeave() {
+  return lyricSettingsRef.value?.prepareLeave?.() !== false
+}
+
 /** Recovery supersedes unsaved appearance edits, including edits made during an earlier in-flight save. */
 async function prepareThemeRecovery(base) {
   recoveringAppearance = true
@@ -325,38 +337,7 @@ async function prepareThemeRecovery(base) {
 }
 
 function flushPendingOnBlur(event) {
-  if (event.target?.matches('input, select')) void flushEditableSettings()
-}
-
-async function showDesktopLyrics() {
-  if (desktopActionPending.value) return
-  desktopActionPending.value = true
-  try {
-    if (!await flushEditableSettings()) return
-    if (!await window.electronAPI.desktopLyric.show()) throw new Error('Desktop lyrics window did not open')
-    actionMessage.value = '桌面歌词已打开。锁定后可在此页或托盘解锁。'
-  } catch (error) {
-    actionMessage.value = '无法打开桌面歌词，请稍后重试。'
-    logger.error('SettingsView', '打开桌面歌词失败', error)
-  } finally {
-    desktopActionPending.value = false
-  }
-}
-
-/** 找回移出屏幕的歌词，同时恢复可操作状态；先保存页面中尚未提交的偏好。 */
-async function resetDesktopLyrics() {
-  if (desktopActionPending.value) return
-  desktopActionPending.value = true
-  try {
-    if (!await flushEditableSettings()) return
-    if (!await window.electronAPI.desktopLyric.resetPosition()) throw new Error('Desktop lyrics recovery failed')
-    actionMessage.value = '桌面歌词已回到主屏幕下方并解锁。'
-  } catch (error) {
-    actionMessage.value = '找回桌面歌词失败，请重试。'
-    logger.error('SettingsView', '找回桌面歌词失败', error)
-  } finally {
-    desktopActionPending.value = false
-  }
+  if (event.target?.matches('input, [role="combobox"], [aria-haspopup="listbox"]')) void flushEditableSettings()
 }
 
 watch(localSettings, () => {
@@ -413,10 +394,11 @@ async function handleExportSettings() {
 }
 
 async function handleImportSettings() {
-  if (isImporting.value) return
+  if (isImporting.value || !prepareLyricLibraryLeave()) return
   isImporting.value = true
   try {
     if (!await flushEditableSettings()) return
+    if (!prepareLyricLibraryLeave()) return
     const result = await importSettings()
     if (result?.error) throw result.error
     if (result?.reason === 'unsupported') throw new Error('Import is unavailable')
@@ -718,7 +700,10 @@ onBeforeUnmount(() => {
 
 defineExpose({
   scrollToSection,
-  flushEditableSettings,
+  async flushEditableSettings() {
+    if (!prepareLyricLibraryLeave()) return false
+    return flushEditableSettings()
+  },
   prepareThemeRecovery
 })
 </script>

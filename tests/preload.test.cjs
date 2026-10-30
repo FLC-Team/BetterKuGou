@@ -19,6 +19,21 @@ function loadBridge() {
   return { exposed, ipc, sent, invoked }
 }
 
+test('lyric overlay visibility is a fixed boolean report and native runtime subscriptions release without leaking IPC events', () => {
+  const { exposed, sent, ipc } = loadBridge()
+  for (const value of [null, undefined, 'true', 1, {}, []]) exposed.electronAPI.setLyricViewVisible(value)
+  assert.equal(sent.length, 0)
+  exposed.electronAPI.setLyricViewVisible(true)
+  exposed.electronAPI.setLyricViewVisible(false)
+  assert.deepEqual(sent, [['player:lyric-view-visible', true], ['player:lyric-view-visible', false]])
+  const values = []
+  const dispose = exposed.desktopLyricAPI.onRuntimeState((...args) => values.push(args))
+  ipc.emit('desktop-lyric:runtime-state', { sender: 'private event' }, { hidden: true })
+  assert.deepEqual(values, [[{ hidden: true }]])
+  dispose()
+  assert.equal(ipc.listenerCount('desktop-lyric:runtime-state'), 0)
+})
+
 test('window and auxiliary subscriptions hide Electron events and release only their own listener', () => {
   const { exposed, ipc } = loadBridge()
   let calls = 0
@@ -59,13 +74,33 @@ test('desktop bridge preserves track identity, explicit clearing and millisecond
   const { exposed, sent } = loadBridge()
   exposed.electronAPI.updateTrack({ trackId: 'hash-a', title: 'Same title', artist: 'Artist' })
   exposed.electronAPI.updateLyrics([{ time: 0, text: 'Lyric' }], 'hash-a')
-  exposed.electronAPI.updatePlaybackTime(1250, { trackId: 'hash-a', duration: 20000, extra: 'ignored' })
+  exposed.electronAPI.updatePlaybackTime(1250, {
+    trackId: 'hash-a', duration: 20000, advancing: true, playbackRate: 1.5, discontinuity: true, extra: 'ignored'
+  })
   exposed.electronAPI.updateTrack(null)
   assert.equal(sent[0][1].trackId, 'hash-a')
   assert.equal(sent[1][2], 'hash-a')
   assert.equal(sent[2][1], 1250)
-  assert.deepEqual(JSON.parse(JSON.stringify(sent[2][2])), { trackId: 'hash-a', duration: 20000 })
+  assert.deepEqual(JSON.parse(JSON.stringify(sent[2][2])), {
+    trackId: 'hash-a', duration: 20000, advancing: true, playbackRate: 1.5, discontinuity: true
+  })
   assert.deepEqual(sent[3], ['player:track-update', null])
+})
+
+test('desktop timing metadata defaults to a frozen normal-rate sample unless explicitly authorized', () => {
+  const { exposed, sent, ipc } = loadBridge()
+  for (const playbackRate of [-1, 0, NaN, Infinity, '2']) {
+    exposed.electronAPI.updatePlaybackTime(2500, { advancing: 'true', playbackRate, discontinuity: 'true', duration: -1 })
+    assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1)[2])), { advancing: false, playbackRate: 1, discontinuity: false })
+  }
+  exposed.electronAPI.updatePlaybackTime(3000)
+  assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1)[2])), { advancing: false, playbackRate: 1, discontinuity: false })
+  const timing = { duration: 20000, advancing: true, playbackRate: 1.5, discontinuity: false }
+  let received
+  const unsubscribe = exposed.desktopLyricAPI.onTimeUpdate((...args) => { received = args })
+  ipc.emit('desktop-lyric:time-update', { sender: 'privileged' }, 3500, timing)
+  assert.deepEqual(received, [3500, timing])
+  unsubscribe()
 })
 
 test('desktop commands are validated fixed invocations and playback/error subscriptions release independently', async () => {

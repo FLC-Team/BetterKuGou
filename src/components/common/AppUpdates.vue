@@ -26,7 +26,7 @@
           <div class="progress-details"><span>{{ formatBytes(state.progress?.received) }} / {{ formatBytes(state.progress?.total) }}</span><span>可以离开此页，下载会在后台继续。</span></div>
         </div></div></div></Transition>
 
-        <div v-if="assets.length > 1" class="asset-choice"><label for="update-asset">安装包格式</label><select id="update-asset" v-model="chosenAssetId" :disabled="isBusy || !!actionPending"><option v-for="asset in assets" :key="asset.id" :value="String(asset.id)">{{ assetLabel(asset) }}</option></select></div>
+        <div v-if="assets.length > 1" class="asset-choice"><label for="update-asset">安装包格式</label><AnimatedSelect id="update-asset" class="updates-select" v-model="chosenAssetId" label="安装包格式" :options="assetOptions" :disabled="isBusy || !!actionPending" /></div>
         <p v-else-if="assets.length === 1 && !state.downloaded" class="asset-detail">{{ assetLabel(assets[0]) }}</p>
         <p v-else-if="state.release && !assets.length" class="updates-note asset-empty">此版本没有适用于当前系统和架构的安装包，可在发布页查看。</p>
 
@@ -53,7 +53,7 @@
       <legend>更新偏好</legend>
       <div class="updates-row">
         <div><label for="update-channel">更新渠道</label><p id="update-channel-desc">正式版更稳定；测试版可提前体验新功能。</p></div>
-        <select id="update-channel" :value="preferences.channel" aria-describedby="update-channel-desc" @change="setPreference('channel', $event.target.value)"><option value="stable">正式版</option><option value="beta">测试版</option></select>
+        <AnimatedSelect id="update-channel" class="updates-select" :model-value="preferences.channel" label="更新渠道" :options="channelOptions" :disabled="!available" aria-describedby="update-channel-desc" @update:model-value="setPreference('channel', $event)" />
       </div>
       <div class="updates-row">
         <div><label for="update-auto-check">自动检查更新</label><p id="update-auto-check-desc">启动后 10 秒检查，此后每 24 小时一次。</p></div>
@@ -74,6 +74,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import packageInfo from '../../../package.json'
 import { logger } from '../../utils/logger.js'
 import { createDetailsMotion } from './detailsMotion.js'
+import AnimatedSelect from './AnimatedSelect.vue'
 
 const props = defineProps({
   modelValue: { type: Object, default: () => ({ autoCheck: true, autoDownload: false, channel: 'stable' }) },
@@ -84,6 +85,7 @@ const updateAPI = window.electronAPI?.updates
 const available = Boolean(updateAPI?.getState && updateAPI?.onState)
 const state = ref({ revision: -1, status: 'idle', currentVersion: packageInfo.version, channel: 'stable', release: null, downloaded: null, error: null })
 const preferences = computed(() => ({ autoCheck: true, autoDownload: false, channel: 'stable', ...props.modelValue }))
+const channelOptions = [{ value: 'stable', label: '正式版' }, { value: 'beta', label: '测试版' }]
 const actionPending = ref('')
 const cancelPending = ref(false)
 const actionError = ref('')
@@ -104,6 +106,7 @@ onBeforeUnmount(() => disclosureMotions.forEach(motion => motion.dispose()))
 
 const isBusy = computed(() => ['checking', 'downloading'].includes(state.value.status))
 const assets = computed(() => state.value.release?.assets || [])
+const assetOptions = computed(() => assets.value.map(asset => ({ value: String(asset.id), label: assetLabel(asset) })))
 const selectedAsset = computed(() => assets.value.find(asset => String(asset.id) === chosenAssetId.value))
 const canDownload = computed(() => assets.value.length > 0 && (state.value.status !== 'downloaded'
   || (selectedAsset.value && String(selectedAsset.value.id) !== String(state.value.selectedAssetId))))

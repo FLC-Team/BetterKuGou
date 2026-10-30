@@ -5,7 +5,7 @@ const path = require('node:path')
 const vm = require('node:vm')
 const { EventEmitter } = require('node:events')
 
-function loadMain({ uninitialized = false, platform = 'linux', packaged = false, toolbarResult = true, missingIcon = false } = {}) {
+function loadMain({ uninitialized = false, platform = 'linux', packaged = false, toolbarResult = true, missingIcon = false, minimizeToTray = true } = {}) {
   const windows = []
   const timers = new Map()
   const iconPaths = []
@@ -56,6 +56,12 @@ function loadMain({ uninitialized = false, platform = 'linux', packaged = false,
     getBounds() { return { x: this.options.x, y: this.options.y, width: this.options.width, height: this.options.height } }
     setBounds(bounds) { Object.assign(this.options, bounds) }
     close() { this.destroyed = true; this.emit('closed') }
+    requestClose() {
+      let prevented = false
+      this.emit('close', { preventDefault: () => { prevented = true } })
+      if (!prevented) this.close()
+      return !prevented
+    }
     setThumbarButtons(buttons) {
       this.thumbarCalls.push(buttons)
       // Electron 32 accepts an empty flag list for enabled buttons; "enabled" rejects registration.
@@ -85,8 +91,11 @@ function loadMain({ uninitialized = false, platform = 'linux', packaged = false,
   silent.warn = (...args) => warnings.push(args)
   const context = vm.createContext({
     require(name) {
+      if (name === './services/desktopLyricPolicy') return require('../electron/services/desktopLyricPolicy')
+      if (name === './services/windowsForeground') return require('../electron/services/windowsForeground')
       if (name === 'electron') return electron
       if (name === './logger') return silent
+      if (name === './services/lyricLibraryService') return { createLyricLibraryService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/playlistCacheService') return { createPlaylistCacheService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/updateService') return { createUpdateService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/backendService') return { createBackendService: () => ({
@@ -94,10 +103,11 @@ function loadMain({ uninitialized = false, platform = 'linux', packaged = false,
         stop: () => { stopCalls += 1; signalBackendStop(); return stopGate }
       }) }
       if (name === './settingsStore') return {
+        normalizeDesktopLyrics: require('../electron/settingsStore').normalizeDesktopLyrics,
         initSettingsStore: async () => {}, ensureCacheDirectory: async () => {},
         onSettingsChange: () => () => {}, getSettings: () => {
         if (uninitialized) throw new Error('Settings store not initialized')
-        return { software: { minimizeToTray: true, updates: {} } }
+        return { software: { minimizeToTray, updates: {} }, islandLyrics: { enabled: false } }
       } }
       return require(name)
     },
@@ -110,7 +120,7 @@ function loadMain({ uninitialized = false, platform = 'linux', packaged = false,
     clearInterval(id) { timers.delete(id) }
   })
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../electron/main.js'), 'utf8'), context)
-  const api = vm.runInContext('({ createWindow, createLoadingWindow, createDesktopLyricWindow, performApplicationCleanup, startMemoryCleanup, stopMemoryCleanup, broadcastPlayerControl, updateTaskbarButtons, notifyInstallPreparation })', context)
+  const api = vm.runInContext('({ createWindow, createLoadingWindow, createDesktopLyricWindow, performApplicationCleanup, startMemoryCleanup, stopMemoryCleanup, broadcastPlayerControl, updateTaskbarButtons, notifyInstallPreparation, restoreMainWindowOnActivate, getCleanupTask: () => cleanupPromise })', context)
   return { api, app, windows, timers, releaseStop, releaseReady, releaseBackend, backendStopStarted, ipcMain, handlers, iconPaths, warnings,
     stopCalls: () => stopCalls, startCalls: () => startCalls }
 }
@@ -204,6 +214,78 @@ test('explicit quit allows the main window to close despite minimize-to-tray', a
   fixture.windows[0].emit('close', { preventDefault: () => { prevented = true } })
   assert.equal(prevented, false)
   assert.equal(fixture.windows[0].hidden, false)
+})
+
+for (const platform of ['win32', 'linux']) {
+  for (const withDesktopLyrics of [false, true]) {
+    test(`${platform} main close with island disabled cleans up ${withDesktopLyrics ? 'desktop lyrics and' : 'all'} background services before quitting`, async () => {
+      const fixture = loadMain({ platform, minimizeToTray: false })
+      fixture.api.createWindow()
+      const main = fixture.windows[0]
+      const desktop = withDesktopLyrics ? fixture.api.createDesktopLyricWindow() : null
+      fixture.api.startMemoryCleanup()
+
+      assert.equal(main.requestClose(), true)
+      const cleanup = fixture.api.getCleanupTask()
+      assert.equal(typeof cleanup?.then, 'function', 'main close must start cleanup even with the island disabled')
+      await fixture.app.listeners('window-all-closed')[0]()
+      await fixture.backendStopStarted
+      assert.equal(fixture.stopCalls(), 1, 'a later window-all-closed must reuse the same cleanup')
+      assert.equal(fixture.app.quitCalls, 0, 'quit must wait for the backend to finish stopping')
+      if (desktop) assert.equal(desktop.destroyed, true)
+      assert.equal(fixture.timers.size, 0)
+
+      fixture.releaseStop()
+      await cleanup
+      await Promise.resolve()
+      assert.equal(fixture.app.quitCalls, 1)
+    })
+  }
+}
+
+test('minimize-to-tray keeps the main window, desktop lyrics and background services on ordinary close', async () => {
+  const fixture = loadMain({ platform: 'win32', minimizeToTray: true })
+  fixture.api.createWindow()
+  const main = fixture.windows[0]
+  const desktop = fixture.api.createDesktopLyricWindow()
+
+  assert.equal(main.requestClose(), false)
+  assert.equal(main.hidden, true)
+  assert.equal(main.destroyed, false)
+  assert.equal(desktop.destroyed, false)
+  assert.equal(fixture.api.getCleanupTask(), null)
+  assert.equal(fixture.stopCalls(), 0)
+  assert.equal(fixture.app.quitCalls, 0)
+
+  const cleanup = fixture.api.performApplicationCleanup()
+  fixture.releaseStop()
+  await cleanup
+  assert.equal(desktop.destroyed, true)
+  assert.equal(fixture.timers.size, 0)
+})
+
+test('macOS main close keeps desktop lyrics and services until explicit quit and Dock activation rebuilds the main window', async () => {
+  const fixture = loadMain({ platform: 'darwin', minimizeToTray: false })
+  fixture.api.createWindow()
+  const main = fixture.windows[0]
+  const desktop = fixture.api.createDesktopLyricWindow()
+
+  assert.equal(main.requestClose(), true)
+  assert.equal(main.destroyed, true)
+  assert.equal(desktop.destroyed, false)
+  assert.equal(fixture.api.getCleanupTask(), null)
+  assert.equal(fixture.stopCalls(), 0)
+  assert.equal(fixture.app.quitCalls, 0)
+  fixture.api.restoreMainWindowOnActivate()
+  assert.equal(fixture.windows.length, 3)
+  assert.equal(fixture.windows[2].destroyed, false)
+
+  const cleanup = fixture.api.performApplicationCleanup()
+  fixture.releaseStop()
+  await cleanup
+  assert.equal(desktop.destroyed, true)
+  assert.equal(fixture.stopCalls(), 1)
+  assert.equal(fixture.timers.size, 0)
 })
 
 test('concurrent before-quit waits for one complete backend cleanup', async () => {

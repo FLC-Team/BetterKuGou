@@ -33,6 +33,7 @@ function rendererFixture({ reducedMotion = false, actions = {} } = {}) {
     get textContent() { return this.children.length ? this.children.map(child => child.textContent).join('') : this._text }
     set textContent(value) { this._text = String(value); this.children = [] }
     get scrollWidth() { return this.measuredWidth ?? Array.from(this.textContent).length * 20 }
+    getBoundingClientRect() { return this.id === 'nextViewport' ? { top: 80, height: 24 } : { top: 40, height: 36 } }
     appendChild(child) {
       this._text = ''
       if (child.name === 'fragment') this.children.push(...child.children)
@@ -49,7 +50,7 @@ function rendererFixture({ reducedMotion = false, actions = {} } = {}) {
     setPointerCapture(id) { this.captured.add(id) }
     hasPointerCapture(id) { return this.captured.has(id) }
     releasePointerCapture(id) { this.captured.delete(id) }
-    animate() { const animation = { cancelled: false, cancel() { this.cancelled = true } }; animations.push(animation); return animation }
+    animate(keyframes, options) { const animation = { element: this, keyframes, options, cancelled: false, cancel() { this.cancelled = true } }; animations.push(animation); return animation }
   }
   const animations = []
   const nodes = new Map()
@@ -83,11 +84,12 @@ function rendererFixture({ reducedMotion = false, actions = {} } = {}) {
   const frames = new Map()
   const timers = new Map()
   let nextId = 0
+  let now = 0
   let resizeCallback
   let resizeDisconnected = false
   const warnings = []
   const context = vm.createContext({
-    window, document, Intl, console: { warn: (...args) => warnings.push(args) },
+    window, document, Intl, performance: { now: () => now }, console: { warn: (...args) => warnings.push(args) },
     requestAnimationFrame(callback) { const id = ++nextId; frames.set(id, callback); return id },
     cancelAnimationFrame(id) { frames.delete(id) },
     setTimeout(callback) { const id = ++nextId; timers.set(id, callback); return id }, clearTimeout(id) { timers.delete(id) },
@@ -99,7 +101,7 @@ function rendererFixture({ reducedMotion = false, actions = {} } = {}) {
     nodes, calls, animations, media, window, subscriptions, frames, timers, warnings,
     node: id => nodes.get(id),
     emit(name, ...args) { subscriptions.get(name)?.(...args) },
-    flush() { const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback()) },
+    flush(elapsed = 0) { now += elapsed; const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback(now)) },
     resize() { resizeCallback() },
     dispose() { window.dispatch('beforeunload') },
     get resizeDisconnected() { return resizeDisconnected },
@@ -193,6 +195,69 @@ test('intro previews the first line and translation toggles never hide the avail
   view.emit('onTimeUpdate', 5000)
   view.flush()
   assert.equal(view.node('currentLyric').textContent, 'Second line')
+  assert.equal(view.node('nextLyric').textContent, '')
+  view.dispose()
+})
+
+test('desktop romanization and translation combine but their display preferences remain independent', () => {
+  const view = rendererFixture()
+  song(view)
+  const first = { ...krc(0, ['君', 'の']), romanization: 'ki mi no', translation: '你的' }
+  const second = { ...krc(4000, ['夢', 'へ']), romanization: 'yu me e', translation: '向着梦想' }
+  view.emit('onLyricUpdate', [first, second])
+  assert.equal(view.node('nextLyric').textContent, 'ki mi no · 你的')
+  view.emit('onSettingsUpdate', { showTranslation: false })
+  assert.equal(view.node('nextLyric').textContent, 'ki mi no')
+  assert.equal(view.node('nextLyric').dataset.kind, 'translation')
+  view.emit('onSettingsUpdate', { showTranslation: true })
+  assert.equal(view.node('nextLyric').textContent, 'ki mi no · 你的')
+  view.emit('onSettingsUpdate', { hideTranslation: true })
+  assert.equal(view.node('nextLyric').textContent, '夢へ')
+  assert.equal(view.node('nextLyric').dataset.kind, 'next')
+  view.emit('onSettingsUpdate', { hideTranslation: false })
+  assert.equal(view.node('nextLyric').textContent, 'ki mi no · 你的')
+  view.emit('onTimeUpdate', 4500)
+  view.flush()
+  assert.equal(view.node('currentLyric').textContent, '夢へ')
+  assert.equal(view.node('nextLyric').textContent, 'yu me e · 向着梦想')
+  view.dispose()
+})
+
+test('romanization can disappear during playback without changing the current karaoke position', () => {
+  const view = rendererFixture()
+  song(view)
+  view.emit('onSettingsUpdate', { showTranslation: false })
+  const first = { ...krc(0, ['君', 'の']), romanization: 'ki mi no', translation: '你的' }
+  const next = krc(4000, ['夢', 'へ'])
+  view.emit('onLyricUpdate', [first, next])
+  view.emit('onTimeUpdate', 1500)
+  view.flush()
+  assert.deepEqual(view.fills(), ['100%', '50%'])
+  view.emit('onLyricUpdate', [{ ...first, romanization: undefined }, next])
+  view.flush()
+  assert.equal(view.node('nextLyric').textContent, '夢へ')
+  assert.deepEqual(view.fills(), ['100%', '50%'])
+  view.emit('onSettingsUpdate', { showTranslation: true })
+  assert.equal(view.node('nextLyric').textContent, '你的')
+  assert.deepEqual(view.fills(), ['100%', '50%'])
+  view.dispose()
+})
+
+test('romanization is literal text, invalid annotation types are ignored and new tracks clear old annotations', () => {
+  const view = rendererFixture()
+  song(view)
+  view.emit('onSettingsUpdate', { showTranslation: false })
+  view.emit('onLyricUpdate', [
+    { time: 0, text: '君の', romanization: '<img src=x> kimi no' },
+    { time: 1000, text: '夢へ', romanization: { value: 'unsafe' }, translation: 123 },
+    { time: 2000, text: '次の歌詞' }
+  ])
+  assert.equal(view.node('nextLyric').textContent, '<img src=x> kimi no')
+  assert.equal(view.node('nextLyric').children.length, 0)
+  view.emit('onTimeUpdate', 1500)
+  view.flush()
+  assert.equal(view.node('nextLyric').textContent, '次の歌詞')
+  song(view, 'replacement')
   assert.equal(view.node('nextLyric').textContent, '')
   view.dispose()
 })
@@ -346,4 +411,135 @@ test('late resize acknowledgements and action results cannot revive an unloaded 
   await theme
   assert.ok(view.node('lyricContainer').classList.contains('theme-classic'))
   assert.equal(view.timers.size, 0)
+})
+
+test('authoritative audio samples interpolate every frame with rate and a bounded horizon', () => {
+  const view = rendererFixture()
+  song(view)
+  view.emit('onLyricUpdate', [krc()])
+  view.emit('onPlaybackUpdate', { playing: true })
+  view.emit('onTimeUpdate', 100, { advancing: true, playbackRate: 1 })
+  view.flush()
+  assert.equal(view.fills()[0], '10%')
+  for (let frame = 1; frame <= 6; frame++) {
+    view.flush(16)
+    assert.equal(view.fills()[0], `${10 + frame * 1.6}%`)
+  }
+  view.flush(204)
+  assert.equal(view.fills()[0], '40%')
+  assert.equal(view.frames.size, 0, 'stale samples cannot run a second playback clock')
+  view.emit('onTimeUpdate', 500, { advancing: true, playbackRate: 2 })
+  view.flush(100)
+  assert.equal(view.fills()[0], '70%')
+  view.dispose()
+  assert.equal(view.frames.size, 0)
+})
+
+test('pause, buffering, seek and track changes stop or reset interpolation immediately', () => {
+  const view = rendererFixture()
+  song(view)
+  view.emit('onLyricUpdate', [krc()])
+  view.emit('onPlaybackUpdate', { playing: true })
+  view.emit('onTimeUpdate', 100, { advancing: true })
+  view.flush(100)
+  assert.equal(view.fills()[0], '20%')
+  view.emit('onTimeUpdate', 210, { advancing: false })
+  view.flush(100)
+  assert.equal(view.fills()[0], '21%')
+  assert.equal(view.frames.size, 0)
+  view.emit('onTimeUpdate', 220, { advancing: true })
+  view.flush(50)
+  view.emit('onPlaybackUpdate', { playing: false, time: 280 })
+  view.flush(100)
+  assert.equal(view.fills()[0], '28%')
+  assert.equal(view.frames.size, 0)
+  view.emit('onTimeUpdate', 1400, { advancing: false, discontinuity: true })
+  view.flush()
+  assert.deepEqual(view.fills(), ['100%', '40%', '0%'])
+  view.emit('onPlaybackUpdate', { playing: true })
+  view.emit('onTimeUpdate', 100, { advancing: true, discontinuity: true })
+  view.flush(20)
+  assert.deepEqual(view.fills(), ['12%', '0%', '0%'])
+  song(view, 'replacement')
+  view.flush(400)
+  assert.equal(view.frames.size, 0)
+  assert.equal(view.node('currentLyric').textContent, '暂无歌词')
+  view.dispose()
+})
+
+test('state broadcasts and replay cannot advance stale cached audio positions', () => {
+  const view = rendererFixture()
+  song(view)
+  view.emit('onLyricUpdate', [krc()])
+  view.emit('onTimeUpdate', 500, { advancing: false, discontinuity: true })
+  view.emit('onPlaybackUpdate', { playing: true, time: 500, advancing: false, discontinuity: true })
+  view.flush(1000)
+  assert.equal(view.fills()[0], '50%')
+  assert.equal(view.frames.size, 0)
+  view.emit('onTimeUpdate', 600, { advancing: true })
+  view.flush(20)
+  view.emit('onPlaybackUpdate', { playing: true, time: 500, available: true })
+  view.flush(20)
+  assert.equal(view.fills()[0], '64%')
+  view.dispose()
+})
+
+test('next preview keeps its beginning and rises into the current row only during consecutive playback', () => {
+  const view = rendererFixture()
+  song(view)
+  view.node('currentLyric').measuredWidth = 1000
+  view.node('nextLyric').measuredWidth = 1200
+  view.node('currentViewport').clientWidth = 400
+  view.node('nextViewport').clientWidth = 400
+  view.emit('onLyricUpdate', [krc(), krc(3000, ['下', '一', '句']), krc(6000)])
+  view.emit('onPlaybackUpdate', { playing: true })
+  view.emit('onTimeUpdate', 2800, { advancing: true })
+  view.flush()
+  assert.equal(view.node('currentLyric').style.transform, 'translateX(-600px)')
+  assert.equal(view.node('nextLyric').style.transform, 'translateX(0px)')
+  view.flush(220)
+  assert.equal(view.node('currentLyric').textContent, '下一句')
+  const promotion = view.animations.find(animation => animation.element.id === 'currentViewport')
+  assert.ok(promotion)
+  assert.equal(promotion.keyframes[0].translate, '0 34px')
+  assert.equal(promotion.keyframes[1].translate, '0 0')
+  const count = view.animations.length
+  view.emit('onTimeUpdate', 6000, { advancing: true, discontinuity: true })
+  view.flush()
+  assert.equal(promotion.cancelled, true)
+  assert.equal(view.animations.length, count, 'a seek must not pretend the skipped preview became the current line')
+  view.dispose()
+})
+
+test('reduced motion preserves smooth progress but skips preview promotion', () => {
+  const view = rendererFixture({ reducedMotion: true })
+  song(view)
+  view.emit('onLyricUpdate', [krc(), krc(3000)])
+  view.emit('onPlaybackUpdate', { playing: true })
+  view.emit('onTimeUpdate', 2900, { advancing: true })
+  view.flush(200)
+  assert.equal(view.fills()[0], '10%')
+  assert.equal(view.animations.length, 0)
+  view.dispose()
+})
+
+test('delivery jitter at a line boundary cannot undo promotion and duplicate samples cannot extend the horizon', () => {
+  const view = rendererFixture()
+  song(view)
+  view.emit('onLyricUpdate', [krc(), krc(3000, ['下', '一', '句'])])
+  view.emit('onPlaybackUpdate', { playing: true })
+  view.emit('onTimeUpdate', 2900, { advancing: true })
+  view.flush(110)
+  const firstCharacter = view.node('currentLyric').children[0]
+  assert.equal(view.node('currentLyric').textContent, '下一句')
+  view.emit('onTimeUpdate', 2995, { advancing: true })
+  view.flush()
+  assert.equal(view.node('currentLyric').children[0], firstCharacter)
+  assert.equal(view.fills()[0], '1%')
+  view.flush(100)
+  view.emit('onTimeUpdate', 2995, { advancing: true })
+  view.flush(200)
+  assert.equal(view.fills()[0], '29.5%')
+  assert.equal(view.frames.size, 0)
+  view.dispose()
 })

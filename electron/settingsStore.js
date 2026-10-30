@@ -11,6 +11,51 @@ const {
 
 const CURRENT_SCHEMA_VERSION = 1
 
+const desktopLyricDefaults = Object.freeze({
+  fontSize: 'medium', theme: 'classic', locked: false, bounds: null,
+  doubleLine: true, efficientMode: false, transitionEnabled: true, transitionBlur: true,
+  hideTranslation: false, songInfoOnly: false, karaokeEnabled: true,
+  autoHidePaused: false, hideOnFullscreen: false, hideOnLyricView: true,
+  hoverFade: false, hoverOpacity: 20, opacity: 100, strokeWidth: 100,
+  alignment: 'center', fontFamily: '', activeColor: '', textColor: '', translationColor: '',
+  shadowEnabled: false, shadowColorMode: 'cover', shadowColor: '#000000',
+  shadowDepth: 5, shadowDirection: 315, shadowOpacity: 50, shadowRadius: 10,
+  alwaysOnTop: true, hideUnlockButton: false
+})
+
+/** Normalize persisted desktop preferences; only known visual fields can reach the independent window. */
+function normalizeDesktopLyrics(raw) {
+  const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+  const result = { ...desktopLyricDefaults }
+  for (const [key, fallback] of Object.entries(desktopLyricDefaults)) {
+    if (typeof fallback === 'boolean') result[key] = typeof value[key] === 'boolean' ? value[key] : fallback
+  }
+  const choices = { fontSize: ['small', 'medium', 'large'], theme: ['classic', 'gradient', 'minimal'],
+    alignment: ['left', 'center', 'right'], shadowColorMode: ['cover', 'custom'] }
+  for (const [key, options] of Object.entries(choices)) {
+    if (options.includes(value[key])) result[key] = value[key]
+  }
+  const ranges = { hoverOpacity: 100, opacity: 100, strokeWidth: 200,
+    shadowDepth: 30, shadowDirection: 360, shadowOpacity: 100, shadowRadius: 40 }
+  for (const [key, max] of Object.entries(ranges)) {
+    if (Number.isFinite(value[key])) result[key] = Math.round(Math.max(0, Math.min(max, value[key])))
+  }
+  for (const key of ['activeColor', 'textColor', 'translationColor', 'shadowColor']) {
+    if (typeof value[key] === 'string' && /^#[0-9a-f]{6}$/i.test(value[key])) result[key] = value[key].toLowerCase()
+  }
+  if (typeof value.fontFamily === 'string' && value.fontFamily.length <= 128 && !/[\u0000-\u001f\u007f<>]/.test(value.fontFamily)) {
+    result.fontFamily = value.fontFamily.trim()
+  }
+  const bounds = value.bounds
+  if (bounds && ['x', 'y', 'width', 'height'].every(key => Number.isFinite(bounds[key]))) {
+    result.bounds = {
+      x: Math.round(Math.max(-100000, Math.min(100000, bounds.x))), y: Math.round(Math.max(-100000, Math.min(100000, bounds.y))),
+      width: Math.round(Math.max(420, Math.min(8192, bounds.width))), height: Math.round(Math.max(180, Math.min(4096, bounds.height)))
+    }
+  }
+  return result
+}
+
 const listeners = new Set()
 
 let settingsFilePath = null
@@ -71,6 +116,42 @@ function mergeDeep(target, source) {
   return output
 }
 
+/** 补全灵动岛偏好并过滤非法导入值；窗口位置使用 DIP，视觉参数不接收字符串数值。 */
+function normalizeIslandLyrics(value) {
+  const island = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const bool = (key, fallback) => typeof island[key] === 'boolean' ? island[key] : fallback
+  const number = (key, fallback, minimum, maximum) => Number.isFinite(island[key])
+    ? Math.max(minimum, Math.min(maximum, island[key])) : fallback
+  const colors = island.colors && typeof island.colors === 'object' && !Array.isArray(island.colors) ? island.colors : {}
+  const color = (key, fallback) => typeof colors[key] === 'string' && /^#[0-9a-f]{6}$/i.test(colors[key]) ? colors[key].toLowerCase() : fallback
+  const plainText = value => typeof value === 'string' && value.length <= 100 && !/[\x00-\x1f\x7f-\x9f]/.test(value)
+  const position = island.position && ['x', 'y'].every(key => Number.isFinite(island.position[key]))
+    ? Object.fromEntries(['x', 'y'].map(key => [key, Math.round(Math.max(-100000, Math.min(100000, island.position[key])))])) : null
+  return {
+    enabled: bool('enabled', false),
+    showLogo: bool('showLogo', true),
+    mode: ['mainland', 'floating'].includes(island.mode) ? island.mode : 'mainland',
+    displayId: plainText(island.displayId) && island.displayId.trim() ? island.displayId.trim() : 'primary',
+    position,
+    alwaysTwoLines: bool('alwaysTwoLines', false),
+    hideTranslation: bool('hideTranslation', false),
+    songInfoOnly: bool('songInfoOnly', false),
+    boldText: bool('boldText', false),
+    fontFamily: plainText(island.fontFamily) ? island.fontFamily.trim() : '',
+    fontSize: Math.round(number('fontSize', 22, 14, 40)),
+    karaokeEnabled: bool('karaokeEnabled', true),
+    autoHide: bool('autoHide', true),
+    hideOnFullscreen: bool('hideOnFullscreen', false),
+    hideOnLyricView: bool('hideOnLyricView', true),
+    opacity: number('opacity', 1, .2, 1),
+    backgroundOpacity: number('backgroundOpacity', 1, 0, 1),
+    colors: { text: color('text', '#ffffff'), inactive: color('inactive', '#656565'), background: color('background', '#000000') },
+    scale: number('scale', 1, .5, 2),
+    leftContent: ['none', 'logo', 'cover'].includes(island.leftContent) ? island.leftContent : 'logo',
+    rightContent: ['none', 'logo', 'cover'].includes(island.rightContent) ? island.rightContent : 'cover'
+  }
+}
+
 function ensureSchema(settings) {
   assertSafeKeys(settings)
   let normalized = cloneDeep(settings)
@@ -89,20 +170,27 @@ function ensureSchema(settings) {
   const desktop = isPlainObject(normalized.desktopLyrics) ? normalized.desktopLyrics : {}
   if (!isPlainObject(normalized.playback)) normalized.playback = cloneDeep(defaultsCache.playback)
   normalized.playback.showTranslation = typeof normalized.playback.showTranslation === 'boolean' ? normalized.playback.showTranslation : true
+  normalized.playback.restartOnPreviousNearEnd = normalized.playback.restartOnPreviousNearEnd === true
+  const library = isPlainObject(normalized.playback.lyricLibrary) ? normalized.playback.lyricLibrary : {}
+  normalized.playback.lyricLibrary = {
+    enabled: typeof library.enabled === 'boolean' ? library.enabled : true,
+    autoSave: typeof library.autoSave === 'boolean' ? library.autoSave : true,
+    minMatch: ['exact', 'high', 'medium', 'any'].includes(library.minMatch) ? library.minMatch : 'high',
+    autoUpdate: typeof library.autoUpdate === 'boolean' ? library.autoUpdate : true
+  }
+  normalized.playback.romanization = ['off', 'on'].includes(normalized.playback.romanization) ? normalized.playback.romanization : 'off'
+  for (const [key, fallback] of Object.entries({ preferSimplifiedChinese: true, segmentLyrics: false, showProfanity: false })) {
+    normalized.playback[key] = typeof normalized.playback[key] === 'boolean' ? normalized.playback[key] : fallback
+  }
   normalized.playback.quality = ['128', '320', 'flac', 'high'].includes(normalized.playback.quality) ? normalized.playback.quality : '128'
   if (!isPlainObject(normalized.download)) normalized.download = cloneDeep(defaultsCache.download)
   normalized.download.offlinePlaylistCacheEnabled = typeof normalized.download.offlinePlaylistCacheEnabled === 'boolean' ? normalized.download.offlinePlaylistCacheEnabled : true
   normalized.download.cacheSizeIndex = Number.isInteger(normalized.download.cacheSizeIndex) && normalized.download.cacheSizeIndex >= 0 && normalized.download.cacheSizeIndex <= 5 ? normalized.download.cacheSizeIndex : 0
   normalized.download.concurrentDownloads = Number.isInteger(normalized.download.concurrentDownloads) ? Math.min(10, Math.max(1, normalized.download.concurrentDownloads)) : 3
-  normalized.desktopLyrics = {
-    fontSize: ['small', 'medium', 'large'].includes(desktop.fontSize) ? desktop.fontSize : 'medium',
-    theme: ['classic', 'gradient', 'minimal'].includes(desktop.theme) ? desktop.theme : 'classic',
-    locked: typeof desktop.locked === 'boolean' ? desktop.locked : false,
-    bounds: desktop.bounds && ['x', 'y', 'width', 'height'].every(key => Number.isFinite(desktop.bounds[key]))
-      ? { x: Math.round(Math.max(-100000, Math.min(100000, desktop.bounds.x))), y: Math.round(Math.max(-100000, Math.min(100000, desktop.bounds.y))),
-          width: Math.round(Math.max(420, Math.min(8192, desktop.bounds.width))), height: Math.round(Math.max(180, Math.min(4096, desktop.bounds.height))) }
-      : null
-  }
+  const offlineCachePath = normalized.download.offlineCachePath
+  normalized.download.offlineCachePath = typeof offlineCachePath === 'string' && path.isAbsolute(offlineCachePath) && !offlineCachePath.includes('\0') ? path.resolve(offlineCachePath) : ''
+  normalized.desktopLyrics = normalizeDesktopLyrics(desktop)
+  normalized.islandLyrics = normalizeIslandLyrics(normalized.islandLyrics)
   if (!isPlainObject(normalized.software)) normalized.software = cloneDeep(defaultsCache.software)
   const updates = isPlainObject(normalized.software.updates) ? normalized.software.updates : {}
   normalized.software.updates = {
@@ -175,17 +263,20 @@ function createDefaults(app) {
     playback: {
       fullscreenLyrics: true,
       enqueueFullPlaylist: true,
+      restartOnPreviousNearEnd: false,
       showTranslation: true,
+      lyricLibrary: { enabled: true, autoSave: true, minMatch: 'high', autoUpdate: true },
+      romanization: 'off',
+      preferSimplifiedChinese: true,
+      segmentLyrics: false,
+      showProfanity: false,
       quality: '128'
     },
-    desktopLyrics: {
-      fontSize: 'medium',
-      theme: 'classic',
-      locked: false,
-      bounds: null
-    },
+    desktopLyrics: { ...desktopLyricDefaults },
+    islandLyrics: normalizeIslandLyrics(),
     download: {
       offlinePlaylistCacheEnabled: true,
+      offlineCachePath: '',
       downloadPath: path.join(downloadsDir, 'BetterKugou'),
       cachePath: cacheDir,
       cacheSizeIndex: 0,
@@ -303,6 +394,8 @@ async function commitSettings(nextSettings, merge) {
     updated = cloneDeep(nextSettings)
   }
   updated = ensureSchema(updated)
+  // 路径只能在迁移已校验后提交；旧草稿、重置和导入不能绕过文件迁移。
+  updated.download.offlineCachePath = settingsCache.download.offlineCachePath
   if (!updated.software) {
     updated.software = {}
   }
@@ -364,6 +457,30 @@ function onSettingsChange(listener) {
   return () => listeners.delete(listener)
 }
 
+/** 迁移专用事务：只提交已验证的缓存目录，避免自启等无关系统副作用。 */
+function setOfflineCacheDirectory(directory) {
+  if (!settingsCache) return Promise.reject(new Error('Settings store not initialized'))
+  if (typeof directory !== 'string' || !path.isAbsolute(directory) || directory.includes('\0')) {
+    return Promise.reject(new TypeError('缓存目录必须是绝对路径'))
+  }
+  const task = commitQueue.then(async () => {
+    const updated = cloneDeep(settingsCache)
+    updated.download.offlineCachePath = path.resolve(directory)
+    // Windows 索引或扫描可能短暂占用设置文件；保持原子替换并只重试占用错误。
+    for (let attempt = 0; ; attempt++) {
+      try { await writeSettingsToDisk(updated); break } catch (error) {
+        if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 4) throw error
+        await new Promise(resolve => setTimeout(resolve, 50 * 2 ** attempt))
+      }
+    }
+    settingsCache = updated
+    notifyListeners()
+    return getSettings()
+  })
+  commitQueue = task.catch(() => {})
+  return task
+}
+
 function getSettingsFilePath() {
   return settingsFilePath
 }
@@ -418,9 +535,11 @@ async function ensureCacheDirectory() {
 
 module.exports = {
   CURRENT_SCHEMA_VERSION,
+  normalizeDesktopLyrics,
   initSettingsStore,
   getSettings,
   setSettings,
+  setOfflineCacheDirectory,
   overwriteSettings,
   onSettingsChange,
   getSettingsFilePath,

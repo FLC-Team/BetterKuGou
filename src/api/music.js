@@ -1,6 +1,7 @@
 // 音乐相关 API
 import axios from 'axios'
 import { logger } from '../utils/logger.js'
+import { getSongArtists, getSongSearchKeyword } from '../utils/songMetadata.js'
 
 // API 基础地址
 const API_BASE_URL = 'http://localhost:6500'
@@ -121,6 +122,13 @@ export const getRankInfo = (rankid, page = 1, pagesize = 30) => {
   })
 }
 
+/** 获取排行榜曲目；榜单介绍 /rank/info 不提供可播放的歌曲列表。 */
+export const getRankSongs = (rankid, page = 1, pagesize = 100) => {
+  return apiClient.get('/rank/audio', {
+    params: { rankid, page, pagesize }
+  })
+}
+
 /**
  * 获取 AI 推荐
  * @param {string} album_audio_id - 歌曲 ID，多个用逗号分隔
@@ -187,8 +195,9 @@ export const getSongUrl = (hash, album_id = 0, album_audio_id = 0, quality = '12
  * @param {string} keywords - 搜索关键词 (可选)
  * @returns {Promise}
  */
-export const searchLyric = (hash, album_audio_id = 0, keywords = '') => {
+export const searchLyric = (hash, album_audio_id = 0, keywords = '', options = {}) => {
   return apiClient.get('/search/lyric', {
+    signal: options.signal,
     params: {
       hash,
       album_audio_id,
@@ -203,8 +212,9 @@ export const searchLyric = (hash, album_audio_id = 0, keywords = '') => {
  * @param {string} accesskey - 访问密钥
  * @returns {Promise}
  */
-export const getLyricDetail = (id, accesskey) => {
+export const getLyricDetail = (id, accesskey, options = {}) => {
   return apiClient.get('/lyric', {
+    signal: options.signal,
     params: {
       id,
       accesskey,
@@ -224,10 +234,10 @@ export const getLyricDetail = (id, accesskey) => {
  * @param {string} keywords - 搜索关键词 (可选，默认为空)
  * @returns {Promise}
  */
-export const getLyric = async (hash, album_audio_id = 0, keywords = '') => {
+export const getLyric = async (hash, album_audio_id = 0, keywords = '', options = {}) => {
   try {
     // 第一步：搜索歌词信息
-    const searchResult = await searchLyric(hash, album_audio_id, keywords)
+    const searchResult = await searchLyric(hash, album_audio_id, keywords, options)
     
     logger.trace('music-api', '搜索歌词响应', searchResult)
     
@@ -235,8 +245,13 @@ export const getLyric = async (hash, album_audio_id = 0, keywords = '') => {
       throw new Error('未找到歌词信息')
     }
     
-    // 取第一个候选歌词
-    const lyricInfo = searchResult.candidates[0]
+    // 身份证据优先，其次曲名和歌手；未知匹配不能被默认为高匹配。
+    const levels = { exact: 3, high: 2, medium: 1, any: 0 }
+    const candidates = searchResult.candidates.filter(item => item?.id && item?.accesskey)
+      .map(item => ({ item, matchLevel: getLyricMatchLevel(item, { ...options.song, hash, album_audio_id }) }))
+      .sort((left, right) => levels[right.matchLevel] - levels[left.matchLevel])
+    const { item: lyricInfo, matchLevel } = candidates[0] || {}
+    if (!lyricInfo) throw new Error('歌词ID或访问密钥无效')
     const lyricId = lyricInfo.id
     const accesskey = lyricInfo.accesskey
     
@@ -245,13 +260,25 @@ export const getLyric = async (hash, album_audio_id = 0, keywords = '') => {
     }
     
     // 第二步：获取歌词详情
-    const lyricDetail = await getLyricDetail(lyricId, accesskey)
+    const lyricDetail = await getLyricDetail(lyricId, accesskey, options)
     
-    return lyricDetail
+    return { ...lyricDetail, lyricSource: { id: String(lyricId), matchLevel } }
   } catch (error) {
-    logger.error('music-api', '获取歌词失败', error)
+    if (error?.code !== 'ERR_CANCELED' && error?.name !== 'AbortError') logger.error('music-api', '获取歌词失败', error)
     throw error
   }
+}
+
+/** Match only explicit identity or normalized title/artist evidence; preserve version suffixes. */
+export function getLyricMatchLevel(candidate, song) {
+  const normalize = value => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase() : ''
+  if (normalize(candidate.hash) && normalize(candidate.hash) === normalize(song.hash)) return 'exact'
+  if (Number(candidate.album_audio_id) > 0 && String(candidate.album_audio_id) === String(song.album_audio_id)) return 'exact'
+  const artist = normalize(getSongArtists(song).map(item => item.name).join('、') || song.singer || song.artist)
+  const title = normalize(getSongSearchKeyword(song))
+  const candidateTitle = normalize(candidate.song || candidate.songname || candidate.name)
+  if (!title || title !== candidateTitle) return 'any'
+  return artist && artist === normalize(candidate.singer || candidate.artist) ? 'high' : 'medium'
 }
 
 /**

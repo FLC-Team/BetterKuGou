@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src file: https: http: data: blob: bk-cache:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+  <title>灵动岛歌词</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body { color: #f5f5f7; background: transparent; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif; user-select: none; -webkit-user-select: none; }
+    button { font: inherit; }
+    .island { --accent: #fff; --lyric-text: #fff; --lyric-inactive: #656565; --panel-background: #000; --compact-height: 50px; --expanded-height: 132px; --lyric-font-size: 22px; --lyric-line-height: 27px; --secondary-font-size: 13px; --secondary-line-height: 19px; position: relative; width: min(380px, 100%); height: var(--compact-height); margin: 0 auto; opacity: 1; transition: height 260ms cubic-bezier(.2,.85,.15,1), opacity 120ms ease; }
+    .island.expanded { height: var(--expanded-height); }
+    .island.avoiding { opacity: 0; pointer-events: none; }
+    .island.floating { margin-top: 8px; }
+    .island.floating::before { content: ''; position: absolute; inset: 0; background: var(--panel-background); border-radius: 25px; box-shadow: 0 4px 12px #0003; }
+    .notch-shape { position: absolute; inset: 0 0 auto; width: 100%; height: var(--compact-height); fill: #000; pointer-events: none; }
+    .floating .notch-shape { display: none; }
+    .notch-toggle { position: absolute; z-index: 1; top: 0; left: 0; width: 100%; height: var(--compact-height); display: grid; grid-template-columns: 30px minmax(0, 1fr) 30px; grid-template-rows: var(--lyric-line-height); align-items: center; align-content: center; column-gap: 14px; padding: 0 36px; border: 0; outline: none; color: var(--lyric-text); background: transparent; }
+    .floating .notch-toggle { padding-left: 18px; padding-right: 18px; cursor: grab; }
+    .dragging .notch-toggle { cursor: grabbing; }
+    .two-lines .notch-toggle { grid-template-rows: var(--lyric-line-height) var(--secondary-line-height); row-gap: 4px; }
+    .notch-toggle:focus-visible .lyric-viewport { outline: 1px solid #ffffffb3; outline-offset: 3px; border-radius: 2px; }
+    .side-slot { grid-row: 1; width: 30px; height: 30px; pointer-events: none; }
+    .two-lines .side-slot { grid-row: 1 / span 2; }
+    .side-slot[hidden], .app-logo[hidden], .cover[hidden] { display: none; }
+    .app-logo { width: 30px; height: 30px; object-fit: contain; pointer-events: none; transition: filter 150ms ease; }
+    .hovered .app-logo { filter: brightness(1.12); }
+    .cover { display: block; position: relative; width: 30px; height: 30px; overflow: hidden; border-radius: 4px; background: #1b1b1b; box-shadow: 0 0 0 1px #ffffff0a inset; pointer-events: none; }
+    .cover img { position: absolute; width: 100%; height: 100%; object-fit: cover; inset: 0; }
+    .lyric-viewport { min-width: 0; height: 30px; overflow: hidden; text-align: left; mask-image: linear-gradient(90deg, #000 97%, transparent); pointer-events: none; }
+    .lyric-viewport { height: var(--lyric-line-height); grid-row: 1; }
+    .current-lyric { display: block; width: max-content; white-space: pre; line-height: var(--lyric-line-height); font-size: var(--lyric-font-size); font-weight: 450; letter-spacing: .1px; }
+    .bold-text .current-lyric { font-weight: 700; }
+    .karaoke-char { color: var(--lyric-inactive); white-space: pre; }
+    .karaoke-char.sung { color: var(--lyric-text); }
+    .karaoke-char.singing { background: linear-gradient(90deg, var(--lyric-text) var(--fill-progress, 0%), var(--lyric-inactive) var(--fill-progress, 0%)); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .detail { position: absolute; left: 12px; right: 12px; top: 24px; bottom: 0; border-radius: 0 0 28px 28px; background: var(--panel-background); opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 160ms ease, visibility 160ms; }
+    .floating .detail { background: transparent; }
+    .expanded .detail { opacity: 1; visibility: visible; pointer-events: auto; }
+    .next-viewport { display: none; min-width: 0; height: var(--secondary-line-height); overflow: hidden; mask-image: linear-gradient(90deg, #000 95%, transparent); pointer-events: none; }
+    .two-lines .next-viewport { display: block; grid-row: 2; }
+    .expanded:not(.two-lines) .next-viewport { display: block; position: absolute; left: 36px; right: 36px; top: calc(var(--compact-height) + 6px); }
+    .next-lyric { width: max-content; white-space: pre; line-height: var(--secondary-line-height); color: var(--lyric-inactive); font-size: var(--secondary-font-size); }
+    .progress { position: absolute; left: 24px; right: 24px; top: calc(var(--compact-height) + 8px); height: 2px; background: #ffffff18; overflow: hidden; border-radius: 2px; }
+    .two-lines .progress { display: none; }
+    .progress-fill { width: 100%; height: 100%; background: #999; transform: scaleX(0); transform-origin: left; }
+    .controls { position: absolute; left: 18px; right: 18px; bottom: 8px; height: 35px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; }
+    .transport { display: flex; align-items: center; gap: 14px; }
+    .control { padding: 0; display: grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 50%; color: #dddde3; background: transparent; cursor: pointer; transition: background-color 160ms ease, scale 100ms ease, color 160ms ease, opacity 160ms ease; }
+    .control:hover:not(:disabled) { background: #ffffff18; color: #fff; }
+    .control:active:not(:disabled) { scale: .86; }
+    .control:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .control:disabled { opacity: .28; cursor: default; }
+    .control[aria-busy="true"] { opacity: .55; }
+    .control[aria-pressed="true"] { color: var(--accent); }
+    .control svg { width: 17px; height: 17px; fill: currentColor; pointer-events: none; }
+    .play-button { color: #fff; width: 35px; height: 35px; }
+    .play-button svg { width: 22px; height: 22px; }
+    .play-button .pause-symbol, .playing .play-button .play-symbol { display: none; }
+    .playing .play-button .pause-symbol { display: block; }
+    .close-button { justify-self: end; color: #8f8f99; }
+    .translation-button { justify-self: start; font-size: 13px; }
+    .feedback { position: absolute; inset: auto 23px 47px; height: 27px; line-height: 24px; font-size: 12px; color: #ffbeb5; background: var(--panel-background); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .feedback:empty { display: none; }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      .control:active:not(:disabled) { scale: 1; }
+    }
+    @media (max-width: 320px) { .notch-toggle { padding: 0 28px; column-gap: 10px; } .transport { gap: 8px; } }
+  </style>
+</head>
+<body>
+  <section class="island" id="island" aria-label="灵动岛歌词">
+    <svg class="notch-shape" id="notchShape" viewBox="0 0 380 50" preserveAspectRatio="none" aria-hidden="true"><path id="notchPath" d="M0 0H380A12 12 0 0 0 368 12A38 38 0 0 1 330 50H50A38 38 0 0 1 12 12A12 12 0 0 0 0 0Z"/></svg>
+    <div class="notch-toggle" id="notchToggle" tabindex="-1" aria-label="灵动岛歌词">
+      <span class="side-slot" id="leftSlot" hidden><img class="app-logo" id="leftLogo" alt="" aria-hidden="true" hidden><span class="cover" id="leftCover" aria-hidden="true" hidden></span></span>
+      <span class="lyric-viewport" id="currentViewport"><span class="current-lyric" id="currentLyric">等待播放音乐</span></span>
+      <span class="side-slot" id="rightSlot"><img class="app-logo" id="rightLogo" alt="" aria-hidden="true" hidden><span class="cover" id="rightCover" aria-hidden="true"></span></span>
+      <span class="next-viewport" id="nextViewport"><span class="next-lyric" id="nextLyric"></span></span>
+    </div>
+    <div class="detail" id="details" inert>
+      <div class="progress" aria-hidden="true"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="controls" role="toolbar" aria-label="灵动岛播放控制">
+        <button type="button" class="control translation-button" id="translationBtn" title="显示翻译" aria-label="显示翻译" aria-pressed="true">译</button>
+        <div class="transport">
+          <button type="button" class="control" id="previousBtn" title="上一首" aria-label="上一首"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2h2v12H2zM13 2v12L4 8z"/></svg></button>
+          <button type="button" class="control play-button" id="playBtn" title="播放" aria-label="播放"><svg class="play-symbol" viewBox="0 0 20 20" aria-hidden="true"><path d="M5 2v16l13-8z"/></svg><svg class="pause-symbol" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3h4v14H4zM12 3h4v14h-4z"/></svg></button>
+          <button type="button" class="control" id="nextBtn" title="下一首" aria-label="下一首"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12 2h2v12h-2zM3 2l9 6-9 6z"/></svg></button>
+        </div>
+        <button type="button" class="control close-button" id="closeBtn" title="关闭灵动岛歌词" aria-label="关闭灵动岛歌词"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 3 4 4 4-4 1 1-4 4 4 4-1 1-4-4-4 4-1-1 4-4-4-4z"/></svg></button>
+      </div>
+      <div class="feedback" id="feedback" role="status" aria-live="polite"></div>
+    </div>
+  </section>
+  <script>
+    const api = window.islandLyricAPI
+    const island = document.getElementById('island')
+    const notchToggle = document.getElementById('notchToggle')
+    const notchShape = document.getElementById('notchShape')
+    const notchPath = document.getElementById('notchPath')
+    const slots = ['left', 'right'].map(side => ({
+      side, element: document.getElementById(`${side}Slot`),
+      logo: document.getElementById(`${side}Logo`), cover: document.getElementById(`${side}Cover`)
+    }))
+    const details = document.getElementById('details')
+    const currentViewport = document.getElementById('currentViewport')
+    const currentLyric = document.getElementById('currentLyric')
+    const nextViewport = document.getElementById('nextViewport')
+    const nextLyric = document.getElementById('nextLyric')
+    const progressFill = document.getElementById('progressFill')
+    const previousBtn = document.getElementById('previousBtn')
+    const playBtn = document.getElementById('playBtn')
+    const nextBtn = document.getElementById('nextBtn')
+    const translationBtn = document.getElementById('translationBtn')
+    const closeBtn = document.getElementById('closeBtn')
+    const feedback = document.getElementById('feedback')
+    const motionPreference = window.matchMedia?.('(prefers-reduced-motion: reduce)')
+    const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null
+    const subscriptions = []
+    const listeners = []
+    const animations = new Map()
+    const pending = new Set()
+    let song = null
+    let lyrics = []
+    let time = 0
+    let duration = 0
+    let playing = false
+    let available = false
+    let showTranslation = true
+    let showLogo = true
+    let logoSource = null
+    let mode = 'mainland'
+    let alwaysTwoLines = false
+    let hideTranslation = false
+    let songInfoOnly = false
+    let karaokeEnabled = true
+    let scale = 1
+    let compactHeight = 50
+    let leftContent = 'logo'
+    let rightContent = 'cover'
+    let fontSize = 22
+    let backgroundOpacity = 1
+    const colors = { text: '#ffffff', inactive: '#656565', background: '#000000' }
+    let settingsRevision = 0
+    let lineIndex = -2
+    let entries = []
+    let expanded = false
+    let hovered = false
+    let interactive = false
+    let pointer = null
+    let closeTimer = null
+    let feedbackTimer = null
+    let frame = null
+    let resizeObserver = null
+    let disposed = false
+    let artwork = []
+    let artworkGeneration = 0
+    let artworkSource = null
+    let layoutDirty = true
+    let lineOverflow = 0
+    let nextOverflow = 0
+    let dragGesture = null
+    let suppressClick = false
+
+    function listen(target, event, handler) {
+      target.addEventListener(event, handler)
+      listeners.push(() => target.removeEventListener(event, handler))
+    }
+
+    /** Cancel superseded replacements so rapid track/line changes cannot finish on stale content. */
+    function animateReplacement(element, artworkMotion = false) {
+      animations.get(element)?.cancel()
+      animations.delete(element)
+      if (motionPreference?.matches || !element.animate) return
+      const frames = artworkMotion
+        ? [{ opacity: 0, scale: '.88', filter: 'blur(3px)' }, { opacity: 1, scale: '1', filter: 'blur(0)' }]
+        : [{ opacity: 0, translate: '0 6px', filter: 'blur(2px)' }, { opacity: 1, translate: '0 0', filter: 'blur(0)' }]
+      const animation = element.animate(frames, { duration: artworkMotion ? 340 : 230, easing: 'cubic-bezier(.2,.8,.2,1)' })
+      animations.set(element, animation)
+      animation.onfinish = () => { if (animations.get(element) === animation) animations.delete(element) }
+    }
+
+    function stopMotion() {
+      animations.forEach(animation => animation.cancel())
+      animations.clear()
+      invalidateLayout()
+    }
+
+    function setText(element, text) {
+      if (element.textContent === text) return
+      element.textContent = text
+      animateReplacement(element)
+      layoutDirty = true
+    }
+
+    function setInteractive(value) {
+      if (interactive === value || disposed) return
+      interactive = value
+      api.setInteractive(value)
+    }
+
+    /** Keep a fixed visual hitbox while mainland mode fades, avoiding opacity/mouse feedback loops. */
+    function updateHitTest() {
+      if (!pointer) { setInteractive(mode === 'floating' && Boolean(dragGesture)); return }
+      const rect = island.getBoundingClientRect()
+      const x = (pointer.x - rect.left) * 380 / rect.width
+      const y = (pointer.y - rect.top) / scale
+      let inside
+      if (mode === 'mainland') {
+        const bottomStart = compactHeight - 38
+        const edge = y >= 0 && y <= 12 ? Math.sqrt(144 - (12 - y) ** 2)
+          : y > 12 && y <= bottomStart ? 12
+            : y > bottomStart && y <= compactHeight ? 50 - Math.sqrt(1444 - (y - bottomStart) ** 2) : Infinity
+        inside = x >= edge && x <= 380 - edge
+      } else {
+        const height = rect.height / scale
+        const width = rect.width / scale
+        const px = (pointer.x - rect.left) / scale
+        const radius = Math.min(25, width / 2, height / 2)
+        const nearX = Math.max(radius, Math.min(width - radius, px))
+        const nearY = Math.max(radius, Math.min(height - radius, y))
+        inside = px >= 0 && px <= width && y >= 0 && y <= height && (px - nearX) ** 2 + (y - nearY) ** 2 <= radius ** 2
+      }
+      island.classList.toggle('avoiding', mode === 'mainland' && inside)
+      setInteractive(mode === 'floating' && (inside || Boolean(dragGesture)))
+      if (hovered === inside) return
+      hovered = inside
+      island.classList.toggle('hovered', inside)
+      if (inside) { clearTimeout(closeTimer); closeTimer = null }
+      else scheduleCollapse()
+    }
+
+    function onPointerMove(event) {
+      if (!Number.isFinite(event?.clientX) || !Number.isFinite(event?.clientY)) return
+      pointer = { x: event.clientX, y: event.clientY }
+      updateHitTest()
+    }
+
+    /** Native hide/show resets mouse passthrough without necessarily blurring an unfocused window. */
+    function onNativePointerUpdate(event) {
+      if (!Number.isFinite(event?.clientX) || !Number.isFinite(event?.clientY)) return
+      if (event.resetInteractive === true) interactive = null
+      onPointerMove(event)
+    }
+
+    function setExpanded(value) {
+      if (value && mode !== 'floating') return
+      if (disposed || expanded === value) return
+      expanded = value
+      island.classList.toggle('expanded', value)
+      if (!value && details.contains(document.activeElement)) notchToggle.focus()
+      notchToggle.setAttribute('aria-expanded', String(value))
+      notchToggle.setAttribute('aria-label', mode === 'floating' ? (value ? '收起灵动岛播放控制' : '展开灵动岛播放控制') : '灵动岛歌词')
+      details.inert = !value
+      invalidateLayout()
+    }
+
+    function expand() {
+      clearTimeout(closeTimer)
+      closeTimer = null
+      setExpanded(true)
+    }
+
+    function scheduleCollapse() {
+      clearTimeout(closeTimer)
+      closeTimer = setTimeout(() => {
+        closeTimer = null
+        if (!hovered && !details.contains(document.activeElement) && pending.size === 0 && !feedback.textContent) setExpanded(false)
+      }, 220)
+    }
+
+    function onMouseLeave(event) {
+      // Forwarded mousemoves determine mainland visibility, even while the surface itself is transparent.
+      if (mode === 'mainland' && event?.currentTarget === island) return
+      if (mode === 'mainland' && Number.isFinite(event?.clientX) && Number.isFinite(event?.clientY)) {
+        onPointerMove(event)
+        return
+      }
+      const wasHovered = hovered
+      hovered = false
+      island.classList.remove('hovered')
+      island.classList.remove('avoiding')
+      pointer = null
+      setInteractive(mode === 'floating' && Boolean(dragGesture))
+      if (wasHovered) scheduleCollapse()
+    }
+
+    function onKeydown(event) {
+      if (mode === 'floating' && event.target === notchToggle && ['Enter', ' '].includes(event.key)) {
+        event.preventDefault()
+        if (!event.repeat) toggleControls()
+        return
+      }
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      clearTimeout(closeTimer)
+      closeTimer = null
+      setExpanded(false)
+      if (mode === 'floating') notchToggle.focus()
+    }
+
+    function toggleControls(event) {
+      if (mode !== 'floating') return
+      if (suppressClick && event?.detail !== 0) { suppressClick = false; return }
+      clearTimeout(closeTimer)
+      closeTimer = null
+      setExpanded(!expanded)
+    }
+
+    /** A click remains a click until the pointer moves six pixels; native dragging reads screen coordinates itself. */
+    function beginPointerDrag(event) {
+      if (disposed || mode !== 'floating' || dragGesture || event.button !== 0 || event.target?.closest?.('button') ||
+          !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return
+      suppressClick = false
+      pointer = { x: event.clientX, y: event.clientY }
+      dragGesture = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, starting: false, dragging: false, ended: false, finishing: false }
+      island.setPointerCapture(event.pointerId)
+      setInteractive(true)
+    }
+
+    async function movePointerDrag(event) {
+      const gesture = dragGesture
+      if (!gesture || gesture.pointerId !== event.pointerId || gesture.ended) return
+      pointer = { x: event.clientX, y: event.clientY }
+      if (gesture.dragging) { api.drag(); return }
+      if (gesture.starting || Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) <= 6) return
+      gesture.starting = true
+      suppressClick = true
+      island.classList.add('dragging')
+      try {
+        const result = await api.beginDrag()
+        if (!result?.success) throw new Error(result?.error || '暂时无法移动灵动岛，请重试')
+        gesture.starting = false
+        gesture.dragging = true
+        if (gesture.ended || disposed || mode !== 'floating') { await finishDrag(gesture); return }
+        api.drag()
+      } catch (error) {
+        gesture.starting = false
+        gesture.ended = true
+        if (island.hasPointerCapture(gesture.pointerId)) island.releasePointerCapture(gesture.pointerId)
+        if (dragGesture === gesture) dragGesture = null
+        island.classList.remove('dragging')
+        if (!disposed) { console.warn('island-lyric', '移动悬浮歌词失败', error); showError(error.message); updateHitTest() }
+      }
+    }
+
+    async function finishDrag(gesture) {
+      if (gesture.finishing) return
+      gesture.finishing = true
+      try {
+        const result = await api.endDrag()
+        if (!result?.success && !disposed) showError(result?.error || '位置保存失败，请再次移动重试')
+      } catch (error) {
+        if (!disposed) { console.warn('island-lyric', '保存悬浮位置失败', error); showError('位置保存失败，请再次移动重试') }
+      } finally {
+        if (dragGesture === gesture) dragGesture = null
+        island.classList.remove('dragging')
+        if (!disposed) updateHitTest()
+      }
+    }
+
+    function endDrag(event) {
+      const gesture = dragGesture
+      if (!gesture || gesture.ended || (event?.pointerId !== undefined && event.pointerId !== gesture.pointerId)) return
+      gesture.ended = true
+      if (island.hasPointerCapture(gesture.pointerId)) island.releasePointerCapture(gesture.pointerId)
+      if (gesture.dragging) return finishDrag(gesture)
+      if (!gesture.starting) {
+        dragGesture = null
+        if (!disposed) updateHitTest()
+      }
+    }
+
+    function scheduleRender() {
+      if (disposed || frame !== null) return
+      frame = requestAnimationFrame(() => {
+        frame = null
+        if (!disposed) render()
+      })
+    }
+
+    function invalidateLayout() {
+      layoutDirty = true
+      scheduleRender()
+    }
+
+    function songKey(value) {
+      return value ? value.trackId || `${value.title || ''}\n${value.artist || ''}` : null
+    }
+
+    /** A pending image belongs to one track; failed/late loads never restore another track's cover. */
+    function updateArtwork(source) {
+      const safeSource = typeof source === 'string' && /^(https?:\/\/|data:image\/|blob:|bk-cache:\/\/)/i.test(source) ? source : null
+      if (safeSource === artworkSource) return
+      artworkSource = safeSource
+      const generation = ++artworkGeneration
+      artwork.forEach(image => { animations.get(image)?.cancel(); animations.delete(image); image.remove() })
+      artwork = []
+      if (!safeSource) return
+      slots.forEach(slot => {
+        const image = document.createElement('img')
+        image.alt = ''
+        image.referrerPolicy = 'no-referrer'
+        image.onload = () => {
+          if (disposed || generation !== artworkGeneration) return
+          slot.cover.appendChild(image)
+          artwork.push(image)
+          animateReplacement(image, true)
+        }
+        image.onerror = () => {
+          if (!disposed && generation === artworkGeneration) artworkSource = null
+        }
+        image.src = safeSource
+      })
+    }
+
+    /** Clear lyric identity before accepting a new track, including same-title/different-hash tracks. */
+    function updateSong(value) {
+      const next = value && typeof value === 'object' ? value : null
+      if (songKey(song) !== songKey(next) || !next) {
+        lyrics = []
+        time = 0
+        duration = 0
+        lineIndex = -2
+        entries = []
+        playing = false
+        available = false
+        feedback.textContent = ''
+        clearTimeout(feedbackTimer)
+        feedbackTimer = null
+      }
+      song = next
+      if (!lyrics.length || songInfoOnly) lineIndex = -2
+      notchToggle.title = song ? `${song.title || '未知歌曲'} · ${song.artist || '未知歌手'}` : '点击展开播放控制'
+      updateArtwork(song?.cover)
+      refreshControls()
+      render()
+    }
+
+    function updateLyrics(value) {
+      lyrics = Array.isArray(value) ? value.filter(line => line && Number.isFinite(line.time) && line.time >= 0).map(line => ({
+        ...line, text: typeof line.text === 'string' ? line.text : '',
+        translation: typeof line.translation === 'string' ? line.translation : '',
+        romanization: typeof line.romanization === 'string' ? line.romanization : '',
+        words: Array.isArray(line.words) ? line.words.filter(word => word && typeof (word.word ?? word.text) === 'string') : []
+      })).sort((a, b) => a.time - b.time) : []
+      lineIndex = -2
+      entries = []
+      refreshControls()
+      render()
+    }
+
+    function updateTime(value, meta = {}) {
+      if (!Number.isFinite(value) || value < 0) return
+      time = value
+      if (Number.isFinite(meta.duration) && meta.duration >= 0) duration = meta.duration
+      scheduleRender()
+    }
+
+    function updatePlayback(value = {}) {
+      if (typeof value.playing === 'boolean') playing = value.playing
+      if (typeof value.available === 'boolean') available = value.available
+      if (Number.isFinite(value.time) && value.time >= 0) time = value.time
+      if (Number.isFinite(value.duration) && value.duration >= 0) duration = value.duration
+      refreshControls()
+      scheduleRender()
+    }
+
+    function updateSettings(value = {}) {
+      settingsRevision++
+      const previousRendering = `${songInfoOnly}:${karaokeEnabled}:${alwaysTwoLines}`
+      const nextMode = ['mainland', 'floating'].includes(value.mode) ? value.mode : mode
+      if (nextMode !== mode) {
+        endDrag()
+        mode = nextMode
+        if (mode === 'mainland') setExpanded(false)
+      }
+      if (typeof value.showTranslation === 'boolean') showTranslation = value.showTranslation
+      if (typeof value.showLogo === 'boolean') showLogo = value.showLogo
+      if (typeof value.alwaysTwoLines === 'boolean') alwaysTwoLines = value.alwaysTwoLines
+      if (typeof value.hideTranslation === 'boolean') hideTranslation = value.hideTranslation
+      if (typeof value.songInfoOnly === 'boolean') songInfoOnly = value.songInfoOnly
+      if (typeof value.karaokeEnabled === 'boolean') karaokeEnabled = value.karaokeEnabled
+      if (Number.isFinite(value.fontSize)) fontSize = Math.max(14, Math.min(40, value.fontSize))
+      if (Number.isFinite(value.scale)) scale = Math.max(.5, Math.min(2, value.scale))
+      if (Number.isFinite(value.backgroundOpacity)) backgroundOpacity = Math.max(0, Math.min(1, value.backgroundOpacity))
+      // Linux lacks native window opacity; the main process explicitly selects this single fallback.
+      document.body.style.opacity = value.opacityInRenderer === true && Number.isFinite(value.opacity)
+        ? String(Math.max(.2, Math.min(1, value.opacity))) : '1'
+      if (['none', 'logo', 'cover'].includes(value.leftContent)) leftContent = value.leftContent
+      if (['none', 'logo', 'cover'].includes(value.rightContent)) rightContent = value.rightContent
+      if (typeof value.boldText === 'boolean') island.classList.toggle('bold-text', value.boldText)
+      if (typeof value.fontFamily === 'string') currentLyric.style.fontFamily = nextLyric.style.fontFamily = value.fontFamily.slice(0, 200)
+      Object.keys(colors).forEach(key => {
+        if (typeof value.colors?.[key] === 'string' && /^#[\da-f]{6}$/i.test(value.colors[key])) colors[key] = value.colors[key]
+      })
+      island.style.setProperty('--lyric-text', colors.text)
+      island.style.setProperty('--lyric-inactive', colors.inactive)
+      const rgb = [1, 3, 5].map(offset => Number.parseInt(colors.background.slice(offset, offset + 2), 16))
+      island.style.setProperty('--panel-background', `rgba(${rgb.join(',')},${backgroundOpacity})`)
+      notchShape.style.fill = colors.background
+      notchShape.style.fillOpacity = String(backgroundOpacity)
+      if (Object.prototype.hasOwnProperty.call(value, 'logoUrl')) {
+        const source = typeof value.logoUrl === 'string' && /^file:\/\//i.test(value.logoUrl) ? value.logoUrl : null
+        if (source !== logoSource) {
+          logoSource = source
+          slots.forEach(slot => {
+            slot.logo.onload = () => { if (!disposed && source === logoSource) invalidateLayout() }
+            slot.logo.onerror = () => {
+              if (disposed || source !== logoSource) return
+              logoSource = null
+              refreshSlots()
+            }
+            if (source) slot.logo.src = source
+            else slot.logo.removeAttribute('src')
+          })
+        }
+      }
+      refreshSlots()
+      island.classList.toggle('floating', mode === 'floating')
+      island.classList.toggle('two-lines', alwaysTwoLines)
+      island.classList.remove('avoiding')
+      notchToggle.tabIndex = mode === 'floating' ? 0 : -1
+      if (mode === 'floating') {
+        notchToggle.setAttribute('role', 'button')
+        notchToggle.setAttribute('aria-controls', 'details')
+      } else {
+        notchToggle.removeAttribute('role')
+        notchToggle.removeAttribute('aria-controls')
+      }
+      notchToggle.setAttribute('aria-label', mode === 'floating' ? (expanded ? '收起灵动岛播放控制' : '展开灵动岛播放控制') : '灵动岛歌词')
+      notchToggle.setAttribute('aria-expanded', String(expanded))
+      const lineHeight = Math.ceil(fontSize * 1.2)
+      const secondarySize = Math.max(12, Math.min(18, Math.round(fontSize * .6)))
+      const secondaryHeight = Math.ceil(secondarySize * 1.4)
+      compactHeight = alwaysTwoLines ? Math.max(76, lineHeight + secondaryHeight + 16) : Math.max(50, lineHeight + 10)
+      const expandedHeight = alwaysTwoLines ? Math.max(132, compactHeight + 44) : compactHeight + 82
+      island.style.setProperty('--lyric-font-size', `${fontSize}px`)
+      island.style.setProperty('--lyric-line-height', `${lineHeight}px`)
+      island.style.setProperty('--secondary-font-size', `${secondarySize}px`)
+      island.style.setProperty('--secondary-line-height', `${secondaryHeight}px`)
+      island.style.setProperty('--compact-height', `${compactHeight}px`)
+      island.style.setProperty('--expanded-height', `${expandedHeight}px`)
+      notchShape.setAttribute('viewBox', `0 0 380 ${compactHeight}`)
+      notchPath.setAttribute('d', `M0 0H380A12 12 0 0 0 368 12V${compactHeight - 38}A38 38 0 0 1 330 ${compactHeight}H50A38 38 0 0 1 12 ${compactHeight - 38}V12A12 12 0 0 0 0 0Z`)
+      updateStage()
+      if (previousRendering !== `${songInfoOnly}:${karaokeEnabled}:${alwaysTwoLines}`) lineIndex = -2
+      refreshControls()
+      render()
+    }
+
+    /** Each side independently chooses Logo, artwork or nothing; hidden slots leave no empty grid track. */
+    function refreshSlots() {
+      slots.forEach(slot => {
+        const content = slot.side === 'left' ? leftContent : rightContent
+        slot.logo.hidden = content !== 'logo' || !showLogo || !logoSource
+        slot.cover.hidden = content !== 'cover'
+        slot.element.hidden = slot.logo.hidden && slot.cover.hidden
+      })
+      const left = !slots[0].element.hidden
+      const right = !slots[1].element.hidden
+      notchToggle.style.gridTemplateColumns = [left && '30px', 'minmax(0, 1fr)', right && '30px'].filter(Boolean).join(' ')
+      currentViewport.style.gridColumn = nextViewport.style.gridColumn = String(left ? 2 : 1)
+      slots[0].element.style.gridColumn = '1'
+      slots[1].element.style.gridColumn = String(left ? 3 : 2)
+      invalidateLayout()
+    }
+
+    /** Scale one logical canvas; the main process separately sizes the native window to fit it. */
+    function updateStage() {
+      document.body.style.width = `${window.innerWidth / scale}px`
+      document.body.style.height = `${window.innerHeight / scale}px`
+      document.body.style.transformOrigin = 'top left'
+      document.body.style.transform = `scale(${scale})`
+      invalidateLayout()
+    }
+
+    function graphemes(text) {
+      return segmenter ? Array.from(segmenter.segment(text), item => item.segment) : Array.from(text)
+    }
+
+    /** Lyric strings only enter text nodes; KRC timing is divided across complete Unicode graphemes. */
+    function renderLine(line) {
+      entries = []
+      currentLyric.replaceChildren()
+      if (songInfoOnly) {
+        currentLyric.textContent = song ? `${song.title || '未知歌曲'}${!alwaysTwoLines && song.artist ? ` · ${song.artist}` : ''}` : '等待播放音乐'
+      } else if (karaokeEnabled && line?.isKrc && line.words.length) {
+        const fragment = document.createDocumentFragment()
+        line.words.forEach(word => {
+          const letters = graphemes(word.word ?? word.text)
+          const offset = Number.isFinite(word.startTime) ? Math.max(0, word.startTime) : 0
+          const wordDuration = Number.isFinite(word.duration) ? Math.max(0, word.duration) : Math.max(0, (word.endTime || 0) - offset)
+          letters.forEach((letter, index) => {
+            const element = document.createElement('span')
+            element.textContent = letter
+            element.className = 'karaoke-char'
+            fragment.appendChild(element)
+            entries.push({ element, start: line.time + offset + wordDuration * index / letters.length, duration: wordDuration / letters.length, progress: -1 })
+          })
+        })
+        currentLyric.appendChild(fragment)
+      } else {
+        currentLyric.textContent = line ? line.text || '♪' : lyrics.length ? '♪ 前奏' : song ? song.title || '暂无歌词' : '等待播放音乐'
+      }
+      currentViewport.title = currentLyric.textContent
+      animateReplacement(currentLyric)
+      layoutDirty = true
+    }
+
+    function lineProgress(line, index) {
+      if (!line) return lyrics[0]?.time > 0 ? Math.min(1, time / lyrics[0].time) : 0
+      const nextTime = lyrics[index + 1]?.time
+      const durationEnd = Number.isFinite(line.duration) && line.duration > 0 ? line.time + line.duration : 0
+      const wordEnd = line.words.reduce((end, word) => Math.max(end, line.time + (Number.isFinite(word.endTime) ? word.endTime : (word.startTime || 0) + (word.duration || 0))), 0)
+      let end = durationEnd || wordEnd || nextTime || duration
+      if (nextTime && end > nextTime) end = nextTime
+      return end > line.time ? Math.max(0, Math.min(1, (time - line.time) / (end - line.time))) : 0
+    }
+
+    /** Absolute player time drives glyph fill, horizontal overflow and progress; paused windows never advance. */
+    function render() {
+      let low = 0
+      let high = lyrics.length
+      while (low < high) {
+        const middle = (low + high) >>> 1
+        if (lyrics[middle].time <= time) low = middle + 1
+        else high = middle
+      }
+      const index = low - 1
+      const line = lyrics[index]
+      if (index !== lineIndex) { lineIndex = index; renderLine(line) }
+      entries.forEach(entry => {
+        const progress = time < entry.start ? 0 : entry.duration > 0 ? Math.min(1, (time - entry.start) / entry.duration) : 1
+        if (entry.progress === progress) return
+        entry.progress = progress
+        entry.element.className = progress >= 1 ? 'karaoke-char sung' : progress > 0 ? 'karaoke-char singing' : 'karaoke-char'
+        entry.element.style.setProperty('--fill-progress', `${Math.round(progress * 1000) / 10}%`)
+      })
+      const translation = showTranslation && !hideTranslation && line?.translation.trim() ? line.translation : ''
+      const romanization = !hideTranslation && line?.romanization.trim() ? line.romanization : ''
+      const annotation = [romanization, translation].filter(Boolean).join(' · ')
+      const nextLine = lyrics[index + 1]
+      const secondary = songInfoOnly ? song?.artist || '' : annotation || nextLine?.text || (song && !lyrics.length ? '暂无歌词 · 享受此刻的音乐' : '')
+      setText(nextLyric, secondary)
+      nextLyric.dataset.kind = songInfoOnly ? 'artist' : romanization ? 'romanization' : translation ? 'translation' : nextLine ? 'next' : 'empty'
+      if (layoutDirty) {
+        lineOverflow = Math.max(0, currentLyric.scrollWidth - currentViewport.clientWidth)
+        nextOverflow = Math.max(0, nextLyric.scrollWidth - nextViewport.clientWidth)
+        layoutDirty = false
+      }
+      const progress = songInfoOnly ? duration > 0 ? time / duration : 0 : lineProgress(line, index)
+      const position = Math.max(0, Math.min(1, (progress - .12) / .76))
+      currentLyric.style.transform = `translateX(${-Math.round(lineOverflow * position)}px)`
+      nextLyric.style.transform = `translateX(${-Math.round(nextOverflow * position)}px)`
+      progressFill.style.transform = `scaleX(${duration > 0 ? Math.min(1, Math.max(0, time / duration)) : 0})`
+      updateHitTest()
+    }
+
+    function refreshControls() {
+      island.classList.toggle('playing', Boolean(song && playing))
+      const hasTranslation = lyrics.some(line => line.translation.trim())
+      ;[previousBtn, playBtn, nextBtn, translationBtn, closeBtn].forEach(button => {
+        button.disabled = pending.has(button) || ([previousBtn, playBtn, nextBtn].includes(button) && (!song || !available)) || (button === translationBtn && (!hasTranslation || hideTranslation || songInfoOnly))
+        button.setAttribute('aria-busy', String(pending.has(button)))
+      })
+      playBtn.title = playing ? '暂停' : '播放'
+      playBtn.setAttribute('aria-label', playBtn.title)
+      translationBtn.title = hideTranslation ? '已在灵动岛设置中隐藏翻译' : songInfoOnly ? '仅显示歌曲信息时不显示翻译' : hasTranslation ? showTranslation ? '隐藏翻译，显示下一句' : '显示翻译' : '当前歌曲暂无翻译'
+      translationBtn.setAttribute('aria-label', translationBtn.title)
+      translationBtn.setAttribute('aria-pressed', String(showTranslation && !hideTranslation && !songInfoOnly))
+    }
+
+    function showError(message) {
+      if (disposed) return
+      expand()
+      setText(feedback, typeof message === 'string' && message ? message : '操作失败，请重试')
+      clearTimeout(feedbackTimer)
+      feedbackTimer = setTimeout(() => { feedbackTimer = null; feedback.textContent = ''; scheduleCollapse() }, 5000)
+    }
+
+    /** Playback and preference buttons wait for real acknowledgements; failed operations remain retryable. */
+    async function runAction(button, operation, success) {
+      if (disposed || button.disabled || pending.has(button)) return
+      pending.add(button)
+      refreshControls()
+      try {
+        const result = await operation()
+        if (disposed) return
+        if (!result?.success) throw new Error(result?.error || '操作失败，请重试')
+        success?.()
+        feedback.textContent = ''
+      } catch (error) {
+        if (!disposed) {
+          console.warn('island-lyric', '操作未完成', error)
+          showError(error.message)
+        }
+      } finally {
+        pending.delete(button)
+        if (!disposed) { refreshControls(); scheduleCollapse() }
+      }
+    }
+
+    function toggleTranslation() {
+      const target = !showTranslation
+      const revision = settingsRevision
+      return runAction(translationBtn, () => api.setTranslation(target), () => {
+        if (revision === settingsRevision) { showTranslation = target; render() }
+      })
+    }
+
+    function dispose() {
+      if (disposed) return
+      disposed = true
+      endDrag()
+      artworkGeneration++
+      slots.forEach(slot => { slot.logo.onload = null; slot.logo.onerror = null })
+      subscriptions.splice(0).forEach(unsubscribe => unsubscribe())
+      listeners.splice(0).forEach(unlisten => unlisten())
+      clearTimeout(closeTimer)
+      clearTimeout(feedbackTimer)
+      if (frame !== null) cancelAnimationFrame(frame)
+      frame = null
+      animations.forEach(animation => animation.cancel())
+      animations.clear()
+      resizeObserver?.disconnect()
+      motionPreference?.removeEventListener?.('change', stopMotion)
+    }
+
+    function init() {
+      refreshControls()
+      listen(island, 'mouseleave', onMouseLeave)
+      listen(island, 'focusin', () => { clearTimeout(closeTimer); closeTimer = null })
+      listen(island, 'focusout', scheduleCollapse)
+      listen(island, 'keydown', onKeydown)
+      listen(notchToggle, 'click', toggleControls)
+      listen(notchToggle, 'contextmenu', event => { if (mode === 'floating') { event.preventDefault(); expand() } })
+      listen(island, 'pointerdown', beginPointerDrag)
+      listen(island, 'pointermove', movePointerDrag)
+      listen(island, 'pointerup', endDrag)
+      listen(island, 'pointercancel', endDrag)
+      listen(island, 'lostpointercapture', endDrag)
+      listen(window, 'mousemove', onPointerMove)
+      listen(window, 'mouseleave', onMouseLeave)
+      listen(window, 'blur', () => {
+        endDrag()
+        if (island.contains(document.activeElement)) document.activeElement.blur()
+        if (mode === 'floating') onMouseLeave()
+        else updateHitTest()
+      })
+      listen(window, 'resize', updateStage)
+      listen(window, 'beforeunload', dispose)
+      listen(previousBtn, 'click', () => runAction(previousBtn, () => api.control('prev')))
+      listen(playBtn, 'click', () => runAction(playBtn, () => api.control('toggle')))
+      listen(nextBtn, 'click', () => runAction(nextBtn, () => api.control('next')))
+      listen(translationBtn, 'click', toggleTranslation)
+      listen(closeBtn, 'click', () => runAction(closeBtn, () => api.close()))
+      subscriptions.push(api.onSongUpdate(updateSong), api.onLyricUpdate(updateLyrics), api.onTimeUpdate(updateTime), api.onPlaybackUpdate(updatePlayback), api.onSettingsUpdate(updateSettings), api.onError(showError), api.onPointerUpdate(onNativePointerUpdate))
+      motionPreference?.addEventListener?.('change', stopMotion)
+      if (typeof ResizeObserver === 'function') {
+        resizeObserver = new ResizeObserver(invalidateLayout)
+        ;[island, currentViewport, currentLyric, nextViewport, nextLyric].forEach(element => resizeObserver.observe(element))
+      }
+      document.fonts?.ready.then(() => { if (!disposed) invalidateLayout() })
+      updateStage()
+      refreshSlots()
+    }
+    document.addEventListener('DOMContentLoaded', init)
+  </script>
+</body>
+</html>

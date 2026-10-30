@@ -10,6 +10,19 @@ const motionVue = { ...vue,
 }
 const { parse, compileScript } = require('@vue/compiler-sfc')
 
+// Keep the parent's real bindings while the shared dropdown's DOM behavior is tested separately.
+const AnimatedSelect = {
+  inheritAttrs: false,
+  props: { modelValue: [String, Number], options: Array, disabled: Boolean, label: String },
+  emits: ['update:modelValue'],
+  setup(props, { attrs, emit }) {
+    return () => vue.h('animated-select-stub', {
+      ...attrs, modelValue: props.modelValue, options: props.options, disabled: props.disabled,
+      'aria-label': props.label, 'onUpdate:modelValue': value => emit('update:modelValue', value)
+    }, props.options?.find(option => option.value === props.modelValue)?.label || '')
+  }
+}
+
 const root = path.join(__dirname, '..')
 const packageInfo = require('../package.json')
 const quietLogger = { error() {} }
@@ -53,9 +66,9 @@ function mountUpdates(t, options = {}) {
     }]))
   }
   const opened = []
-  const component = new Function('Vue', 'packageInfo', 'logger', 'window', 'URL', compiled)(motionVue, packageInfo, quietLogger, {
+  const component = new Function('Vue', 'packageInfo', 'logger', 'window', 'URL', 'AnimatedSelect', compiled)(motionVue, packageInfo, quietLogger, {
     electronAPI: { updates: updateAPI, openExternal: async url => opened.push(url) }
-  }, URL)
+  }, URL, AnimatedSelect)
   function makeNode(type, text = '') {
     const node = { type, text, props: {}, children: [], parent: null, listeners: new Map(), selected: false,
       addEventListener: (name, callback) => node.listeners.set(name, callback),
@@ -129,6 +142,7 @@ test('browser preview shows the build version and disables desktop-only update c
   assert.match(ui.text(), /仅在桌面客户端中可用/)
   assert.ok(ui.text().includes(packageInfo.version))
   assert.equal(ui.nodes().find(node => node.type === 'fieldset').props.disabled, true)
+  assert.equal(ui.byId('update-channel').props.disabled, true)
   assert.equal(ui.button('检查更新'), undefined)
 })
 
@@ -155,10 +169,11 @@ test('preferences use the parent draft and a failed settings save prevents check
   let canSave = false
   const ui = mountUpdates(t, { beforeAction: async () => { saves++; return canSave } })
   await flush()
-  assert.equal(ui.byId('update-channel').props.value, 'stable')
+  assert.equal(ui.byId('update-channel').props.modelValue, 'stable')
+  assert.deepEqual(ui.byId('update-channel').props.options, [{ value: 'stable', label: '正式版' }, { value: 'beta', label: '测试版' }])
   assert.equal(ui.byId('update-auto-check').props.checked, true)
   assert.equal(ui.byId('update-auto-download').props.checked, false)
-  ui.byId('update-channel').props.onChange({ target: { value: 'beta' } })
+  ui.byId('update-channel').props['onUpdate:modelValue']('beta')
   await vue.nextTick()
   ui.byId('update-auto-download').props.onChange({ target: { checked: true } })
   await vue.nextTick()
@@ -205,16 +220,18 @@ test('downloads send only a selected service asset ID and cancellation remains u
   })
   await flush()
   const select = ui.byId('update-asset')
-  select.options[0].selected = false
-  select.options[1].selected = true
-  select.listeners.get('change')()
+  assert.equal(select.props.modelValue, '23')
+  assert.deepEqual(select.props.options, [{ value: '23', label: 'AppImage · 4.0 KB' }, { value: '24', label: 'deb · 8.0 KB' }])
+  select.props['onUpdate:modelValue']('24')
   await vue.nextTick()
+  assert.equal(ui.byId('update-asset').props.modelValue, '24')
   const result = ui.click('下载更新包')
   await flush()
   assert.deepEqual(ui.calls[0], { method: 'download', args: [24] })
   ui.publish(state(2, { status: 'downloading', release: installedRelease, selectedAssetId: 24, progress: { received: 1024, total: 8192, percent: 12.5, source: 'github' } }))
   await flush()
   assert.equal(ui.button('取消').props.disabled, false)
+  assert.equal(ui.byId('update-asset').props.disabled, true)
   await ui.click('取消')
   downloading.resolve(state(2, { status: 'downloading', release: installedRelease }))
   await result
@@ -257,6 +274,8 @@ test('opening settings during a background download preserves the asset selectio
     cancel: async () => state(5, { status: 'available', release: installedRelease, selectedAssetId: 24 })
   })
   await flush()
+  assert.equal(ui.byId('update-asset').props.modelValue, '24')
+  assert.equal(ui.byId('update-asset').props.disabled, true)
   assert.match(ui.text(), /来源：git\.tangbai\.cc/)
   await ui.click('取消')
   await flush()
@@ -290,10 +309,10 @@ test('a completed AppImage download allows selecting and downloading a different
   assert.equal(ui.button('下载更新包'), undefined, 'the completed asset does not need downloading again')
   assert.match(ui.text(), /来源：已验证缓存/)
   const select = ui.byId('update-asset')
-  select.options[0].selected = false
-  select.options[1].selected = true
-  select.listeners.get('change')()
+  assert.equal(select.props.modelValue, '23')
+  select.props['onUpdate:modelValue']('24')
   await vue.nextTick()
+  assert.equal(ui.byId('update-asset').props.modelValue, '24')
   assert.ok(ui.button('下载更新包'))
   await ui.click('下载更新包')
   assert.deepEqual(ui.calls.at(-1), { method: 'download', args: [24] })
@@ -343,10 +362,10 @@ test('release notes start expanded with keyboard access and malformed publicatio
 test('the active channel badge follows committed service state while the channel control keeps the draft', async t => {
   const ui = mountUpdates(t)
   await flush()
-  ui.byId('update-channel').props.onChange({ target: { value: 'beta' } })
+  ui.byId('update-channel').props['onUpdate:modelValue']('beta')
   await vue.nextTick()
   const badge = () => ui.nodes().find(node => node.type === 'span' && node.props.class === 'updates-channel')
-  assert.equal(ui.byId('update-channel').props.value, 'beta')
+  assert.equal(ui.byId('update-channel').props.modelValue, 'beta')
   assert.equal(badge().text, '正式版', 'unsaved channel must not appear applied to current results')
   ui.publish(state(2, { channel: 'beta' }))
   await flush()

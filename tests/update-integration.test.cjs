@@ -48,6 +48,8 @@ function loadMain({ packaged = false } = {}) {
   Window.getAllWindows = () => windows
   const context = vm.createContext({
     require(name) {
+      if (name === './services/desktopLyricPolicy') return require('../electron/services/desktopLyricPolicy')
+      if (name === './services/windowsForeground') return require('../electron/services/windowsForeground')
       if (name === 'electron') return {
         app, BrowserWindow: Window,
         ipcMain: Object.assign(new EventEmitter(), { handle: (name, handler) => handlers.set(name, handler) }),
@@ -57,10 +59,12 @@ function loadMain({ packaged = false } = {}) {
         nativeImage: { createFromPath: () => ({}) }, Tray: class {}, Menu: {}
       }
       if (name === './logger') return quiet
+      if (name === './services/lyricLibraryService') return { createLyricLibraryService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/playlistCacheService') return { createPlaylistCacheService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/backendService') return { createBackendService: () => ({ start() {}, stop: async () => {} }) }
       if (name === './services/updateService') return { createUpdateService: opts => { options = opts; return service } }
-      if (name === './settingsStore') return { getSettings: () => settings, onSettingsChange: callback => { listener = callback; return () => {} } }
+      if (name === './settingsStore') return { normalizeDesktopLyrics: require('../electron/settingsStore').normalizeDesktopLyrics,
+        getSettings: () => settings, onSettingsChange: callback => { listener = callback; return () => {} } }
       return require(name)
     },
     __dirname: path.join(__dirname, '../electron'),
