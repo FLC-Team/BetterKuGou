@@ -72,8 +72,8 @@ function runFixture(compiler, directory, name, declarations, instructions) {
   return { status: executed.status, output: fs.existsSync(report) ? fs.readFileSync(report, 'utf8') : '(no report)' }
 }
 
-// A valid eight-character allocation ends exactly at the page boundary. Reading
-// NSIS_MAX_STRLEN characters from it must fail even when the terminator is early.
+// A valid eight-WCHAR allocation ends exactly at the page boundary. Verify the
+// unreadable range through the OS, independently of System plug-in exception handling.
 const guardedPath = String.raw`
   System::Call 'kernel32::VirtualAlloc(p 0, i 8192, i 0x3000, i 4)p.s'
   Pop $ProbeMemory
@@ -95,13 +95,37 @@ test('a short known-folder allocation is copied through its terminator rather th
   const compiler = nativeCompiler(t)
   if (!compiler) return
   const directory = fixtureDirectory(t)
-  const original = runFixture(compiler, directory, 'fixed-width-read', '', [guardedPath,
-    '  FileWrite $ProbeReport "before$\\r$\\n"',
-    "  System::Call '*$0(&w${NSIS_MAX_STRLEN} .r1)'",
-    '  FileWrite $ProbeReport "unexpected-success$\\r$\\n"'
+  const range = runFixture(compiler, directory, 'fixed-width-range', '', [guardedPath,
+    '  IntOp $1 ${NSIS_MAX_STRLEN} * 2',
+    '  System::Alloc $1', '  Pop $2',
+    '  ${If} $2 == 0', '    SetErrorLevel 92', '    Quit', '  ${EndIf}',
+    "  System::Call 'kernel32::GetCurrentProcess()p.r3'",
+    "  System::Call 'kernel32::ReadProcessMemory(p r3, p r0, p r2, p 16, *p 0 r4)i.r5'",
+    "  System::Call '*$2(&w8 .r7)'",
+    '  FileWrite $ProbeReport "readable|$5|$4|$7$\\r$\\n"',
+    "  System::Call 'kernel32::ReadProcessMemory(p r3, p r0, p r2, p r1, *p 0 r4)i.r5 ?e'",
+    '  Pop $6',
+    '  FileWrite $ProbeReport "crossing|$5|$4|$1|$6$\\r$\\n"',
+    '  System::Free $2',
+    "  System::Call 'kernel32::VirtualFree(p $ProbeMemory, i 0, i 0x8000)'"
   ].join('\n'))
-  assert.equal(original.status >>> 0, 0xC0000005, 'the guard page must expose the original native access violation')
-  assert.equal(original.output, 'before\r\n')
+  assert.equal(range.status, 0, 'the guard range probe must complete:\n' + range.output)
+  const lines = range.output.trim().split(/\r?\n/)
+  assert.equal(lines.length, 2)
+  const readable = lines[0].split('|')
+  assert.equal(readable.length, 4)
+  assert.ok(Number.isSafeInteger(Number(readable[1])) && Number(readable[1]) !== 0,
+    'the source, destination and process handle must be valid')
+  assert.deepEqual([readable[0], readable[2], readable[3]], ['readable', '16', 'Z:\\Test'])
+  const crossing = lines[1].split('|')
+  assert.equal(crossing.length, 5)
+  assert.equal(crossing[0], 'crossing')
+  const [success, copied, requested, error] = crossing.slice(1).map(Number)
+  assert.equal(success, 0, 'a full NSIS WCHAR array must not be readable across PAGE_NOACCESS')
+  assert.ok(Number.isSafeInteger(requested) && requested > 16)
+  assert.ok(Number.isSafeInteger(copied) && copied >= 0 && copied <= 16 && copied < requested,
+    'a failed or partial read must never include bytes from the protected page')
+  assert.ok(Number.isSafeInteger(error) && error > 0, 'the failed OS read must report an error')
   const bounded = runFixture(compiler, directory, 'bounded-read', '', [guardedPath,
     "  System::Call 'kernel32::lstrcpynW(w .r1, p r0, i ${NSIS_MAX_STRLEN})'",
     '  FileWrite $ProbeReport "$1"',
@@ -116,6 +140,8 @@ function installModeFixtureInclude(directory) {
   const source = fs.readFileSync(path.join(root, 'installer/install-mode.nsh'), 'utf8').replace(/\r\n/g, '\n')
   const match = source.match(/^\s*!macro setInstallModePerUser\s*\n[\s\S]*?^\s*!macroend\b/m)
   assert.ok(match, 'the installer owns the per-user mode replacement')
+  assert.doesNotMatch(match[0], /System::Call\s+['"]\s*\*\$\w+\s*\(\s*&[wt]\s*\$\{NSIS_MAX_STRLEN\}/i,
+    'known-folder pointers must not be read using the full NSIS string capacity')
   let macro = source
   const registry = /^\s*ReadRegStr\s+(\$\w+)\s+HKCU\s+"[^"\n]+"\s+InstallLocation\s*$/gm
   assert.equal([...macro.matchAll(registry)].length, 1, 'only the installed path lookup is stubbed')

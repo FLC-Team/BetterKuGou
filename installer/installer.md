@@ -52,7 +52,7 @@ macOS 保留 Finder 拖放；DMG 背景说明首次安装与退出后替换。Li
 
 `node scripts/generate-installer-motion.cjs` 使用纯 Node 生成全部静音原生动画资源，无外部编码器或新增依赖；打包直接读取已提交 AVI。
 
-`tests/installer-install-mode.test.cjs` 使用原生保护页复现固定长度读取越界，并运行实际路径宏验证安全拷贝及安装目录兼容；不执行安装或修改真实安装记录。Windows CI 在打包获得编译器后要求该测试通过。
+`tests/installer-install-mode.test.cjs` 使用 ReadProcessMemory 的合法范围正控及跨保护页失败负控验证内存边界，不依赖不同 System 插件对访问违规的进程退出码；运行实际路径宏验证安全拷贝及安装目录兼容，并禁止回退到旧的固定宽度指针读取。不执行安装或修改真实安装记录。Windows CI 在打包获得编译器后要求该测试通过。
 
 `tests/installer-completion.test.cjs` 执行真实初始化、进度和完成页面，在临时目录实际提取测试文件，验证成功后无需按键即可进入完成页；测试不自行补设自动跳转，不安装应用或修改已有安装记录。
 
