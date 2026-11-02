@@ -5,6 +5,8 @@
 当前目录没有子目录，承载由 Electron 主入口调用的独立生命周期服务。
 
 - `desktopLyricPolicy.js`：桌面歌词隐藏条件、原生透明度及固定解锁热点的纯计算，不保存临时状态。
+- `taskbarLyricService.js`：任务栏歌词窗口、空闲区域布局、显示器回退、轮询、暂停隐藏/限时预览及关闭清理；渲染建议宽度由可用区域、边距和最大宽度约束，固定宽度为 480 DIP。悬浮位置和尺寸只在确认解除嵌入后使用 Electron `setBounds`，避免直接 Win32 定位扣除无边框客户区高度；原生定位仅用于嵌入。设置只消费已提交值，显隐和实际嵌入状态不写设置。
+- `windowsTaskbar.js` / `windowsTaskbar.ps1`：独立隐藏 helper，通过固定 JSON 请求读取任务栏几何、占用区域及系统颜色；只允许 PID 校验的本应用窗口嵌入已确认的任务栏 HWND。DPI 不兼容、未知区域或无空闲空间回退悬浮，不改变 Explorer 配置/样式/位置；EOF/EXIT 恢复原父窗口及样式。脚本按 `app.getAppPath()` 读取再编码执行，兼容 ASAR；单次请求有截止，旧窗口输出不能复活新状态。
 - `windowsForeground.js` / `windowsForeground.ps1`：每实例按需管理自己创建的隐藏 Windows 前台全屏检测 helper，只读取前台窗口和屏幕几何，不枚举用户进程、读取标题或采集画面。
 
 - `backendService.js`：创建并管理本地酷狗 API Utility Process，处理启动、健康检查、状态通知及退出清理。

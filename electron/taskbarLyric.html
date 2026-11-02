@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src file: https: http: data: blob: bk-cache:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+  <title>任务栏歌词</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+    body { background: transparent; font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; user-select: none; }
+    [hidden] { display: none !important; }
+    .taskbar { --text: #f6f6f7; --secondary: #c6c6cc; --inactive: #95959e; --panel: #242426; --hover: #ffffff1a; --font-size: 13px; --secondary-size: 11px; --line-height: 16px; --secondary-height: 14px; --line-gap: 0px; --art-size: 30px; --control-size: 25px; width: 100%; height: 100%; padding: 2px 7px; display: flex; align-items: center; gap: 7px; color: var(--text); border-radius: 5px; background: var(--panel); transition: background-color 160ms ease, color 160ms ease; }
+    .taskbar.light { --text: #202026; --secondary: #4e4e58; --inactive: #85858d; --panel: #f4f4f6; --hover: #00000012; }
+    .taskbar.embedded { background: transparent; border-radius: 0; }
+    .artwork { position: relative; width: var(--art-size); height: var(--art-size); flex: 0 0 var(--art-size); border-radius: 4px; overflow: hidden; background: var(--hover); pointer-events: none; }
+    .artwork::before { content: '♫'; position: absolute; inset: 0; display: grid; place-items: center; font-size: 17px; opacity: .45; }
+    .artwork img { position: absolute; width: 100%; height: 100%; object-fit: cover; }
+    .logo { width: var(--art-size); height: var(--art-size); flex: 0 0 var(--art-size); object-fit: contain; pointer-events: none; }
+    .lyrics { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; gap: var(--line-gap); }
+    .lyrics.reversed { flex-direction: column-reverse; }
+    .viewport { width: 100%; overflow: hidden; min-width: 0; height: var(--line-height); }
+    .secondary-viewport { height: var(--secondary-height); }
+    .lyric { width: max-content; white-space: pre; font-size: var(--font-size); line-height: var(--line-height); font-weight: 500; }
+    .secondary { font-size: var(--secondary-size); line-height: var(--secondary-height); color: var(--secondary); font-weight: 400; }
+    .karaoke-char { color: var(--inactive); }
+    .karaoke-char.sung { color: var(--text); }
+    .karaoke-char.singing { background: linear-gradient(90deg, var(--text) var(--fill-progress, 0%), var(--inactive) var(--fill-progress, 0%)); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .controls { flex: 0 0 auto; display: flex; align-items: center; gap: 1px; }
+    .control { display: grid; place-items: center; width: var(--control-size); height: var(--control-size); padding: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; transition: background-color 130ms ease, opacity 130ms ease, scale 100ms ease; }
+    .control:hover:not(:disabled) { background: var(--hover); }
+    .control:active:not(:disabled) { scale: .87; }
+    .control:focus-visible { outline: 1px solid currentColor; outline-offset: -1px; }
+    .control:disabled { opacity: .3; cursor: default; }
+    .control[aria-busy="true"] { opacity: .6; }
+    .control svg { width: 15px; height: 15px; fill: currentColor; }
+    .pause-icon, .playing .play-icon { display: none; }
+    .playing .pause-icon { display: block; }
+    .feedback { position: absolute; inset: 0; padding: 3px 8px; display: flex; align-items: center; background: var(--panel); color: var(--text); font-size: 12px; line-height: 1.3; z-index: 2; cursor: pointer; }
+    @media (max-width: 240px) {
+      .taskbar { padding-left: 4px; padding-right: 4px; gap: 4px; }
+      .artwork, .logo { display: none; }
+      .control { width: 20px; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before { transition: none !important; } }
+  </style>
+</head>
+<body>
+  <section class="taskbar" id="taskbar" aria-label="任务栏歌词">
+    <img class="logo" id="logo" alt="BetterKuGou" hidden>
+    <div class="artwork" id="artwork" aria-hidden="true"></div>
+    <div class="lyrics" id="lyrics">
+      <div class="viewport" id="currentViewport"><div class="lyric" id="currentLyric">等待播放音乐</div></div>
+      <div class="viewport secondary-viewport" id="secondaryViewport"><div class="lyric secondary" id="secondaryLyric"></div></div>
+    </div>
+    <div class="controls" id="controls">
+      <button class="control" id="previousBtn" type="button" title="上一首" aria-label="上一首"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h2v10H2zm11 0v10L5 8z"/></svg></button>
+      <button class="control" id="playBtn" type="button" title="播放" aria-label="播放"><svg class="play-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 2 10 6-10 6z"/></svg><svg class="pause-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2h4v12H3zm6 0h4v12H9z"/></svg></button>
+      <button class="control" id="nextBtn" type="button" title="下一首" aria-label="下一首"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12 3h2v10h-2zM3 3l8 5-8 5z"/></svg></button>
+    </div>
+    <div class="feedback" id="feedback" role="status" aria-live="polite" title="点击关闭提示后重试" hidden></div>
+  </section>
+  <script>
+    const api = window.taskbarLyricAPI
+    const taskbar = document.getElementById('taskbar')
+    const lyricContainer = document.getElementById('lyrics')
+    const currentViewport = document.getElementById('currentViewport')
+    const currentLyric = document.getElementById('currentLyric')
+    const secondaryViewport = document.getElementById('secondaryViewport')
+    const secondaryLyric = document.getElementById('secondaryLyric')
+    const artwork = document.getElementById('artwork')
+    const logo = document.getElementById('logo')
+    const controls = document.getElementById('controls')
+    const previousBtn = document.getElementById('previousBtn')
+    const playBtn = document.getElementById('playBtn')
+    const nextBtn = document.getElementById('nextBtn')
+    const feedback = document.getElementById('feedback')
+    const media = window.matchMedia?.('(prefers-reduced-motion: reduce)')
+    const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null
+    const options = { doubleLine: true, karaoke: true, hideTranslation: false, showTranslation: true, songInfoOnly: false, adaptive: true, showAlbum: true, showControls: true, showLogo: false, fontScale: 1, fontFamily: '', lineGap: 0, contentAlignment: 'auto', albumAlignment: 'auto', originalPosition: 'top', transition: 'slide', colorMode: 'taskbar', dark: true }
+    const subscriptions = []
+    const listeners = []
+    const animations = new Map()
+    const pending = new Set()
+    let song = null
+    let lyrics = []
+    let lineIndex = -2
+    let entries = []
+    let anchor = 0
+    let anchorAt = 0
+    let advancing = false
+    let playbackRate = 1
+    let duration = 0
+    let playing = false
+    let available = false
+    let hidden = false
+    let disposed = false
+    let frame = null
+    let resizeObserver = null
+    let layoutDirty = true
+    let currentOverflow = 0
+    let secondaryOverflow = 0
+    let lastSize = ''
+    let artworkSource = null
+    let artworkGeneration = 0
+    let artworkImage = null
+    let logoSource = null
+    let nativeDark = null
+
+    function listen(target, name, handler) {
+      target.addEventListener(name, handler)
+      listeners.push(() => target.removeEventListener(name, handler))
+    }
+
+    /** Cancel old replacements before showing the latest line, including rapid seeks and track changes. */
+    function animateReplacement(element) {
+      animations.get(element)?.cancel()
+      animations.delete(element)
+      if (hidden || media?.matches || options.transition === 'none' || !element.animate) return
+      const first = options.transition === 'slide' ? { opacity: 0, translate: '0 5px' } : { opacity: 0 }
+      const animation = element.animate([first, { opacity: 1, translate: '0 0' }], { duration: 190, easing: 'cubic-bezier(.2,.8,.2,1)' })
+      animations.set(element, animation)
+      animation.onfinish = () => { if (animations.get(element) === animation) animations.delete(element) }
+    }
+
+    function stopAnimations() {
+      animations.forEach(animation => animation.cancel())
+      animations.clear()
+    }
+
+    /** The visual clock only extrapolates 300 ms from a fresh, explicitly advancing audio sample. */
+    function visualTime(now = performance.now()) {
+      const value = anchor + (advancing ? Math.min(300, Math.max(0, now - anchorAt)) * playbackRate : 0)
+      return duration > 0 ? Math.min(value, duration) : value
+    }
+
+    function scheduleRender() {
+      if (disposed || hidden || frame !== null) return
+      frame = requestAnimationFrame(() => {
+        frame = null
+        if (disposed || hidden) return
+        render()
+        if (advancing && performance.now() - anchorAt < 300 && !options.songInfoOnly) scheduleRender()
+      })
+    }
+
+    function invalidateLayout() { layoutDirty = true; scheduleRender() }
+
+    function songKey(value) { return value ? value.trackId || `${value.title || ''}\n${value.artist || ''}` : null }
+
+    /** Late artwork belongs to its original track and cannot replace the current cover. */
+    function updateArtwork(source) {
+      const safeSource = typeof source === 'string' && /^(https?:\/\/|data:image\/|blob:|bk-cache:\/\/)/i.test(source) ? source : null
+      if (safeSource === artworkSource) return
+      artworkSource = safeSource
+      const generation = ++artworkGeneration
+      if (artworkImage) { artworkImage.onload = null; artworkImage.onerror = null; artworkImage = null }
+      stopArtwork()
+      if (!safeSource) return
+      const image = document.createElement('img')
+      artworkImage = image
+      image.alt = ''
+      image.referrerPolicy = 'no-referrer'
+      image.onload = () => {
+        if (disposed || generation !== artworkGeneration) return
+        artwork.replaceChildren(image)
+        animateReplacement(image)
+      }
+      image.onerror = () => { if (!disposed && generation === artworkGeneration) { artworkSource = null; stopArtwork() } }
+      image.src = safeSource
+    }
+
+    function stopArtwork() {
+      Array.from(artwork.children).forEach(image => { animations.get(image)?.cancel(); animations.delete(image) })
+      artwork.replaceChildren()
+    }
+
+    function updateSong(value) {
+      const next = value && typeof value === 'object' ? value : null
+      if (songKey(song) !== songKey(next) || !next) {
+        lyrics = []
+        anchor = duration = 0
+        anchorAt = performance.now()
+        advancing = playing = available = false
+        lineIndex = -2
+        entries = []
+        stopAnimations()
+        feedback.hidden = true
+        feedback.textContent = ''
+      }
+      song = next
+      if (!lyrics.length || options.songInfoOnly) lineIndex = -2
+      taskbar.title = song ? `${song.title || '未知歌曲'} · ${song.artist || '未知歌手'}` : '等待播放音乐'
+      updateArtwork(song?.cover)
+      refreshControls()
+      scheduleRender()
+    }
+
+    function updateLyrics(value) {
+      lyrics = Array.isArray(value) ? value.filter(line => line && Number.isFinite(line.time) && line.time >= 0).map(line => ({
+        ...line, text: typeof line.text === 'string' ? line.text : '',
+        translation: typeof line.translation === 'string' ? line.translation : '',
+        romanization: typeof line.romanization === 'string' ? line.romanization : '',
+        words: Array.isArray(line.words) ? line.words.filter(word => word && typeof (word.word ?? word.text) === 'string') : []
+      })).sort((a, b) => a.time - b.time) : []
+      lineIndex = -2
+      entries = []
+      scheduleRender()
+    }
+
+    function updateTime(value, meta = {}) {
+      if (!Number.isFinite(value) || value < 0) return
+      const now = performance.now()
+      const nextAdvancing = meta.advancing === true && playing
+      const nextRate = Number.isFinite(meta.playbackRate) && meta.playbackRate > 0 ? meta.playbackRate : 1
+      const repeated = !meta.discontinuity && nextAdvancing && advancing && value === anchor && nextRate === playbackRate
+      const difference = value - visualTime(now)
+      const correction = !meta.discontinuity && nextAdvancing && advancing && value > anchor && difference < 0 && difference >= -50 ? -difference / nextRate : 0
+      if (meta.discontinuity || difference < -100 || difference > 500) stopAnimations()
+      anchor = value
+      if (!repeated) anchorAt = now - correction
+      advancing = nextAdvancing
+      playbackRate = nextRate
+      if (Number.isFinite(meta.duration) && meta.duration >= 0) duration = meta.duration
+      scheduleRender()
+    }
+
+    function updatePlayback(value = {}) {
+      if (typeof value.playing === 'boolean') playing = value.playing
+      if (typeof value.available === 'boolean') available = value.available
+      if (Number.isFinite(value.duration) && value.duration >= 0) duration = value.duration
+      if (!playing || value.discontinuity) {
+        anchor = Number.isFinite(value.time) && value.time >= 0 ? value.time : visualTime()
+        anchorAt = performance.now()
+        advancing = false
+        stopAnimations()
+      }
+      refreshControls()
+      scheduleRender()
+    }
+
+    /** Preserve incoming snapshots while hidden, with no recurring paint work until the native window returns. */
+    function updateRuntimeState(value = {}) {
+      if (typeof value.hidden !== 'boolean') return
+      hidden = value.hidden
+      if (hidden) {
+        if (frame !== null) cancelAnimationFrame(frame)
+        frame = null
+        stopAnimations()
+      } else invalidateLayout()
+    }
+
+    function updateState(value = {}) {
+      if (typeof value.embedded === 'boolean') taskbar.classList.toggle('embedded', value.embedded)
+      if (typeof value.dark === 'boolean') { nativeDark = value.dark; refreshTheme() }
+      if (typeof value.visible === 'boolean') updateRuntimeState({ hidden: !value.visible })
+    }
+
+    function refreshTheme() {
+      taskbar.classList.toggle('light', options.colorMode === 'light' || (options.colorMode === 'taskbar' && !(nativeDark ?? options.dark)))
+    }
+
+    function updateSettings(value = {}) {
+      const previousRendering = `${options.karaoke}:${options.songInfoOnly}:${options.doubleLine}`
+      for (const key of ['doubleLine', 'karaoke', 'hideTranslation', 'showTranslation', 'songInfoOnly', 'adaptive', 'showAlbum', 'showControls', 'showLogo', 'dark']) {
+        if (typeof value[key] === 'boolean') options[key] = value[key]
+      }
+      for (const [key, choices] of Object.entries({ contentAlignment: ['auto', 'left', 'center', 'right'], albumAlignment: ['auto', 'left', 'right'], originalPosition: ['top', 'bottom'], transition: ['none', 'fade', 'slide'], colorMode: ['taskbar', 'light', 'dark'] })) {
+        if (choices.includes(value[key])) options[key] = value[key]
+      }
+      if (Number.isFinite(value.fontScale)) options.fontScale = Math.max(.5, Math.min(2, value.fontScale))
+      if (Number.isFinite(value.lineGap)) options.lineGap = Math.max(-10, Math.min(40, value.lineGap))
+      if (typeof value.fontFamily === 'string') options.fontFamily = value.fontFamily.slice(0, 200)
+      currentLyric.style.fontFamily = secondaryLyric.style.fontFamily = options.fontFamily ? `"${options.fontFamily.replace(/["\\]/g, '\\$&')}"` : ''
+      if (Object.prototype.hasOwnProperty.call(value, 'logoUrl')) {
+        const source = typeof value.logoUrl === 'string' && /^file:\/\//i.test(value.logoUrl) ? value.logoUrl : null
+        if (source !== logoSource) {
+          logoSource = source
+          logo.onerror = () => { if (!disposed && logoSource === source) { logoSource = null; logo.hidden = true; invalidateLayout() } }
+          if (source) logo.src = source
+          else logo.removeAttribute('src')
+        }
+      }
+      logo.hidden = !options.showLogo || !logoSource
+      artwork.hidden = !options.showAlbum
+      artwork.style.order = options.albumAlignment === 'right' ? '2' : '0'
+      lyricContainer.style.order = '1'
+      controls.style.order = '3'
+      controls.hidden = !options.showControls
+      secondaryViewport.hidden = !options.doubleLine
+      lyricContainer.classList.toggle('reversed', options.originalPosition === 'bottom')
+      if (previousRendering !== `${options.karaoke}:${options.songInfoOnly}:${options.doubleLine}`) lineIndex = -2
+      if (options.transition === 'none') stopAnimations()
+      refreshTheme()
+      updateLayout()
+    }
+
+    /** Fit both lines and artwork within the native taskbar height; the main process owns screen geometry. */
+    function updateLayout() {
+      const height = Math.max(16, window.innerHeight - 4)
+      const gap = options.doubleLine ? Math.max(-10, Math.min(options.lineGap, Math.max(0, height - 24))) : 0
+      const desired = options.doubleLine ? 13 : 15
+      const maxFont = options.doubleLine ? Math.max(8, (height - gap) / 2.15) : height / 1.2
+      const size = Math.min(desired * options.fontScale, maxFont)
+      const secondarySize = Math.min(11 * options.fontScale, Math.max(8, height - Math.ceil(size * 1.2) - gap) / 1.2)
+      taskbar.style.setProperty('--font-size', `${size}px`)
+      taskbar.style.setProperty('--secondary-size', `${secondarySize}px`)
+      taskbar.style.setProperty('--line-height', `${Math.ceil(size * 1.2)}px`)
+      taskbar.style.setProperty('--secondary-height', `${Math.ceil(secondarySize * 1.2)}px`)
+      taskbar.style.setProperty('--line-gap', `${gap}px`)
+      taskbar.style.setProperty('--art-size', `${Math.min(32, height)}px`)
+      taskbar.style.setProperty('--control-size', `${Math.min(25, height)}px`)
+      invalidateLayout()
+    }
+
+    function renderLine(line) {
+      entries = []
+      currentLyric.replaceChildren()
+      if (options.songInfoOnly) {
+        currentLyric.textContent = song ? `${song.title || '未知歌曲'}${!options.doubleLine && song.artist ? ` · ${song.artist}` : ''}` : '等待播放音乐'
+      } else if (options.karaoke && line?.isKrc && line.words.length) {
+        const fragment = document.createDocumentFragment()
+        line.words.forEach(word => {
+          const text = word.word ?? word.text
+          const letters = segmenter ? Array.from(segmenter.segment(text), part => part.segment) : Array.from(text)
+          const offset = Number.isFinite(word.startTime) ? Math.max(0, word.startTime) : 0
+          const wordDuration = Number.isFinite(word.duration) ? Math.max(0, word.duration) : Math.max(0, (word.endTime || 0) - offset)
+          letters.forEach((letter, index) => {
+            const element = document.createElement('span')
+            element.className = 'karaoke-char'
+            element.textContent = letter
+            fragment.appendChild(element)
+            entries.push({ element, start: line.time + offset + wordDuration * index / letters.length, duration: wordDuration / letters.length, progress: -1 })
+          })
+        })
+        currentLyric.appendChild(fragment)
+      } else currentLyric.textContent = line ? line.text || '♪' : lyrics.length ? '♪ 前奏' : song ? song.title || '暂无歌词' : '等待播放音乐'
+      currentViewport.title = currentLyric.textContent
+      animateReplacement(currentLyric)
+      layoutDirty = true
+    }
+
+    function lineProgress(line, index, time) {
+      if (!line) return 0
+      const nextTime = lyrics[index + 1]?.time
+      const durationEnd = Number.isFinite(line.duration) && line.duration > 0 ? line.time + line.duration : 0
+      const wordEnd = line.words.reduce((end, word) => Math.max(end, line.time + (Number.isFinite(word.endTime) ? word.endTime : (word.startTime || 0) + (word.duration || 0))), 0)
+      let end = durationEnd || wordEnd || nextTime || duration
+      if (nextTime && end > nextTime) end = nextTime
+      return end > line.time ? Math.max(0, Math.min(1, (time - line.time) / (end - line.time))) : 0
+    }
+
+    function alignLine(element, viewport, overflow, progress) {
+      const align = options.contentAlignment === 'auto' ? 'left' : options.contentAlignment
+      element.style.marginLeft = overflow > 0 || align === 'left' ? '0' : 'auto'
+      element.style.marginRight = overflow > 0 || align === 'right' ? '0' : 'auto'
+      const position = Math.max(0, Math.min(1, (progress - .12) / .76))
+      element.style.transform = `translateX(${-Math.round(overflow * position)}px)`
+      viewport.style.textAlign = align
+    }
+
+    /** Recalculate all fills from absolute time, so seeks and repeated text cannot leave stale highlighted glyphs. */
+    function render() {
+      const time = visualTime()
+      let low = 0
+      let high = lyrics.length
+      while (low < high) {
+        const middle = (low + high) >>> 1
+        if (lyrics[middle].time <= time) low = middle + 1
+        else high = middle
+      }
+      const index = low - 1
+      const line = lyrics[index]
+      if (lineIndex !== index) { lineIndex = index; renderLine(line) }
+      entries.forEach(entry => {
+        const progress = time < entry.start ? 0 : entry.duration > 0 ? Math.min(1, (time - entry.start) / entry.duration) : 1
+        if (entry.progress === progress) return
+        entry.progress = progress
+        entry.element.className = progress >= 1 ? 'karaoke-char sung' : progress > 0 ? 'karaoke-char singing' : 'karaoke-char'
+        entry.element.style.setProperty('--fill-progress', `${Math.round(progress * 1000) / 10}%`)
+      })
+      const translation = options.showTranslation && !options.hideTranslation && line?.translation.trim() ? line.translation : ''
+      const romanization = !options.hideTranslation && line?.romanization.trim() ? line.romanization : ''
+      const annotation = [romanization, translation].filter(Boolean).join(' · ')
+      const nextLine = lyrics[index + 1]
+      const secondary = options.songInfoOnly ? song?.artist || '' : annotation || nextLine?.text || (song && !lyrics.length ? song.artist || '暂无歌词' : '')
+      if (secondaryLyric.textContent !== secondary) {
+        secondaryLyric.textContent = secondary
+        secondaryViewport.title = secondary
+        animateReplacement(secondaryLyric)
+        layoutDirty = true
+      }
+      secondaryLyric.dataset.kind = options.songInfoOnly ? 'artist' : annotation ? 'annotation' : nextLine ? 'next' : 'empty'
+      if (layoutDirty) {
+        currentOverflow = Math.max(0, currentLyric.scrollWidth - currentViewport.clientWidth)
+        secondaryOverflow = Math.max(0, secondaryLyric.scrollWidth - secondaryViewport.clientWidth)
+        const height = Math.max(16, window.innerHeight - 4)
+        const extras = 14 + (!artwork.hidden ? Math.min(32, height) + 7 : 0) + (!logo.hidden ? Math.min(32, height) + 7 : 0) + (!controls.hidden ? Math.min(25, height) * 3 + 9 : 0)
+        const textWidth = Math.max(currentLyric.scrollWidth, options.doubleLine ? secondaryLyric.scrollWidth : 0)
+        const width = options.adaptive ? Math.max(160, Math.min(1200, Math.ceil(textWidth + extras))) : 480
+        // Recommended height is content-derived, never fed back from the service's padded native bounds.
+        const desiredHeight = Math.max(32, options.doubleLine
+          ? Math.ceil(13 * options.fontScale * 1.2) + Math.ceil(11 * options.fontScale * 1.2) + options.lineGap + 4
+          : Math.ceil(15 * options.fontScale * 1.2) + 4)
+        const size = `${width}:${desiredHeight}`
+        if (lastSize !== size) { lastSize = size; api.resize({ width, height: desiredHeight }) }
+        layoutDirty = false
+      }
+      const progress = options.songInfoOnly ? duration > 0 ? time / duration : 0 : lineProgress(line, index, time)
+      alignLine(currentLyric, currentViewport, currentOverflow, progress)
+      alignLine(secondaryLyric, secondaryViewport, secondaryOverflow, annotation || options.songInfoOnly ? progress : 0)
+    }
+
+    function refreshControls() {
+      taskbar.classList.toggle('playing', Boolean(song && playing))
+      ;[previousBtn, playBtn, nextBtn].forEach(button => {
+        button.disabled = pending.has(button) || !song || !available
+        button.setAttribute('aria-busy', String(pending.has(button)))
+      })
+      playBtn.title = playing ? '暂停' : '播放'
+      playBtn.setAttribute('aria-label', playBtn.title)
+    }
+
+    function showError(message) {
+      if (disposed) return
+      feedback.textContent = typeof message === 'string' && message ? message : '操作失败，请重试'
+      feedback.hidden = false
+      animateReplacement(feedback)
+    }
+
+    /** Controls wait for acknowledgement and never optimistically change the audio state. */
+    async function runAction(button, action) {
+      if (disposed || button.disabled || pending.has(button)) return
+      pending.add(button)
+      refreshControls()
+      try {
+        const result = await api.control(action)
+        if (disposed) return
+        if (!result?.success) throw new Error(result?.error || '操作失败，请重试')
+        feedback.hidden = true
+        feedback.textContent = ''
+      } catch (error) {
+        if (!disposed) { console.warn('taskbar-lyric', '播放控制失败', error); showError(error.message) }
+      } finally {
+        pending.delete(button)
+        if (!disposed) refreshControls()
+      }
+    }
+
+    function dispose() {
+      if (disposed) return
+      disposed = true
+      artworkGeneration++
+      if (artworkImage) { artworkImage.onload = null; artworkImage.onerror = null }
+      logo.onload = logo.onerror = null
+      subscriptions.splice(0).forEach(unsubscribe => unsubscribe?.())
+      listeners.splice(0).forEach(unlisten => unlisten())
+      if (frame !== null) cancelAnimationFrame(frame)
+      frame = null
+      stopAnimations()
+      resizeObserver?.disconnect()
+    }
+
+    function init() {
+      refreshControls()
+      listen(previousBtn, 'click', () => runAction(previousBtn, 'prev'))
+      listen(playBtn, 'click', () => runAction(playBtn, 'toggle'))
+      listen(nextBtn, 'click', () => runAction(nextBtn, 'next'))
+      listen(feedback, 'click', () => { feedback.hidden = true; feedback.textContent = '' })
+      listen(window, 'resize', updateLayout)
+      listen(window, 'beforeunload', dispose)
+      if (media?.addEventListener) listen(media, 'change', stopAnimations)
+      for (const [name, callback] of Object.entries({ onSongUpdate: updateSong, onLyricUpdate: updateLyrics, onTimeUpdate: updateTime, onPlaybackUpdate: updatePlayback, onSettingsUpdate: updateSettings, onRuntimeState: updateRuntimeState, onState: updateState, onError: showError })) subscriptions.push(api[name](callback))
+      if (typeof ResizeObserver === 'function') {
+        resizeObserver = new ResizeObserver(invalidateLayout)
+        ;[currentViewport, currentLyric, secondaryViewport, secondaryLyric].forEach(element => resizeObserver.observe(element))
+      }
+      document.fonts?.ready.then(() => { if (!disposed) invalidateLayout() })
+      updateSettings()
+      api.ready()
+    }
+    document.addEventListener('DOMContentLoaded', init, { once: true })
+  </script>
+</body>
+</html>

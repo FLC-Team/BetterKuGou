@@ -152,6 +152,37 @@ function normalizeIslandLyrics(value) {
   }
 }
 
+/** 任务栏歌词只接受已实现的偏好；旧设置补全默认值，尺寸使用有限 DIP 数值。 */
+function normalizeTaskbarLyrics(value) {
+  const taskbar = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const bool = (key, fallback) => typeof taskbar[key] === 'boolean' ? taskbar[key] : fallback
+  const choice = (key, options, fallback) => options.includes(taskbar[key]) ? taskbar[key] : fallback
+  const number = (key, fallback, minimum, maximum) => Number.isFinite(taskbar[key])
+    ? Math.max(minimum, Math.min(maximum, taskbar[key])) : fallback
+  const plainText = text => typeof text === 'string' && text.length <= 100 && !/[\x00-\x1f\x7f-\x9f]/.test(text)
+  return {
+    enabled: bool('enabled', false), embed: bool('embed', true),
+    pollingRate: choice('pollingRate', ['low', 'medium', 'high'], 'medium'),
+    displayId: plainText(taskbar.displayId) && taskbar.displayId.trim() ? taskbar.displayId.trim() : 'primary',
+    region: choice('region', ['auto', 'start', 'end'], 'auto'),
+    windowAlignment: choice('windowAlignment', ['auto', 'start', 'center', 'end'], 'auto'),
+    contentAlignment: choice('contentAlignment', ['auto', 'left', 'center', 'right'], 'auto'),
+    albumAlignment: choice('albumAlignment', ['auto', 'left', 'right'], 'auto'),
+    originalPosition: choice('originalPosition', ['top', 'bottom'], 'top'),
+    adaptive: bool('adaptive', true), colorMode: choice('colorMode', ['taskbar', 'light', 'dark'], 'taskbar'),
+    doubleLine: bool('doubleLine', true), karaoke: bool('karaoke', true),
+    hideTranslation: bool('hideTranslation', false), songInfoOnly: bool('songInfoOnly', false),
+    autoHide: bool('autoHide', false), fontScale: number('fontScale', 1, .5, 2),
+    fontFamily: plainText(taskbar.fontFamily) ? taskbar.fontFamily.trim() : '',
+    transition: choice('transition', ['none', 'fade', 'slide'], 'slide'),
+    showAlbum: bool('showAlbum', true), showControls: bool('showControls', true), showLogo: bool('showLogo', false),
+    verticalOffset: Math.round(number('verticalOffset', 0, -200, 200)),
+    lineGap: Math.round(number('lineGap', 0, -10, 40)),
+    maxWidth: Number.isFinite(taskbar.maxWidth) && taskbar.maxWidth > 0 ? Math.round(number('maxWidth', 0, 120, 8192)) : 0,
+    marginStart: Math.round(number('marginStart', 0, 0, 2000)), marginEnd: Math.round(number('marginEnd', 0, 0, 2000))
+  }
+}
+
 function ensureSchema(settings) {
   assertSafeKeys(settings)
   let normalized = cloneDeep(settings)
@@ -191,6 +222,7 @@ function ensureSchema(settings) {
   normalized.download.offlineCachePath = typeof offlineCachePath === 'string' && path.isAbsolute(offlineCachePath) && !offlineCachePath.includes('\0') ? path.resolve(offlineCachePath) : ''
   normalized.desktopLyrics = normalizeDesktopLyrics(desktop)
   normalized.islandLyrics = normalizeIslandLyrics(normalized.islandLyrics)
+  normalized.taskbarLyrics = normalizeTaskbarLyrics(normalized.taskbarLyrics)
   if (!isPlainObject(normalized.software)) normalized.software = cloneDeep(defaultsCache.software)
   const updates = isPlainObject(normalized.software.updates) ? normalized.software.updates : {}
   normalized.software.updates = {
@@ -274,6 +306,7 @@ function createDefaults(app) {
     },
     desktopLyrics: { ...desktopLyricDefaults },
     islandLyrics: normalizeIslandLyrics(),
+    taskbarLyrics: normalizeTaskbarLyrics(),
     download: {
       offlinePlaylistCacheEnabled: true,
       offlineCachePath: '',
@@ -536,6 +569,7 @@ async function ensureCacheDirectory() {
 module.exports = {
   CURRENT_SCHEMA_VERSION,
   normalizeDesktopLyrics,
+  normalizeTaskbarLyrics,
   initSettingsStore,
   getSettings,
   setSettings,

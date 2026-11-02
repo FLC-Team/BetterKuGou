@@ -83,30 +83,43 @@ async function queuedSettingsFixture() {
   }
 }
 
-function loadSettingsView(store, applyTheme = () => {}) {
+function loadSettingsView(store, applyTheme = () => {}, options = {}) {
   const component = fs.readFileSync(path.join(root, 'src/views/SettingsView.vue'), 'utf8')
   const script = stripImports(component.match(/<script setup>([\s\S]*?)<\/script>/)[1])
   const unmountCallbacks = []
+  const listeners = new Map()
+  const browserWindow = {}
+  let exposed
   const sandbox = vm.createContext({
     ...vue,
     ...loadUtils(),
     console: quietConsole,
     logger: quietLogger,
-    window: {},
-    document: { removeEventListener() {} },
-    setTimeout,
-    clearTimeout,
+    window: browserWindow,
+    document: {
+      addEventListener: (name, callback) => listeners.set(name, callback),
+      removeEventListener: (name, callback) => { if (listeners.get(name) === callback) listeners.delete(name) }
+    },
+    setTimeout: options.clock?.setTimeout || setTimeout,
+    clearTimeout: options.clock?.clearTimeout || clearTimeout,
     useSettingsStore: () => store,
     applyTheme,
     defineEmits: () => () => {},
-    defineExpose() {},
+    defineExpose: api => { exposed = api },
     onMounted() {},
     onBeforeUnmount: callback => unmountCallbacks.push(callback)
   })
   const scope = vue.effectScope()
-  const view = scope.run(() => vm.runInContext(`${script}\n;({ localSettings, syncFromStore, persistEditableSettings, flushEditableSettings, prepareThemeRecovery, handleExportSettings, handleImportSettings, settingsSaveError, actionMessage, saveState })`, sandbox))
+  const names = [
+    'localSettings', 'syncFromStore', 'persistEditableSettings', 'flushEditableSettings', 'prepareThemeRecovery',
+    'handleExportSettings', 'handleImportSettings', 'settingsSaveError', 'actionMessage', 'saveState',
+    'activeSection', 'scrollToSection', 'isSectionVisible', 'searchQuery', 'searchResults', 'sectionRefs',
+    'settingsMain', 'startEditingShortcut', 'editingShortcut', 'lyricSettingsRef', 'openSearchResult'
+  ]
+  const view = scope.run(() => vm.runInContext(`${script}\n;({ ${names.join(', ')} })`, sandbox))
   return {
     ...view,
+    exposed, listeners, browserWindow,
     dispose() {
       scope.stop()
       unmountCallbacks.forEach(callback => callback())
@@ -119,6 +132,40 @@ function deferred() {
   let reject
   const promise = new Promise((done, fail) => { resolve = done; reject = fail })
   return { promise, resolve, reject }
+}
+
+/** Browser motion remains controllable while the real search navigation decides when to focus. */
+function settingsSearchMotionFixture(view) {
+  const frames = [], opened = [], calls = []
+  const currentAnimations = { outer: [], inner: [] }
+  const container = vue.markRaw({ scrollTo() {} })
+  view.settingsMain.value = container
+  view.browserWindow.requestAnimationFrame = callback => { frames.push(callback); return frames.length }
+  const disclosure = (name, parentElement) => vue.markRaw({
+    open: false, parentElement,
+    matches: selector => selector === 'details',
+    querySelector: selector => selector === 'summary' ? { click() { opened.push(name) } } : null,
+    getAnimations: () => currentAnimations[name]
+  })
+  const outer = disclosure('outer', container)
+  const inner = disclosure('inner', outer)
+  const control = { focus: () => calls.push('focus') }
+  const target = vue.markRaw({
+    parentElement: inner, isConnected: true,
+    scrollIntoView: () => calls.push('scroll'), getAttribute: () => null,
+    closest: selector => selector === 'label' ? { querySelector: () => control } : null
+  })
+  function animate(name) {
+    const gate = deferred()
+    const animation = {
+      finished: gate.promise, playState: 'running',
+      finish() { this.playState = 'finished'; gate.resolve() },
+      cancel() { this.playState = 'idle'; gate.reject(new Error('Animation replaced after resize')) }
+    }
+    currentAnimations[name] = [animation]
+    return animation
+  }
+  return { frames, opened, calls, animate, result: { id: 'custom', matches: [{ element: target }] } }
 }
 
 function sessionClock() {
@@ -901,6 +948,249 @@ test('normalized commit results and idle external updates are accepted without f
   assert.equal(store.settings.custom.theme, 'light')
   assert.equal(store.settings.session.playbackState.currentTime, 30)
   assert.equal(requests.length, 1)
+})
+
+test('settings categories preserve the shared draft and do not schedule or submit preference changes', async t => {
+  const loaded = loadStore()
+  await loaded.initSettings()
+  const store = loaded.useSettingsStore()
+  const clock = sessionClock()
+  const updates = []
+  const update = store.updateSettings
+  store.updateSettings = patch => { updates.push(patch); return update(patch) }
+  const view = loadSettingsView(store, undefined, { clock })
+  t.after(() => view.dispose())
+  const scrolls = []
+  view.settingsMain.value = { scrollTo: position => scrolls.push(position.top) }
+  const sharedDraft = view.localSettings
+
+  for (const id of ['lyrics', 'desktop', 'island', 'taskbar', 'about', 'playback']) {
+    view.scrollToSection(id)
+    await vue.nextTick()
+    assert.equal(view.activeSection.value, id)
+    assert.deepEqual(Object.keys(view.sectionRefs).filter(candidate => view.isSectionVisible(candidate)), [id])
+  }
+  assert.equal(clock.pending(), 0)
+  assert.equal(updates.length, 0)
+  assert.ok(scrolls.every(top => top === 0))
+
+  view.localSettings.playback.showTranslation = false
+  view.localSettings.desktopLyrics.fontSize = 'large'
+  await vue.nextTick()
+  assert.equal(clock.pending(), 1)
+  view.scrollToSection('download')
+  view.scrollToSection('lyrics')
+  await vue.nextTick()
+  assert.equal(view.localSettings, sharedDraft)
+  assert.equal(view.localSettings.playback.showTranslation, false)
+  assert.equal(view.localSettings.desktopLyrics.fontSize, 'large')
+  assert.equal(clock.pending(), 1, 'navigation leaves the existing autosave pending without adding work')
+  assert.equal(updates.length, 0)
+  assert.equal(await view.flushEditableSettings(), true)
+  assert.equal(updates.length, 1)
+  assert.equal(store.settings.playback.showTranslation, false)
+  assert.equal(store.settings.desktopLyrics.fontSize, 'large')
+  assert.equal(clock.pending(), 0)
+})
+
+test('category and search navigation release shortcut capture while invalid categories preserve the current panel', async t => {
+  const loaded = loadStore()
+  await loaded.initSettings()
+  const view = loadSettingsView(loaded.useSettingsStore())
+  t.after(() => view.dispose())
+  view.scrollToSection('shortcuts')
+  view.startEditingShortcut('playPause')
+  assert.equal(view.browserWindow.__editingShortcut, true)
+  assert.ok(view.listeners.has('keydown'))
+  view.scrollToSection('unknown-category')
+  await vue.nextTick()
+  assert.equal(view.activeSection.value, 'shortcuts')
+  assert.equal(view.editingShortcut.value, 'playPause')
+
+  view.scrollToSection('custom')
+  await vue.nextTick()
+  assert.equal(view.editingShortcut.value, null)
+  assert.equal(view.browserWindow.__editingShortcut, false)
+  assert.equal(view.listeners.has('keydown'), false)
+
+  view.scrollToSection('shortcuts')
+  view.startEditingShortcut('nextTrack')
+  view.searchQuery.value = '音质'
+  await vue.nextTick()
+  assert.equal(view.editingShortcut.value, null)
+  assert.equal(view.listeners.has('keydown'), false)
+  assert.equal(view.isSectionVisible('shortcuts'), false)
+  view.scrollToSection('__proto__')
+  await vue.nextTick()
+  assert.equal(view.activeSection.value, 'shortcuts')
+  assert.equal(view.searchQuery.value, '音质')
+})
+
+test('settings search indexes current labels including collapsed controls without inspecting user values or lyric text', async t => {
+  const loaded = loadStore()
+  await loaded.initSettings()
+  const view = loadSettingsView(loaded.useSettingsStore())
+  t.after(() => view.dispose())
+  const label = vue.markRaw({ selector: 'label[for]', textContent: ' 字体 Font Family ' })
+  const renderedNodes = [
+    label,
+    { selector: 'label[for]', get textContent() { return label.textContent } },
+    { selector: 'label[for]', textContent: '' },
+    { selector: 'input', textContent: '', get value() { assert.fail('search must never read saved input values') } },
+    { selector: 'textarea', get textContent() { assert.fail('search must never index lyric editor content') } }
+  ]
+  const panelFor = nodes => vue.markRaw({
+    get textContent() { assert.fail('search must index labels instead of the whole panel') },
+    querySelectorAll(selector) {
+      const selectors = selector.split(',').map(value => value.trim())
+      return nodes.filter(node => selectors.includes('*') || selectors.includes(node.selector))
+    }
+  })
+  view.sectionRefs.taskbar.value = panelFor(renderedNodes)
+  view.sectionRefs.shortcuts.value = panelFor([{ selector: '.shortcut-label', textContent: '老板键' }])
+  view.sectionRefs.custom.value = panelFor([
+    { selector: '.token-field > span:first-child', textContent: '焦点边框--color-focus', childNodes: [{ textContent: '焦点边框' }, { textContent: '--color-focus' }] },
+    { selector: '.radio-option__display', textContent: '悬浮胶囊网易云样式', childNodes: [{ textContent: '悬浮胶囊' }, { textContent: '网易云样式' }] }
+  ])
+  view.searchQuery.value = '任务栏 FONT'
+  await vue.nextTick()
+  assert.equal(view.searchResults.value.length, 1)
+  assert.equal(view.searchResults.value[0].id, 'taskbar')
+  assert.equal(view.searchResults.value[0].matches.length, 1, 'duplicate labels appear only once')
+  assert.equal(view.searchResults.value[0].matches[0].label, '字体 Font Family')
+
+  label.textContent = '独立颜色'
+  view.searchQuery.value = '独立颜色'
+  await vue.nextTick()
+  assert.equal(view.searchResults.value[0].matches[0].label, '独立颜色', 'querying refreshes the rendered labels')
+  for (const [query, id] of [['老板键', 'shortcuts'], ['焦点边框', 'custom'], ['悬浮胶囊', 'custom']]) {
+    view.searchQuery.value = query
+    await vue.nextTick()
+    assert.equal(view.searchResults.value.length, 1)
+    assert.equal(view.searchResults.value[0].id, id)
+    assert.equal(view.searchResults.value[0].matches[0].label, query)
+  }
+  view.searchQuery.value = '--color-focus'
+  await vue.nextTick()
+  assert.equal(view.searchResults.value.length, 0, 'visual parameter codes do not leak into preference labels')
+  view.searchQuery.value = 'private-value-not-a-setting'
+  await vue.nextTick()
+  assert.equal(view.searchResults.value.length, 0)
+  view.searchQuery.value = '   '
+  await vue.nextTick()
+  assert.equal(view.isSectionVisible('playback'), true)
+})
+
+test('settings search waits for replacement disclosure animations before scrolling and focusing', async t => {
+  const loaded = loadStore()
+  await loaded.initSettings()
+  const view = loadSettingsView(loaded.useSettingsStore())
+  t.after(() => view.dispose())
+  const motion = settingsSearchMotionFixture(view)
+  const outer = motion.animate('outer')
+  const inner = motion.animate('inner')
+  const opening = view.openSearchResult(motion.result)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(motion.opened, ['outer', 'inner'])
+
+  const replacement = motion.animate('outer')
+  outer.cancel()
+  inner.finish()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(motion.frames.length, 1)
+  assert.deepEqual(motion.calls, [])
+  motion.frames.shift()(0)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(motion.calls, [], 'cancellation of the original animation does not imply stable layout')
+  assert.equal(motion.frames.length, 0, 'the replacement animation must finish before another layout frame')
+
+  replacement.finish()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(motion.calls, [])
+  assert.equal(motion.frames.length, 1)
+  motion.frames.shift()(16)
+  await opening
+  assert.deepEqual(motion.calls, ['scroll', 'focus'])
+})
+
+test('returning to the same category cannot revive an earlier search focus request', async t => {
+  const loaded = loadStore()
+  await loaded.initSettings()
+  const view = loadSettingsView(loaded.useSettingsStore())
+  t.after(() => view.dispose())
+  const motion = settingsSearchMotionFixture(view)
+  const animation = motion.animate('outer')
+  const opening = view.openSearchResult(motion.result)
+  await new Promise(resolve => setImmediate(resolve))
+
+  view.scrollToSection('software')
+  view.scrollToSection('custom')
+  await vue.nextTick()
+  assert.equal(view.activeSection.value, 'custom')
+  animation.finish()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(motion.frames.length, 1)
+  motion.frames.shift()(16)
+  await opening
+  assert.deepEqual(motion.calls, [], 'the retired result must not steal focus even when its category is visible again')
+})
+
+test('blocked settings leave reveals the lyric editor and preserves its unsaved body across categories', async t => {
+  const loaded = loadStore()
+  await loaded.initSettings()
+  const store = loaded.useSettingsStore()
+  let saves = 0
+  const update = store.updateSettings
+  store.updateSettings = patch => { saves++; return update(patch) }
+  const view = loadSettingsView(store, undefined, { clock: sessionClock() })
+  t.after(() => view.dispose())
+  let dirty = true
+  const lyricEditor = vue.markRaw({ draft: '[00:01] 未保存的正文', prepareLeave: () => !dirty })
+  view.lyricSettingsRef.value = lyricEditor
+  view.localSettings.playback.showTranslation = false
+  view.scrollToSection('about')
+  view.searchQuery.value = '备份'
+  await vue.nextTick()
+  assert.equal(await view.exposed.flushEditableSettings(), false)
+  await vue.nextTick()
+  assert.equal(view.activeSection.value, 'lyrics')
+  assert.equal(view.searchQuery.value, '')
+  assert.equal(view.isSectionVisible('lyrics'), true)
+  assert.equal(view.lyricSettingsRef.value, lyricEditor)
+  assert.equal(lyricEditor.draft, '[00:01] 未保存的正文')
+  assert.equal(view.localSettings.playback.showTranslation, false)
+  assert.equal(saves, 0)
+
+  dirty = false
+  assert.equal(await view.exposed.flushEditableSettings(), true)
+  assert.equal(saves, 1)
+  assert.equal(store.settings.playback.showTranslation, false)
+})
+
+test('a failed settings save remains retryable after changing categories and searching', async () => {
+  const fixture = await queuedSettingsFixture()
+  const view = loadSettingsView(fixture.store, undefined, { clock: sessionClock() })
+  try {
+    view.localSettings.desktopLyrics.fontSize = 'large'
+    const failed = view.flushEditableSettings()
+    await fixture.flush()
+    fixture.requests[0].reject(new Error('Disk full'))
+    assert.equal(await failed, false)
+    view.scrollToSection('about')
+    view.searchQuery.value = '字体'
+    await vue.nextTick()
+    assert.equal(view.saveState.value, 'error')
+    assert.match(view.settingsSaveError.value, /修改仍保留/)
+    assert.equal(view.localSettings.desktopLyrics.fontSize, 'large')
+    assert.equal(fixture.requests.length, 1)
+    view.scrollToSection('desktop')
+    const retry = view.flushEditableSettings()
+    await fixture.flush()
+    fixture.commit(1)
+    assert.equal(await retry, true)
+    assert.equal(fixture.store.settings.desktopLyrics.fontSize, 'large')
+    assert.equal(view.saveState.value, 'saved')
+  } finally { view.dispose() }
 })
 
 test('editing settings preserves live playback sessions and external fields', async () => {

@@ -1,65 +1,100 @@
 <template>
   <div class="settings-view" @focusout="flushPendingOnBlur">
+    <header class="settings-toolbar">
+      <div class="settings-title"><h1>设置</h1><p>按你的习惯，听喜欢的音乐。</p></div>
+      <div class="settings-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4 4" /></svg>
+        <input ref="searchInput" v-model="searchQuery" type="search" aria-label="搜索设置" placeholder="搜索设置，如音质、字体、缓存" autocomplete="off" @focus="stopEditingShortcut" @keydown.esc.prevent="clearSearch" />
+        <button v-if="searchQuery" type="button" aria-label="清空设置搜索" @click="clearSearch">×</button>
+      </div>
+      <span class="save-status" :class="'is-' + saveState" role="status" aria-live="polite"><Transition name="ui-fade" mode="out-in"><span :key="saveState">{{ saveStatusText }}</span></Transition></span>
+    </header>
+    <Transition name="ui-fade" @before-leave="$event.inert = true" @before-enter="$event.inert = false" @leave-cancelled="$event.inert = false"><div v-if="settingsSaveError" class="settings-notice is-error" role="alert"><span>{{ settingsSaveError }}</span><button type="button" class="outline-btn" @click="flushEditableSettings">重试保存</button></div></Transition>
+    <Transition name="ui-fade" mode="out-in"><p v-if="actionMessage" :key="actionMessage" class="settings-notice" role="status">{{ actionMessage }}</p></Transition>
     <div class="settings-body">
       <aside class="settings-sidebar">
-        <div class="settings-wordmark">YOUR MUSIC<br><span>YOUR WAY.</span></div>
         <nav class="sidebar-nav" aria-label="设置分组">
-          <button v-for="(section, index) in sections" :key="section.id" type="button" :class="['sidebar-item', { active: activeSection === section.id }]" :aria-current="activeSection === section.id ? 'location' : undefined" :aria-controls="section.id + '-section'" @click="scrollToSection(section.id)">
-            <span class="nav-number">0{{ index + 1 }}</span>{{ section.label }}
-          </button>
+          <div v-for="group in navigationGroups" :key="group.label" class="nav-group">
+            <p class="nav-group-label">{{ group.label }}</p>
+            <button v-for="section in group.sections" :key="section.id" type="button" :class="['sidebar-item', { active: activeSection === section.id && !isSearching }]" :aria-current="activeSection === section.id && !isSearching ? 'page' : undefined" :aria-controls="section.id + '-section'" @click="scrollToSection(section.id)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path :d="section.icon" /></svg>
+              <span>{{ section.label }}</span>
+            </button>
+          </div>
         </nav>
         <div class="sidebar-logo"><img src="/logo.png" alt=""><div>BetterKuGou<span>v{{ appVersion }}</span></div></div>
       </aside>
       <main class="settings-main" ref="settingsMain" aria-label="应用设置">
-        <header class="settings-intro">
-          <div><p class="eyebrow">PREFERENCES / 偏好设置</p><h1>让音乐，更合你意。</h1><p class="intro-description">从聆听习惯到界面细节，找到舒服的节奏。</p></div>
-          <span class="save-status" :class="'is-' + saveState" role="status" aria-live="polite"><Transition name="ui-fade" mode="out-in"><span :key="saveState">{{ saveStatusText }}</span></Transition></span>
-        </header>
-        <Transition name="ui-fade" @before-leave="$event.inert = true" @before-enter="$event.inert = false" @leave-cancelled="$event.inert = false"><div v-if="settingsSaveError" class="settings-notice is-error" role="alert"><span>{{ settingsSaveError }}</span><button type="button" class="outline-btn" @click="flushEditableSettings">重试保存</button></div></Transition>
-        <Transition name="ui-fade" mode="out-in"><p v-if="actionMessage" :key="actionMessage" class="settings-notice" role="status">{{ actionMessage }}</p></Transition>
+        <section v-if="isSearching" class="settings-results" aria-labelledby="settings-results-heading">
+          <header class="section-header"><div><p class="eyebrow">查找偏好</p><h2 id="settings-results-heading">搜索设置</h2><p role="status">找到 {{ searchResults.length }} 个相关分区</p></div></header>
+          <button v-for="result in searchResults" :key="result.id" class="settings-result" type="button" @click="openSearchResult(result)">
+            <span class="result-category">{{ result.group }}</span><strong>{{ result.label }}</strong><span class="result-matches">{{ result.matches.map(match => match.label).slice(0, 4).join(' · ') || result.description }}</span><span class="result-arrow" aria-hidden="true">→</span>
+          </button>
+          <div v-if="!searchResults.length" class="settings-empty"><span aria-hidden="true">⌕</span><h3>没有找到相关设置</h3><p>试试“歌词”“颜色”或“快捷键”，也可以从分类中查找。</p><button class="outline-btn" type="button" @click="clearSearch">返回设置</button></div>
+        </section>
 
-        <section class="settings-section" id="playback-section" :ref="sectionRefs.playback" data-section="playback" aria-labelledby="playback-heading">
-          <header class="section-header"><span class="section-number">01</span><div><h2 id="playback-heading">播放与歌词</h2><p>留住每次聆听时，你熟悉的习惯。</p></div></header>
+        <section class="settings-section" id="playback-section" :ref="sectionRefs.playback" data-section="playback" :hidden="!isSectionVisible('playback')" :inert="!isSectionVisible('playback')" :class="{ 'is-active': isSectionVisible('playback') }" aria-labelledby="playback-heading">
+          <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="playback-heading" tabindex="-1">播放</h2><p>音质、播放队列与聆听习惯。</p></div></header>
           <div class="setting-item"><div class="setting-info"><label class="setting-label" for="preferred-quality">优先音质</label><p class="setting-desc">后续歌曲优先使用所选音质；当前歌曲可在播放栏快速切换。可用音质取决于歌曲与账号权限。</p></div><AnimatedSelect id="preferred-quality" class="setting-select" v-model="localSettings.playback.quality" label="优先音质" :options="qualityOptions" /></div>
           <div v-for="option in playbackOptions" :key="option.id" class="setting-item">
             <div class="setting-info"><label class="setting-label" :for="'playback-' + option.id">{{ option.label }}</label><p class="setting-desc" :id="'playback-' + option.id + '-desc'">{{ option.description }}</p></div>
             <label class="setting-switch"><input :id="'playback-' + option.id" type="checkbox" v-model="localSettings.playback[option.id]" :aria-describedby="'playback-' + option.id + '-desc'"><span class="slider"></span></label>
           </div>
-          <LyricSettings ref="lyricSettingsRef" v-model="localSettings.playback" :before-action="flushEditableSettings" :inert="isImporting" />
-          <DesktopLyricSettings v-model="localSettings.desktopLyrics" :before-action="flushEditableSettings" />
-          <div class="setting-group"><IslandLyricSettings v-model="localSettings.islandLyrics" :before-action="flushEditableSettings" :available="islandLyricsAvailable" /></div>
         </section>
 
-        <section class="settings-section" id="custom-section" :ref="sectionRefs.custom" data-section="custom" aria-labelledby="custom-heading">
-          <header class="section-header"><span class="section-number">02</span><div><h2 id="custom-heading">外观与主题</h2><p>熟悉的布局，加一点属于你的个性。</p></div></header>
+        <section class="settings-section" id="lyrics-section" :ref="sectionRefs.lyrics" data-section="lyrics" :hidden="!isSectionVisible('lyrics')" :inert="!isSectionVisible('lyrics')" :class="{ 'is-active': isSectionVisible('lyrics') }" aria-labelledby="lyrics-heading">
+          <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="lyrics-heading" tabindex="-1">歌词内容</h2><p>翻译、文字偏好与已保存的歌词。</p></div></header>
+          <LyricSettings ref="lyricSettingsRef" v-model="localSettings.playback" :before-action="flushEditableSettings" :inert="isImporting" />
+        </section>
+
+        <section class="settings-section" id="desktop-section" :ref="sectionRefs.desktop" data-section="desktop" :hidden="!isSectionVisible('desktop')" :inert="!isSectionVisible('desktop')" :class="{ 'is-active': isSectionVisible('desktop') }" aria-labelledby="desktop-heading">
+          <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="desktop-heading" tabindex="-1">桌面歌词</h2><p>在桌面上跟随每一句，自由调整显示方式。</p></div></header>
+          <DesktopLyricSettings v-model="localSettings.desktopLyrics" :before-action="flushEditableSettings" />
+        </section>
+
+        <section class="settings-section" id="island-section" :ref="sectionRefs.island" data-section="island" :hidden="!isSectionVisible('island')" :inert="!isSectionVisible('island')" :class="{ 'is-active': isSectionVisible('island') }" aria-labelledby="island-heading">
+          <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="island-heading" tabindex="-1">灵动岛歌词</h2><p>屏幕上沿的音乐陪伴，也可以自由浮动。</p></div></header>
+          <IslandLyricSettings v-model="localSettings.islandLyrics" :before-action="flushEditableSettings" :available="islandLyricsAvailable" />
+        </section>
+
+        <section class="settings-section" id="taskbar-section" :ref="sectionRefs.taskbar" data-section="taskbar" :hidden="!isSectionVisible('taskbar')" :inert="!isSectionVisible('taskbar')" :class="{ 'is-active': isSectionVisible('taskbar') }" aria-labelledby="taskbar-heading">
+          <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="taskbar-heading" tabindex="-1">任务栏歌词</h2><p>把歌词和播放控制留在 Windows 任务栏。</p></div></header>
+          <TaskbarLyricSettings v-model="localSettings.taskbarLyrics" :before-action="flushEditableSettings" :available="taskbarLyricsAvailable" />
+        </section>
+
+        <section class="settings-section" id="custom-section" :ref="sectionRefs.custom" data-section="custom" :hidden="!isSectionVisible('custom')" :inert="!isSectionVisible('custom')" :class="{ 'is-active': isSectionVisible('custom') }" aria-labelledby="custom-heading">
+          <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="custom-heading" tabindex="-1">外观与主题</h2><p>播放器布局、主题配色与界面细节。</p></div></header>
           <fieldset class="setting-item setting-item--column"><legend class="setting-label">播放器样式</legend><p class="setting-desc">在底部显示经典播放栏，或轻盈的悬浮胶囊。</p><div class="radio-group"><label class="radio-option"><input type="radio" value="default" v-model="localSettings.custom.playerStyle"><span class="radio-option__display">经典播放栏<span>BetterKuGou 默认</span></span></label><label class="radio-option"><input type="radio" value="netease" v-model="localSettings.custom.playerStyle"><span class="radio-option__display">悬浮胶囊<span>网易云样式</span></span></label></div></fieldset>
           <div class="setting-group"><h3>主题与配色</h3><ThemePackages v-model="localSettings.custom" /></div>
           <Transition name="ui-fade" @before-leave="$event.inert = true" @before-enter="$event.inert = false" @leave-cancelled="$event.inert = false"><div v-if="localSettings.custom.theme === 'custom'" class="custom-color-panel"><label v-for="color in customColors" :key="color.id" class="color-setting"><span>{{ color.label }}</span><input type="color" v-model="localSettings.custom.customTheme[color.id]"></label></div></Transition>
-          <ThemeAdjustments v-model="localSettings.custom" @open-studio="openThemeStudio" />
+          <AnimatedDetails class="settings-disclosure"><template #summary><span>界面精调与高级编辑</span></template><ThemeAdjustments v-model="localSettings.custom" @open-studio="openThemeStudio" /></AnimatedDetails>
         </section>
 
-        <section class="settings-section" id="shortcuts-section" :ref="sectionRefs.shortcuts" data-section="shortcuts" aria-labelledby="shortcuts-heading">
-          <header class="section-header"><span class="section-number">03</span><div><h2 id="shortcuts-heading">快捷键</h2><p>让常用操作，离你再近一点。</p></div></header>
+        <section class="settings-section" id="shortcuts-section" :ref="sectionRefs.shortcuts" data-section="shortcuts" :hidden="!isSectionVisible('shortcuts')" :inert="!isSectionVisible('shortcuts')" :class="{ 'is-active': isSectionVisible('shortcuts') }" aria-labelledby="shortcuts-heading">
+          <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="shortcuts-heading" tabindex="-1">快捷键</h2><p>用熟悉的按键，快速控制音乐。</p></div></header>
           <div class="setting-item"><div class="setting-info"><label class="setting-label" for="enable-global">启用全局快捷键</label><p class="setting-desc" id="enable-global-desc">切换到其他应用后，也能控制音乐播放。</p></div><label class="setting-switch"><input id="enable-global" type="checkbox" v-model="localSettings.shortcuts.enableGlobal" aria-describedby="enable-global-desc"><span class="slider"></span></label></div>
           <div class="shortcut-grid"><div v-for="shortcut in shortcutList" :key="shortcut.id" class="shortcut-card" :class="{ 'is-editing': editingShortcut === shortcut.id, 'has-error': shortcutErrors[shortcut.id] }"><div class="shortcut-info"><div class="shortcut-label">{{ shortcut.label }}</div><div class="shortcut-desc">{{ shortcut.description }}</div></div><div class="shortcut-key-wrapper"><button type="button" class="shortcut-key" :aria-label="shortcut.label + '快捷键：' + formatShortcutKey(localSettings.shortcuts.keys[shortcut.id])" :aria-pressed="editingShortcut === shortcut.id" @click="startEditingShortcut(shortcut.id)"><Transition name="ui-fade" mode="out-in"><span v-if="editingShortcut === shortcut.id" key="recording" class="recording">按下按键…</span><span v-else :key="localSettings.shortcuts.keys[shortcut.id]">{{ formatShortcutKey(localSettings.shortcuts.keys[shortcut.id]) }}</span></Transition></button><Transition name="ui-pop"><button v-if="localSettings.shortcuts.keys[shortcut.id] && localSettings.shortcuts.keys[shortcut.id] !== 'Escape'" type="button" class="clear-shortcut-btn" :aria-label="'清除' + shortcut.label + '快捷键'" @click="clearShortcut(shortcut.id)">×</button></Transition></div><Transition name="ui-fade"><p v-if="shortcutErrors[shortcut.id]" class="shortcut-error" role="alert">{{ shortcutErrors[shortcut.id] }}</p></Transition></div></div>
           <p class="note-text">点击按键后输入新组合；按 Esc 清除绑定。相同组合不能重复绑定。</p>
         </section>
 
-        <section class="settings-section" id="software-section" :ref="sectionRefs.software" data-section="software" aria-labelledby="software-heading">
-          <header class="section-header"><span class="section-number">04</span><div><h2 id="software-heading">启动与应用</h2><p>下一次打开，接着上一次的心情。</p></div></header>
-          <div v-for="option in softwareOptions" :key="option.id" class="setting-item"><div class="setting-info"><label class="setting-label" :for="'software-' + option.id">{{ option.label }}</label><p class="setting-desc" :id="'software-' + option.id + '-desc'">{{ option.description }}</p></div><label class="setting-switch"><input :id="'software-' + option.id" type="checkbox" v-model="localSettings.software[option.id]" :aria-describedby="'software-' + option.id + '-desc'"><span class="slider"></span></label></div>
-          <div class="setting-item"><div class="setting-info"><label class="setting-label" for="default-page">启动页面</label><p class="setting-desc">默认打开推荐；收藏页需要登录账号。</p></div><AnimatedSelect id="default-page" class="setting-select" v-model="localSettings.software.defaultPage" label="启动页面" :options="defaultPageOptions" /></div>
-          <AppUpdates v-model="localSettings.software.updates" :before-action="flushEditableSettings" @current-version="appVersion = $event" />
-          <div class="setting-group"><div class="group-heading"><div><h3>备份与迁移</h3><p class="setting-desc">导入或导出完整设置。分享配色请使用上方的主题包。</p></div></div><div class="setting-actions"><button class="outline-btn" :class="{ 'is-busy': isExporting }" :aria-busy="isExporting" type="button" @click="handleExportSettings" :disabled="isExporting || isImporting">{{ isExporting ? '导出中…' : '导出设置' }}</button><button class="outline-btn" :class="{ 'is-busy': isImporting }" :aria-busy="isImporting" type="button" @click="handleImportSettings" :disabled="isImporting || isExporting">{{ isImporting ? '导入中…' : '导入设置' }}</button></div></div>
-          <div class="about-links"><button type="button" @click="openFeedbackUrl">反馈与建议 ↗</button><button type="button" @click="openLicenseUrl">使用协议 ↗</button><button type="button" @click="openProjectUrl">项目主页 ↗</button></div>
-        </section>
-
-        <section class="settings-section" id="download-section" :ref="sectionRefs.download" data-section="download" aria-labelledby="download-heading">
-          <header class="section-header"><span class="section-number">05</span><div><h2 id="download-heading">下载与缓存</h2><p>听过的音乐，下次也能离线聆听。</p></div></header>
+        <section class="settings-section" id="download-section" :ref="sectionRefs.download" data-section="download" :hidden="!isSectionVisible('download')" :inert="!isSectionVisible('download')" :class="{ 'is-active': isSectionVisible('download') }" aria-labelledby="download-heading">
+          <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="download-heading" tabindex="-1">下载与缓存</h2><p>管理听过的音乐、存储空间与缓存位置。</p></div></header>
           <PlaylistCacheSettings v-model="localSettings.download" :before-action="flushEditableSettings" />
           <div class="setting-group"><h3>歌曲下载</h3><p class="setting-desc">导出音乐文件的下载服务尚未开放。</p><fieldset disabled class="unavailable-settings" aria-label="尚未开放的下载设置"><div class="setting-item"><div class="setting-info"><label class="setting-label" for="download-path">下载目录</label><p class="setting-desc">保留已保存的目录偏好。</p></div><input id="download-path" class="path-input" type="text" :value="localSettings.download.downloadPath || '尚未设置'" readonly></div></fieldset></div>
         </section>
-        <footer class="settings-footer">BetterKuGou · 给每一首喜欢的音乐，一个舒服的位置。</footer>
+
+        <section class="settings-section" id="software-section" :ref="sectionRefs.software" data-section="software" :hidden="!isSectionVisible('software')" :inert="!isSectionVisible('software')" :class="{ 'is-active': isSectionVisible('software') }" aria-labelledby="software-heading">
+          <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="software-heading" tabindex="-1">启动与应用</h2><p>启动页面、系统托盘与播放恢复。</p></div></header>
+          <div v-for="option in softwareOptions" :key="option.id" class="setting-item"><div class="setting-info"><label class="setting-label" :for="'software-' + option.id">{{ option.label }}</label><p class="setting-desc" :id="'software-' + option.id + '-desc'">{{ option.description }}</p></div><label class="setting-switch"><input :id="'software-' + option.id" type="checkbox" v-model="localSettings.software[option.id]" :aria-describedby="'software-' + option.id + '-desc'"><span class="slider"></span></label></div>
+          <div class="setting-item"><div class="setting-info"><label class="setting-label" for="default-page">启动页面</label><p class="setting-desc">默认打开推荐；收藏页需要登录账号。</p></div><AnimatedSelect id="default-page" class="setting-select" v-model="localSettings.software.defaultPage" label="启动页面" :options="defaultPageOptions" /></div>
+        </section>
+
+        <section class="settings-section" id="about-section" :ref="sectionRefs.about" data-section="about" :hidden="!isSectionVisible('about')" :inert="!isSectionVisible('about')" :class="{ 'is-active': isSectionVisible('about') }" aria-labelledby="about-heading">
+          <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="about-heading" tabindex="-1">更新与备份</h2><p>检查应用更新，备份设置与获取帮助。</p></div></header>
+          <AppUpdates v-model="localSettings.software.updates" :before-action="flushEditableSettings" @current-version="appVersion = $event" />
+          <div class="setting-group"><div class="group-heading"><div><h3>备份与迁移</h3><p class="setting-desc">导入或导出完整设置。分享配色请前往“外观与主题”导出主题包。</p></div></div><div class="setting-actions"><button class="outline-btn" :class="{ 'is-busy': isExporting }" :aria-busy="isExporting" type="button" @click="handleExportSettings" :disabled="isExporting || isImporting">{{ isExporting ? '导出中…' : '导出设置' }}</button><button class="outline-btn" :class="{ 'is-busy': isImporting }" :aria-busy="isImporting" type="button" @click="handleImportSettings" :disabled="isImporting || isExporting">{{ isImporting ? '导入中…' : '导入设置' }}</button></div></div>
+          <div class="about-links"><button type="button" @click="openFeedbackUrl">反馈与建议 ↗</button><button type="button" @click="openLicenseUrl">使用协议 ↗</button><button type="button" @click="openProjectUrl">项目主页 ↗</button></div>
+        </section>
       </main>
     </div>
   </div>
@@ -78,7 +113,9 @@ import PlaylistCacheSettings from '../components/common/PlaylistCacheSettings.vu
 import LyricSettings from '../components/common/LyricSettings.vue'
 import DesktopLyricSettings from '../components/common/DesktopLyricSettings.vue'
 import IslandLyricSettings from '../components/common/IslandLyricSettings.vue'
+import TaskbarLyricSettings from '../components/common/TaskbarLyricSettings.vue'
 import AnimatedSelect from '../components/common/AnimatedSelect.vue'
+import AnimatedDetails from '../components/common/AnimatedDetails.vue'
 import packageInfo from '../../package.json'
 import { applyTheme } from '../utils/themeManager.js'
 
@@ -92,14 +129,33 @@ async function openThemeStudio() {
 const appVersion = ref(typeof packageInfo === 'object' ? packageInfo.version : '')
 
 const sections = [
-  { id: 'playback', label: '播放与歌词' },
-  { id: 'custom', label: '外观与主题' },
-  { id: 'shortcuts', label: '快捷键' },
-  { id: 'software', label: '启动与应用' },
-  { id: 'download', label: '下载与缓存' }
+  { id: 'playback', label: '播放', description: '音质、播放队列与聆听习惯。', group: '聆听',
+    icon: 'M9 5v14l11-7z' },
+  { id: 'lyrics', label: '歌词内容', description: '翻译、文字偏好与已保存的歌词。', group: '聆听',
+    icon: 'M4 5h16M4 10h12M4 15h16M4 20h8' },
+  { id: 'desktop', label: '桌面歌词', description: '在桌面上跟随每一句，自由调整显示方式。', group: '歌词窗口',
+    icon: 'M3 4h18v13H3zM8 21h8M12 17v4' },
+  { id: 'island', label: '灵动岛歌词', description: '屏幕上沿的音乐陪伴，也可以自由浮动。', group: '歌词窗口',
+    icon: 'M6 4h12a3 3 0 0 1 3 3v2a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3zM8 18h8M10 21h4' },
+  { id: 'taskbar', label: '任务栏歌词', description: '把歌词和播放控制留在 Windows 任务栏。', group: '歌词窗口',
+    icon: 'M3 4h18v16H3zM3 15h18M7 18h1M11 18h6' },
+  { id: 'custom', label: '外观与主题', description: '播放器布局、主题配色与界面细节。', group: '个性化',
+    icon: 'M12 3a9 9 0 1 0 0 18h1a2 2 0 0 0 1-4c-1-1 0-3 2-3h2a3 3 0 0 0 3-3 9 9 0 0 0-9-8zM7 9h.01M11 6h.01M16 8h.01M6 14h.01' },
+  { id: 'shortcuts', label: '快捷键', description: '用熟悉的按键，快速控制音乐。', group: '个性化',
+    icon: 'M3 6h18v12H3zM6 9h1M10 9h1M14 9h1M18 9h.01M7 14h10' },
+  { id: 'download', label: '下载与缓存', description: '管理听过的音乐、存储空间与缓存位置。', group: '应用',
+    icon: 'M12 3v11m-4-4 4 4 4-4M4 16v5h16v-5' },
+  { id: 'software', label: '启动与应用', description: '启动页面、系统托盘与播放恢复。', group: '应用',
+    icon: 'M12 3v9M6 5a9 9 0 1 0 12 0' },
+  { id: 'about', label: '更新与备份', description: '检查应用更新，备份设置与获取帮助。', group: '应用',
+    icon: 'M20 7a9 9 0 0 0-15-1L3 8m0-5v5h5M4 17a9 9 0 0 0 15 1l2-2m0 5v-5h-5' }
 ]
-const editableGroups = ['playback', 'download', 'custom', 'shortcuts', 'software', 'desktopLyrics', 'islandLyrics']
+const navigationGroups = [...new Set(sections.map(section => section.group))].map(label => ({
+  label, sections: sections.filter(section => section.group === label)
+}))
+const editableGroups = ['playback', 'download', 'custom', 'shortcuts', 'software', 'desktopLyrics', 'islandLyrics', 'taskbarLyrics']
 const islandLyricsAvailable = Boolean(window.electronAPI?.islandLyric?.show)
+const taskbarLyricsAvailable = Boolean(window.electronAPI?.taskbarLyric?.show)
 const qualityOptions = [
   { value: '128', label: '标准 128 kbps' },
   { value: '320', label: '高品 320 kbps' },
@@ -123,12 +179,83 @@ const customColors = [{ id: 'primary', label: '主题色' }, { id: 'hover', labe
 const activeSection = ref('playback')
 const lyricSettingsRef = ref(null)
 const settingsMain = ref(null)
-const sectionRefs = {
-  playback: ref(null),
-  download: ref(null),
-  custom: ref(null),
-  shortcuts: ref(null),
-  software: ref(null)
+const sectionRefs = Object.fromEntries(sections.map(section => [section.id, ref(null)]))
+const searchInput = ref(null)
+const searchQuery = ref('')
+const searchIndex = ref([])
+let navigationRevision = 0
+const isSearching = computed(() => Boolean(searchQuery.value.trim()))
+const activeCategory = computed(() => sections.find(section => section.id === activeSection.value)?.group)
+const searchResults = computed(() => {
+  const terms = searchQuery.value.trim().toLocaleLowerCase().split(/\s+/)
+  return searchIndex.value.flatMap(section => {
+    const context = section.label + ' ' + section.description
+    const matches = section.entries.filter(entry => terms.every(term => (context + ' ' + entry.label).toLocaleLowerCase().includes(term)))
+    return matches.length || terms.every(term => context.toLocaleLowerCase().includes(term)) ? [{ ...section, matches }] : []
+  })
+})
+
+function isSectionVisible(id) { return activeSection.value === id && !isSearching.value }
+
+/** 从真实表单标签建立本页索引，包含折叠选项，不读取输入值或歌词正文。 */
+function refreshSearchIndex() {
+  searchIndex.value = sections.map(section => {
+    const labels = sectionRefs[section.id].value?.querySelectorAll?.('label[for], .setting-label, .shortcut-label, .token-field > span:first-child, .radio-option__display, .island-label, .taskbar-label, h3, h4, summary') || []
+    const seen = new Set()
+    const entries = [...labels].flatMap(element => {
+      const label = (element.querySelector?.('strong')?.textContent || element.childNodes?.[0]?.textContent?.trim() || element.textContent)?.trim()
+      if (!label || seen.has(label)) return []
+      seen.add(label)
+      return [{ label, element }]
+    })
+    return { ...section, entries }
+  })
+}
+
+watch(searchQuery, () => {
+  navigationRevision++
+  refreshSearchIndex()
+  if (isSearching.value) {
+    stopEditingShortcut()
+    settingsMain.value?.scrollTo?.({ top: 0, behavior: 'instant' })
+  }
+}, { flush: 'sync' })
+
+function clearSearch() {
+  searchQuery.value = ''
+  nextTick(() => searchInput.value?.focus())
+}
+
+/** 切回匹配分区后展开目标的折叠祖先，并把焦点放到真实标签对应的控件。 */
+async function openSearchResult(result) {
+  scrollToSection(result.id)
+  const revision = navigationRevision
+  await nextTick()
+  if (revision !== navigationRevision) return
+  const target = result.matches[0]?.element || sectionRefs[result.id].value?.querySelector('h2')
+  if (!target) return
+  const disclosures = []
+  for (let parent = target.parentElement; parent && parent !== settingsMain.value; parent = parent.parentElement) {
+    if (parent.matches('details') && !parent.open) disclosures.unshift(parent)
+  }
+  disclosures.forEach(details => {
+    details.querySelector('summary')?.click()
+  })
+  // 内层展开会让外层重新计算高度并替换动画，需要等替换后的动画也稳定。
+  let animations
+  do {
+    animations = disclosures.flatMap(details => details.getAnimations?.() || [])
+    await Promise.allSettled(animations.map(animation => animation.finished))
+    await new Promise(resolve => window.requestAnimationFrame(resolve))
+    if (revision !== navigationRevision) return
+  } while (disclosures.some(details => details.getAnimations?.().some(animation => animation.playState === 'running')))
+  // 展开期间用户可能继续搜索、切分类或离页，迟到结果不能抢回滚动和焦点。
+  if (revision !== navigationRevision || activeSection.value !== result.id || isSearching.value || target.isConnected === false) return
+  target.scrollIntoView?.({ block: 'center', behavior: 'instant' })
+  const controlId = target.getAttribute('for')
+  const control = controlId ? document.getElementById(controlId)
+    : target.closest('summary') || target.closest('label')?.querySelector('input') || target.closest('.shortcut-card')?.querySelector('button') || sectionRefs[result.id].value?.querySelector('h2')
+  control?.focus({ preventScroll: true })
 }
 
 const shortcutList = ref([
@@ -178,11 +305,6 @@ const ensureDefaults = (source) => {
 const localSettings = reactive(ensureDefaults(settings))
 let syncedSettings = cloneDeep(localSettings)
 const isSyncingFromStore = ref(false)
-const containerPaddingTop = ref(0)
-let scrollListener = null
-let resizeListener = null
-let scrollRafId = null
-let scrollContainer = null
 let saveTimer = null
 const isExporting = ref(false)
 const isImporting = ref(false)
@@ -293,7 +415,9 @@ async function flushEditableSettings() {
 
 /** 离页及整份设置替换共用正文保护，不能将未保存歌词当作偏好自动覆盖。 */
 function prepareLyricLibraryLeave() {
-  return lyricSettingsRef.value?.prepareLeave?.() !== false
+  const allowed = lyricSettingsRef.value?.prepareLeave?.() !== false
+  if (!allowed) scrollToSection('lyrics')
+  return allowed
 }
 
 /** Recovery supersedes unsaved appearance edits, including edits made during an earlier in-flight save. */
@@ -352,26 +476,15 @@ watch(localSettings, () => {
   }, 500)
 }, { deep: true })
 
+/** 保留原对外入口；分类只切换可见内容，不卸载草稿或中断后台操作。 */
 function scrollToSection(sectionId) {
+  if (!sections.some(section => section.id === sectionId)) return
+  navigationRevision++
+  stopEditingShortcut()
   activeSection.value = sectionId
+  searchQuery.value = ''
   nextTick(() => {
-    const target = sectionRefs[sectionId]?.value
-    const container = settingsMain.value
-
-    if (!target || !container) {
-      logger.warn('SettingsView', 'Target or container not found:', { target, container, sectionId })
-      return
-    }
-
-    const containerRect = container.getBoundingClientRect()
-    const targetRect = target.getBoundingClientRect()
-    const scrollTop = container.scrollTop
-    const offset = targetRect.top - containerRect.top + scrollTop
-
-    container.scrollTo({
-      top: offset - 20,
-      behavior: 'smooth'
-    })
+    settingsMain.value?.scrollTo?.({ top: 0, behavior: 'instant' })
   })
 }
 
@@ -583,75 +696,6 @@ async function tryRegisterGlobalShortcut(key) {
   return true
 }
 
-function updateActiveSection() {
-  const container = scrollContainer || settingsMain.value
-  if (!container) return
-
-  let closestId = null
-  let closestDistance = Infinity
-  const containerRect = container.getBoundingClientRect()
-
-  sections.forEach((section) => {
-    const el = sectionRefs[section.id]?.value
-    if (!el) return
-
-    const targetRect = el.getBoundingClientRect()
-    const relativeTop = targetRect.top - containerRect.top + container.scrollTop - containerPaddingTop.value
-    const distance = Math.abs(relativeTop - container.scrollTop)
-
-    if (distance < closestDistance) {
-      closestDistance = distance
-      closestId = section.id
-    }
-  })
-
-  if (closestId) {
-    activeSection.value = closestId
-  }
-}
-
-function setupScrollTracking() {
-  const container = settingsMain.value
-  if (!container) return
-
-  scrollContainer = container
-
-  const computedStyle = window.getComputedStyle(container)
-  containerPaddingTop.value = parseFloat(computedStyle.paddingTop) || 0
-
-  scrollListener = () => {
-    if (scrollRafId) {
-      window.cancelAnimationFrame(scrollRafId)
-    }
-    scrollRafId = window.requestAnimationFrame(() => {
-      updateActiveSection()
-    })
-  }
-
-  container.addEventListener('scroll', scrollListener, { passive: true })
-
-  resizeListener = () => {
-    updateActiveSection()
-  }
-  window.addEventListener('resize', resizeListener, { passive: true })
-
-  updateActiveSection()
-}
-
-function teardownScrollTracking() {
-  if (scrollContainer && scrollListener) {
-    scrollContainer.removeEventListener('scroll', scrollListener)
-  }
-  if (resizeListener) {
-    window.removeEventListener('resize', resizeListener)
-  }
-  if (scrollRafId) {
-    window.cancelAnimationFrame(scrollRafId)
-    scrollRafId = null
-  }
-  scrollContainer = null
-}
-
 // URL 跳转处理函数
 function openFeedbackUrl() {
   const url = 'https://github.com/YuanXiaCN/BetterKuGou/issues'
@@ -680,14 +724,10 @@ function openLicenseUrl() {
   }
 }
 
-onMounted(() => {
-  nextTick(() => {
-    setupScrollTracking()
-  })
-})
+onMounted(() => { nextTick(refreshSearchIndex) })
 
 onBeforeUnmount(() => {
-  teardownScrollTracking()
+  navigationRevision++
   stopEditingShortcut() // 清理快捷键编辑监听器
   for (const timer of shortcutErrorTimers.values()) clearTimeout(timer)
   shortcutErrorTimers.clear()

@@ -57,7 +57,7 @@ function mount(t, options = {}) {
     const utilitySource = fs.readFileSync(path.join(__dirname, '../src/utils/objectUtils.js'), 'utf8')
       .replace(/^import[^\n]*$/gm, '').replace(/export (?=function)/g, '')
     Object.assign(globals, new Function('isReactive', 'toRaw', `${utilitySource}\nreturn { cloneDeep, mergeDeep, replaceReactive }`)(vue.isReactive, vue.toRaw))
-    const defaults = () => ({ playback: { lyricLibrary: { enabled: true } }, download: {}, custom: {}, shortcuts: { keys: {} }, software: {}, desktopLyrics: {}, islandLyrics: {} })
+    const defaults = () => ({ playback: { lyricLibrary: { enabled: true } }, download: {}, custom: {}, shortcuts: { keys: {} }, software: {}, desktopLyrics: {}, islandLyrics: {}, taskbarLyrics: {} })
     settings = vue.reactive(defaults())
     globals.useSettingsStore = () => ({ settings, ready: vue.ref(true), revision: vue.ref(0), defaults,
       async updateSettings(patch) { calls.push(['saveSettings']); globals.mergeDeep(settings, patch) },
@@ -70,7 +70,7 @@ function mount(t, options = {}) {
     })
     Object.assign(globals, { packageInfo: { version: '0.0.0' }, applyTheme() {}, ThemePackages: emptyComponent,
       ThemeAdjustments: emptyComponent, AppUpdates: emptyComponent, PlaylistCacheSettings: emptyComponent,
-      DesktopLyricSettings: emptyComponent, IslandLyricSettings: emptyComponent })
+      DesktopLyricSettings: emptyComponent, IslandLyricSettings: emptyComponent, TaskbarLyricSettings: emptyComponent })
     globals.LyricLibrary = compile('components/common/LyricLibrary.vue', globals)
     globals.LyricSettings = compile('components/common/LyricSettings.vue', globals)
   }
