@@ -11,6 +11,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Windows.Automation;
 
 public static class BKTaskbar {
@@ -45,14 +46,39 @@ public static class BKTaskbar {
   static int originalStyle;
   static bool attached;
   static HashSet<IntPtr> knownBars = new HashSet<IntPtr>();
+  sealed class SampleJob { public Thread Thread; public List<Bar> Result; public bool Failed; }
+  static SampleJob sampling;
+  public static string SampleWarning { get; private set; }
   static string Kind(IntPtr hwnd) { var value = new StringBuilder(128); GetClassName(hwnd,value,value.Capacity); return value.ToString(); }
   static bool IsBar(IntPtr hwnd) { string kind=Kind(hwnd); return kind=="Shell_TrayWnd" || kind=="Shell_SecondaryTrayWnd"; }
   static void AssertOwner() { uint pid; GetWindowThreadProcessId(owner,out pid); if (!IsWindow(owner) || pid!=ownerPid) throw new InvalidOperationException("Lyric window is no longer owned by this process"); }
   public static void Initialize(long hwnd, int pid) { owner=new IntPtr(hwnd); ownerPid=(uint)pid; if(hwnd==0) return; AssertOwner(); originalParent=GetParent(owner); originalStyle=GetStyle(owner,-16); }
   public static List<Bar> Sample() {
+    // Only this protocol thread may authorize taskbar HWNDs. A late UIA result
+    // cannot restore an expired whitelist or block apply/detach/EXIT commands.
+    knownBars.Clear(); SampleWarning="";
+    if(sampling!=null) {
+      if(sampling.Thread.IsAlive) { SampleWarning="sampling-timeout"; return new List<Bar>(); }
+      sampling=null;
+    }
+    var job=new SampleJob();
+    job.Thread=new Thread(delegate() {
+      try { job.Result=SampleCore(); } catch { job.Failed=true; }
+    });
+    job.Thread.IsBackground=true;
+    job.Thread.SetApartmentState(ApartmentState.MTA);
+    sampling=job;
+    job.Thread.Start();
+    if(!job.Thread.Join(700)) { SampleWarning="sampling-timeout"; return new List<Bar>(); }
+    sampling=null;
+    if(job.Failed || job.Result==null) { SampleWarning="sampling-failed"; return new List<Bar>(); }
+    foreach(var bar in job.Result) knownBars.Add(new IntPtr(Int64.Parse(bar.handle)));
+    return job.Result;
+  }
+  static List<Bar> SampleCore() {
     IntPtr previous=SetThreadDpiAwarenessContext(new IntPtr(-4));
     if(previous==IntPtr.Zero) previous=SetThreadDpiAwarenessContext(new IntPtr(-3));
-    var result=new List<Bar>(); knownBars.Clear();
+    var result=new List<Bar>();
     try {
       EnumWindows(delegate(IntPtr hwnd,IntPtr unused) {
         if (!IsBar(hwnd)) return true;
@@ -80,7 +106,7 @@ public static class BKTaskbar {
           }
           bar.reliable=controls.Count>0 && controls.Count<=512;
         } catch { bar.reliable=false; }
-        knownBars.Add(hwnd); result.Add(bar); return true;
+        result.Add(bar); return true;
       },IntPtr.Zero);
       return result;
     } finally { if(previous!=IntPtr.Zero) SetThreadDpiAwarenessContext(previous); }
@@ -143,7 +169,8 @@ try {
         $dark = $true
         $theme = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name SystemUsesLightTheme -ErrorAction SilentlyContinue
         if ($null -ne $theme) { $dark = $theme.SystemUsesLightTheme -eq 0 }
-        $response = @{ id=$request.id; ok=$true; bars=@([BKTaskbar]::Sample()); dark=$dark }
+        $bars = @([BKTaskbar]::Sample())
+        $response = @{ id=$request.id; ok=$true; bars=$bars; dark=$dark; warning=[BKTaskbar]::SampleWarning }
       } elseif ($request.command -eq 'apply') {
         $placement = [BKTaskbar]::Apply([string]$request.parent, [bool]$request.embed, [int]$request.x, [int]$request.y, [int]$request.width, [int]$request.height, [bool]$request.visible)
         $response = @{ id=$request.id; ok=$true; embedded=$placement.embedded; warning=$placement.warning }

@@ -1,6 +1,19 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const { spawn } = require('node:child_process')
+const { StringDecoder } = require('node:string_decoder')
+
+const MAX_SOURCE_LINE_LENGTH = 1048576
+// Keep argv independent of the ASAR script size. The same reader then serves JSON/EXIT.
+const BOOTSTRAP = [
+  "$ErrorActionPreference='Stop'",
+  '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)',
+  '$line=[Text.StringBuilder]::new()',
+  `while(($character=[Console]::In.Read()) -ne 10){if($character -lt 0 -or $line.Length -ge ${MAX_SOURCE_LINE_LENGTH}){throw 'Invalid taskbar source'};[void]$line.Append([char]$character)}`,
+  "if($line.Length -eq 0){throw 'Missing taskbar source'}",
+  '$source=[Text.UTF8Encoding]::new($false,$true).GetString([Convert]::FromBase64String($line.ToString()))',
+  '& ([ScriptBlock]::Create($source))'
+].join(';')
 
 /** Fixed, private Win32 bridge. The renderer never supplies a HWND or script. */
 function createWindowsTaskbarBridge({ scriptPath, handle, ownerProcessId = process.pid, spawnProcess = spawn,
@@ -9,6 +22,7 @@ function createWindowsTaskbarBridge({ scriptPath, handle, ownerProcessId = proce
   let sequence = 0
   let pending = new Map()
   let output = ''
+  const outputDecoder = new StringDecoder('utf8')
   let readyPromise = null
   let stopping = null
   let exited = false
@@ -31,7 +45,7 @@ function createWindowsTaskbarBridge({ scriptPath, handle, ownerProcessId = proce
     void stop().catch(onError)
   }
 
-  /** Encoded bundled source works within app.asar, without temporary executable files. */
+  /** Transfer the fixed bundled script over stdin, avoiding argv limits and temporary files. */
   function start() {
     if (readyPromise) return readyPromise
     readyPromise = new Promise((resolve, reject) => {
@@ -39,8 +53,10 @@ function createWindowsTaskbarBridge({ scriptPath, handle, ownerProcessId = proce
       try {
         const hwnd = Buffer.isBuffer(handle) ? (handle.length >= 8 ? handle.readBigUInt64LE() : BigInt(handle.readUInt32LE())) : BigInt(handle)
         const source = `& {\n${readScript(scriptPath)}\n} -OwnerWindow ${hwnd} -OwnerProcessId ${Number(ownerProcessId) || 0}`
+        const sourceLine = Buffer.from(source, 'utf8').toString('base64')
+        if (sourceLine.length > MAX_SOURCE_LINE_LENGTH) throw new Error('任务栏检测脚本超过启动大小限制')
         const executable = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-        child = spawnProcess(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(source, 'utf16le').toString('base64')],
+        child = spawnProcess(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(BOOTSTRAP, 'utf16le').toString('base64')],
           { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
         child.stdin.on('error', error => { if (!stopping) fail(error) })
         child.on('error', error => { if (!child.pid) exited = true; fail(error) })
@@ -48,7 +64,7 @@ function createWindowsTaskbarBridge({ scriptPath, handle, ownerProcessId = proce
         child.stderr.on('data', () => { if (!stopping) fail(new Error('任务栏原生检测不可用')) })
         child.stdout.on('data', bytes => {
           if (failed || stopping) return
-          output += String(bytes)
+          output += outputDecoder.write(bytes)
           if (output.length > 262144) { fail(new Error('任务栏检测返回过大的数据')); return }
           let newline
           while ((newline = output.indexOf('\n')) >= 0) {
@@ -68,6 +84,7 @@ function createWindowsTaskbarBridge({ scriptPath, handle, ownerProcessId = proce
         })
         readyDeadline = timers.setTimeout(() => fail(new Error('任务栏检测初始化超时')), 10000)
         readyDeadline.unref?.()
+        child.stdin.write(`${sourceLine}\n`)
       } catch (error) { fail(error) }
     })
     return readyPromise
