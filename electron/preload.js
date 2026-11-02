@@ -139,6 +139,16 @@ const electronAPI = {
   },
 
   // 桌面歌词相关API
+  taskbarLyric: {
+    show: () => ipcRenderer.invoke('taskbar-lyric:show'),
+    hide: () => ipcRenderer.invoke('taskbar-lyric:hide'),
+    resetPosition: () => ipcRenderer.invoke('taskbar-lyric:reset-position'),
+    getDisplays: () => ipcRenderer.invoke('taskbar-lyric:get-displays'),
+    getCapabilities: () => ipcRenderer.invoke('taskbar-lyric:get-capabilities'),
+    getState: () => ipcRenderer.invoke('taskbar-lyric:get-state'),
+    onState: callback => subscribe('taskbar-lyric:state', callback),
+    onDisplaysChanged: callback => subscribe('taskbar-lyric:displays-changed', callback)
+  },
   islandLyric: {
     show: () => ipcRenderer.invoke('island-lyric:show'),
     getDisplays: () => ipcRenderer.invoke('island-lyric:get-displays'),
@@ -243,6 +253,25 @@ contextBridge.exposeInMainWorld('desktopLyricAPI', {
     width: delta?.width, height: delta?.height
   }),
   close: () => ipcRenderer.send('desktop-lyric:close')
+})
+
+contextBridge.exposeInMainWorld('taskbarLyricAPI', {
+  onSongUpdate: callback => subscribe('taskbar-lyric:song-update', callback),
+  onLyricUpdate: callback => subscribe('taskbar-lyric:lyric-update', callback),
+  onTimeUpdate: callback => subscribe('taskbar-lyric:time-update', callback),
+  onPlaybackUpdate: callback => subscribe('taskbar-lyric:playback-update', callback),
+  onSettingsUpdate: callback => subscribe('taskbar-lyric:settings-update', callback),
+  onRuntimeState: callback => subscribe('taskbar-lyric:runtime-state', callback),
+  onState: callback => subscribe('taskbar-lyric:state', callback),
+  onError: callback => subscribe('taskbar-lyric:error', callback),
+  control: action => ['prev', 'toggle', 'next'].includes(action)
+    ? ipcRenderer.invoke('taskbar-lyric:control', action)
+    : Promise.resolve({ success: false, error: '无效的播放操作' }),
+  close: () => ipcRenderer.invoke('taskbar-lyric:close'),
+  ready: () => ipcRenderer.send('taskbar-lyric:ready'),
+  resize: size => {
+    if (Number.isFinite(size?.width) && size.width > 0) ipcRenderer.send('taskbar-lyric:resize', { width: size.width, height: size.height })
+  }
 })
 
 contextBridge.exposeInMainWorld('islandLyricAPI', {

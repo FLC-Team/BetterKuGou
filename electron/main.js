@@ -1,5 +1,5 @@
 // 引入 Electron 模块
-const { app, BrowserWindow, ipcMain, dialog, globalShortcut, shell, Tray, Menu, nativeImage, clipboard, protocol, screen } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, globalShortcut, shell, Tray, Menu, nativeImage, nativeTheme, clipboard, protocol, screen } = require('electron')
 const logger = require('./logger')
 // 解决 Windows 控制台中文/emoji 乱码: 尝试切换到 UTF-8 代码页 (仅开发态且是 win32)
 if (process.platform === 'win32' && !process.env.BK_SKIP_CHCP && !app.isPackaged) {
@@ -101,6 +101,11 @@ let islandOpening = null
 let islandPositionSave = Promise.resolve()
 let islandFullscreenMonitor = null
 let releaseIslandDisplayNotifications = null
+let taskbarLyricEnabled = false
+let taskbarLyricService = null
+let taskbarOpening = null
+let taskbarClosing = Promise.resolve()
+let releaseTaskbarTheme = null
 // 若窗口尚未准备好, 暂存需要发送的播放器控制指令
 const pendingPlayerControls = []
 
@@ -214,6 +219,10 @@ function updateTrayMenu() {
     { label: '解锁桌面歌词', enabled: desktopLyricEnabled, click: () => { void runDesktopTrayAction(() => saveDesktopPreference({ desktopLyrics: { locked: false } }), '解锁桌面歌词失败，请重试。') } },
     { label: '找回桌面歌词', click: () => { void runDesktopTrayAction(resetDesktopLyricPosition, '找回桌面歌词失败，请重试。') } },
     { label: islandLyricLabel, click: () => { void runIslandTrayAction(() => saveIslandEnabled(!islandLyricEnabled, true)) } },
+    ...(process.platform === 'win32' ? [
+      { label: `${taskbarLyricEnabled ? '禁用' : '启用'}任务栏歌词`, click: () => { void runTaskbarTrayAction(() => saveTaskbarEnabled(!taskbarLyricEnabled, true)) } },
+      { label: '找回任务栏歌词', click: () => { void runTaskbarTrayAction(resetTaskbarLyricPosition) } }
+    ] : []),
     { type: 'separator' },
     { label: '显示主界面', click: () => {
         if (!mainWindow) {
@@ -317,10 +326,127 @@ function rememberDesktopLyricBounds(win) {
 function sendDesktopLyric(channel, ...payload) {
   const win = desktopLyricWindow
   if (win && !win.isDestroyed() && desktopWindowStates.get(win)?.loaded) win.webContents.send(channel, ...payload)
-  // 两个窗口消费同一已确认音源；桌面窗口的设置/位置错误不传播给灵动岛。
+  // 辅助窗口消费同一已确认音源；各窗口自己的设置/位置错误不互相传播。
   if (['song-update', 'lyric-update', 'time-update', 'playback-update'].some(name => channel === `desktop-lyric:${name}`)) {
     islandLyricService?.send(channel.replace('desktop-lyric:', 'island-lyric:'), ...payload)
+    taskbarLyricService?.send(channel.replace('desktop-lyric:', 'taskbar-lyric:'), ...payload)
   }
+}
+
+/** 任务栏窗口只消费播放器快照；系统探测及可逆嵌入交给独立服务。 */
+function getTaskbarLyricService() {
+  if (!taskbarLyricService) {
+    const { createTaskbarLyricService } = require('./services/taskbarLyricService')
+    taskbarLyricService = createTaskbarLyricService({
+      BrowserWindow, screen, logger, platform: process.platform,
+      preload: path.join(__dirname, 'preload.js'), page: path.join(__dirname, 'taskbarLyric.html'),
+      scriptPath: path.join(app.getAppPath?.() || path.join(__dirname, '..'), 'electron', 'services', 'windowsTaskbar.ps1'),
+      isQuitting: () => isQuitting, onReady: replayTaskbarLyrics,
+      onCloseRequest: () => { void runTaskbarTrayAction(() => saveTaskbarEnabled(false)) },
+      onFailure: () => publishTaskbarState({ ...taskbarLyricService?.getState(), error: '任务栏歌词无法显示，请点击“重新显示 / 找回”重试。' }),
+      onState: publishTaskbarState
+    })
+    const update = () => taskbarLyricService?.send('taskbar-lyric:settings-update', taskbarDisplayPreferences(getSettings()))
+    nativeTheme?.on?.('updated', update)
+    releaseTaskbarTheme = () => nativeTheme?.removeListener?.('updated', update)
+  }
+  return taskbarLyricService
+}
+
+function publishTaskbarState(state) {
+  if (!isQuitting && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('taskbar-lyric:state', state)
+}
+
+function taskbarDisplayPreferences(settings) {
+  return { ...settings?.taskbarLyrics, showTranslation: settings?.playback?.showTranslation !== false,
+    dark: taskbarLyricService?.getState()?.dark ?? (nativeTheme?.shouldUseDarkColors !== false),
+    logoUrl: pathToFileURL(path.join(__dirname, isDev ? '../public/logo.png' : '../dist/logo.png')).href }
+}
+
+/** 暂停重开也立即恢复歌曲、歌词、时间与控制状态，不启动第二个播放时钟。 */
+function replayTaskbarLyrics() {
+  taskbarLyricService?.send('taskbar-lyric:settings-update', taskbarDisplayPreferences(getSettings()))
+  taskbarLyricService?.send('taskbar-lyric:song-update', currentTrack.title === '暂无播放' ? null : currentTrack)
+  taskbarLyricService?.send('taskbar-lyric:lyric-update', currentDesktopLyrics)
+  taskbarLyricService?.send('taskbar-lyric:time-update', currentDesktopTime, {
+    duration: currentDesktopDuration, playbackRate: currentDesktopPlaybackRate, advancing: false, discontinuity: true
+  })
+  taskbarLyricService?.send('taskbar-lyric:playback-update', desktopPlaybackSnapshot())
+}
+
+function openTaskbarLyricWindow() {
+  taskbarOpening = taskbarClosing.then(() => {
+    if (!taskbarLyricEnabled || isQuitting) return false
+    return getTaskbarLyricService().show()
+  }).catch(error => {
+    logger.error('taskbar-lyrics', '打开任务栏歌词失败', error)
+    publishTaskbarState({ supported: true, visible: false, error: '任务栏歌词无法显示，请重试。' })
+    return false
+  })
+  return taskbarOpening
+}
+
+function closeTaskbarLyricWindow() {
+  if (!taskbarLyricService) return taskbarClosing
+  taskbarClosing = Promise.resolve(taskbarLyricService.close()).catch(error => {
+    logger.error('taskbar-lyrics', '关闭任务栏歌词失败', error)
+  })
+  taskbarOpening = null
+  return taskbarClosing
+}
+
+/** 仅成功落盘的启用偏好创建窗口，会话广播不会重开失败的窗口。 */
+function syncTaskbarLyricSettings(settings) {
+  if (isQuitting) return
+  const enabled = process.platform === 'win32' && settings?.taskbarLyrics?.enabled === true
+  const changed = taskbarLyricEnabled !== enabled
+  taskbarLyricEnabled = enabled
+  if (enabled) getTaskbarLyricService().configure(settings.taskbarLyrics)
+  else taskbarLyricService?.configure(settings?.taskbarLyrics || {})
+  if (!enabled || isQuitting) { if (changed) void closeTaskbarLyricWindow() }
+  else if (changed) void openTaskbarLyricWindow()
+  taskbarLyricService?.send('taskbar-lyric:settings-update', taskbarDisplayPreferences(settings))
+  if (changed) updateTrayMenu()
+}
+
+async function saveTaskbarEnabled(enabled, preview = false) {
+  if (isQuitting || process.platform !== 'win32') return { success: false, error: '任务栏歌词仅在 Windows 上可用。' }
+  const previousOpening = taskbarOpening
+  try {
+    await setSettings({ taskbarLyrics: { enabled } })
+    syncTaskbarLyricSettings(getSettings())
+    if (enabled && taskbarLyricEnabled) {
+      const opened = await (taskbarOpening && taskbarOpening !== previousOpening ? taskbarOpening : openTaskbarLyricWindow())
+      if (!opened) return { success: false, error: '任务栏歌词无法显示，请重试。' }
+      if (preview) taskbarLyricService?.preview()
+    } else if (!enabled) await taskbarClosing
+    return { success: !isQuitting, state: taskbarLyricService?.getState() }
+  } catch (error) {
+    logger.error('taskbar-lyrics', '保存任务栏歌词开关失败', error)
+    return { success: false, error: '任务栏歌词设置保存失败，请重试。' }
+  }
+}
+
+async function resetTaskbarLyricPosition() {
+  if (isQuitting || process.platform !== 'win32') return { success: false, error: '任务栏歌词仅在 Windows 上可用。' }
+  try {
+    await setSettings({ taskbarLyrics: { displayId: 'primary', region: 'auto', windowAlignment: 'auto',
+      verticalOffset: 0, marginStart: 0, marginEnd: 0 } })
+    const result = await saveTaskbarEnabled(true, true)
+    if (result.success) await taskbarLyricService?.resetPosition()
+    return result
+  } catch (error) {
+    logger.error('taskbar-lyrics', '找回任务栏歌词失败', error)
+    return { success: false, error: '找回任务栏歌词失败，请重试。' }
+  }
+}
+
+async function runTaskbarTrayAction(action) {
+  try {
+    const result = await action()
+    if (!result.success && !isQuitting) await dialog.showMessageBox({ type: 'error', title: '任务栏歌词',
+      message: result.error || '任务栏歌词操作失败，请重试。', buttons: ['知道了'] })
+  } catch (error) { logger.error('taskbar-lyrics', '任务栏歌词托盘操作失败', error) }
 }
 
 /** 仅按需创建窗口服务，不改变播放器与歌词获取链路。 */
@@ -394,6 +520,7 @@ function watchIslandDisplays() {
   if (releaseIslandDisplayNotifications) return
   const update = () => {
     if (!isQuitting && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('island-lyric:displays-changed', islandDisplays())
+    if (!isQuitting && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('taskbar-lyric:displays-changed', islandDisplays())
     syncIslandLyricView()
   }
   const events = ['display-added', 'display-removed', 'display-metrics-changed']
@@ -777,6 +904,7 @@ function subscribeToSettingsUpdates() {
     })
     syncDesktopLyricSettings(nextSettings)
     syncIslandLyricSettings(nextSettings)
+    syncTaskbarLyricSettings(nextSettings)
     updateService?.configure(nextSettings.software.updates)
     playlistCacheService?.configure(nextSettings)
     lyricLibraryService?.configure(nextSettings)
@@ -1112,6 +1240,7 @@ function performApplicationCleanup() {
   updateTaskbarButtons()
   sendDesktopLyric('desktop-lyric:playback-update', desktopPlaybackSnapshot())
   islandLyricService?.close()
+  void closeTaskbarLyricWindow()
   cleanupPromise = Promise.resolve().then(cleanupApplicationResources).finally(() => {
     cleanupComplete = true
   })
@@ -1123,6 +1252,9 @@ async function cleanupApplicationResources() {
   unsubscribeSettings = null
   releaseIslandDisplayNotifications?.()
   releaseIslandDisplayNotifications = null
+  releaseTaskbarTheme?.()
+  releaseTaskbarTheme = null
+  await taskbarClosing
   try { await islandFullscreenMonitor?.stop() }
   catch (error) { logger.error('island-lyrics', '退出时关闭全屏检测失败', error) }
   await islandPositionSave
@@ -1367,6 +1499,7 @@ app.whenReady().then(async () => {
   subscribeToSettingsUpdates()
   syncDesktopLyricSettings(getSettings())
   syncIslandLyricSettings(getSettings())
+  syncTaskbarLyricSettings(getSettings())
   try {
     initializeUpdateService()
   } catch (error) {
@@ -1966,6 +2099,40 @@ function isDesktopLyricSender(event) {
 }
 
 ipcMain.on('desktop-lyric:close', event => { if (isDesktopLyricSender(event)) closeDesktopLyricWindow() })
+ipcMain.handle('taskbar-lyric:show', event => isMainWindowSender(event)
+  ? saveTaskbarEnabled(true, true) : { success: false, error: '无效的窗口请求。' })
+ipcMain.handle('taskbar-lyric:hide', event => isMainWindowSender(event)
+  ? saveTaskbarEnabled(false) : { success: false, error: '无效的窗口请求。' })
+ipcMain.handle('taskbar-lyric:reset-position', event => isMainWindowSender(event)
+  ? resetTaskbarLyricPosition() : { success: false, error: '无效的窗口请求。' })
+ipcMain.handle('taskbar-lyric:get-capabilities', event => ({
+  supported: !isQuitting && isMainWindowSender(event) && process.platform === 'win32',
+  embedding: !isQuitting && isMainWindowSender(event) && process.platform === 'win32'
+}))
+ipcMain.handle('taskbar-lyric:get-displays', event => {
+  if (!isMainWindowSender(event) || isQuitting) return []
+  watchIslandDisplays()
+  return islandDisplays()
+})
+ipcMain.handle('taskbar-lyric:get-state', event => {
+  if (!isMainWindowSender(event) || isQuitting) return { supported: false }
+  return taskbarLyricService?.getState() || { supported: process.platform === 'win32', visible: false, embedded: false, status: 'disabled' }
+})
+ipcMain.handle('taskbar-lyric:close', event => taskbarLyricService?.isSender(event)
+  ? saveTaskbarEnabled(false) : { success: false, error: '无效的窗口请求。' })
+ipcMain.handle('taskbar-lyric:control', (event, action) => {
+  if (isQuitting || !taskbarLyricService?.isSender(event) || !desktopPlaybackSnapshot().available || !['prev', 'toggle', 'next'].includes(action)) {
+    return { success: false, error: '播放器尚未就绪，请先播放歌曲。' }
+  }
+  broadcastPlayerControl(action === 'toggle' ? (isPlaying ? 'pause' : 'play') : action)
+  return { success: true }
+})
+ipcMain.on('taskbar-lyric:ready', event => { if (!isQuitting && taskbarLyricService?.isSender(event)) replayTaskbarLyrics() })
+ipcMain.on('taskbar-lyric:resize', (event, size) => {
+  if (!isQuitting && taskbarLyricService?.isSender(event) && Number.isFinite(size?.width) && size.width > 0) {
+    taskbarLyricService.setContentSize({ width: Math.min(8192, size.width), height: Math.max(20, Math.min(200, Number(size.height) || 48)) })
+  }
+})
 ipcMain.handle('island-lyric:show', event => isMainWindowSender(event)
   ? saveIslandEnabled(true, true) : { success: false, error: '无效的窗口请求。' })
 ipcMain.handle('island-lyric:get-displays', event => {

@@ -23,63 +23,72 @@
         <div class="position-controls"><label>X <input id="island-position-x" type="number" min="-100000" max="100000" :value="preferences.position?.x ?? ''" placeholder="自动" @change="setPosition('x', $event.target.value)"></label><label>Y <input id="island-position-y" type="number" min="-100000" max="100000" :value="preferences.position?.y ?? ''" placeholder="自动" @change="setPosition('y', $event.target.value)"></label><button type="button" class="island-button" @click="setPreference('position', null)">恢复位置</button></div>
       </div>
 
-      <h4>内容与布局</h4>
-      <div class="island-option-grid">
-        <div v-for="option in contentOptions" :key="option.key" class="island-row">
-          <div><label :for="option.id || 'island-' + option.key">{{ option.label }}</label><p>{{ option.description }}</p></div>
-          <label class="island-switch"><input :id="option.id || 'island-' + option.key" type="checkbox" :checked="preferences[option.key]" @change="setPreference(option.key, $event.target.checked)"><span></span></label>
+      <AnimatedDetails class="settings-disclosure">
+        <template #summary><span>内容与布局</span></template>
+        <div class="island-option-grid">
+          <div v-for="option in contentOptions" :key="option.key" class="island-row">
+            <div><label :for="option.id || 'island-' + option.key">{{ option.label }}</label><p>{{ option.description }}</p></div>
+            <label class="island-switch"><input :id="option.id || 'island-' + option.key" type="checkbox" :checked="preferences[option.key]" @change="setPreference(option.key, $event.target.checked)"><span></span></label>
+          </div>
         </div>
-      </div>
-      <div class="island-row">
-        <div><label for="island-preset">两侧内容预设</label><p>也可单独选择左右内容，组合会自动归为自定义。</p></div>
-        <AnimatedSelect id="island-preset" class="island-select" :model-value="contentPreset" :options="presetOptions" label="两侧内容预设" :disabled="!available || busy" @update:model-value="applyPreset" />
-      </div>
-      <div class="island-row">
-        <div><span class="island-label">左右内容</span><p>Logo 的显示同时受“显示应用 Logo”开关控制。</p></div>
-        <div class="side-controls"><label for="island-left">左侧<AnimatedSelect id="island-left" class="island-select" :model-value="preferences.leftContent" :options="sideOptions" label="左侧内容" :disabled="!available || busy" @update:model-value="setPreference('leftContent', $event)" /></label><label for="island-right">右侧<AnimatedSelect id="island-right" class="island-select" :model-value="preferences.rightContent" :options="sideOptions" label="右侧内容" :disabled="!available || busy" @update:model-value="setPreference('rightContent', $event)" /></label></div>
-      </div>
-
-      <h4>字体与颜色</h4>
-      <div class="island-option-grid">
-        <div v-for="option in textOptions" :key="option.key" class="island-row">
-          <div><label :for="'island-' + option.key">{{ option.label }}</label><p>{{ option.description }}</p></div>
-          <label class="island-switch"><input :id="'island-' + option.key" type="checkbox" :checked="preferences[option.key]" @change="setPreference(option.key, $event.target.checked)"><span></span></label>
+        <div class="island-row">
+          <div><label for="island-preset">两侧内容预设</label><p>也可单独选择左右内容，组合会自动归为自定义。</p></div>
+          <AnimatedSelect id="island-preset" class="island-select" :model-value="contentPreset" :options="presetOptions" label="两侧内容预设" :disabled="!available || busy" @update:model-value="applyPreset" />
         </div>
-      </div>
-      <div class="island-row">
-        <div><label for="island-font-family">字体</label><p>输入已安装字体的名称；留空使用系统字体，未安装时自动回退。</p></div>
-        <div class="font-controls"><input id="island-font-family" type="text" maxlength="100" :value="preferences.fontFamily" placeholder="系统默认字体" @input="setFontFamily($event.target.value)"><button type="button" class="island-button" @click="setPreference('fontFamily', '')">恢复默认</button></div>
-      </div>
-      <div class="island-row">
-        <div><label for="island-font-size">字号</label><p>14–40 像素，整体大小还可在下方调整。</p></div>
-        <div class="range-controls"><input id="island-font-size" type="range" min="14" max="40" step="1" :value="preferences.fontSize" @input="setNumber('fontSize', $event.target.value, 14, 40, true)"><output for="island-font-size">{{ preferences.fontSize }} px</output></div>
-      </div>
-      <div class="color-controls">
-        <div v-for="color in colorOptions" :key="color.key" class="color-control">
-          <label :for="'island-color-' + color.key">{{ color.label }}</label>
-          <div><input :id="'island-color-' + color.key" type="color" :value="preferences.colors[color.key]" @input="setColor(color.key, $event.target.value)"><span>{{ preferences.colors[color.key] }}</span><button type="button" class="island-button" :aria-label="'重置' + color.label" @click="setColor(color.key, color.default)">重置</button></div>
+        <div class="island-row">
+          <div><span class="island-label">左右内容</span><p>Logo 的显示同时受“显示应用 Logo”开关控制。</p></div>
+          <div class="side-controls"><label for="island-left">左侧<AnimatedSelect id="island-left" class="island-select" :model-value="preferences.leftContent" :options="sideOptions" label="左侧内容" :disabled="!available || busy" @update:model-value="setPreference('leftContent', $event)" /></label><label for="island-right">右侧<AnimatedSelect id="island-right" class="island-select" :model-value="preferences.rightContent" :options="sideOptions" label="右侧内容" :disabled="!available || busy" @update:model-value="setPreference('rightContent', $event)" /></label></div>
         </div>
-      </div>
+      </AnimatedDetails>
 
-      <h4>透明度与大小</h4>
-      <div v-for="slider in appearanceOptions" :key="slider.key" class="island-row">
-        <div><label :for="'island-' + slider.key">{{ slider.label }}</label><p>{{ slider.description }}</p></div>
-        <div class="range-controls"><input :id="'island-' + slider.key" type="range" :min="slider.min" :max="slider.max" step="0.01" :value="preferences[slider.key]" @input="setNumber(slider.key, $event.target.value, slider.min, slider.max)"><output :for="'island-' + slider.key">{{ Math.round(preferences[slider.key] * 100) }}%</output></div>
-      </div>
+      <AnimatedDetails class="settings-disclosure">
+        <template #summary><span>字体与颜色</span></template>
+        <div class="island-option-grid">
+          <div v-for="option in textOptions" :key="option.key" class="island-row">
+            <div><label :for="'island-' + option.key">{{ option.label }}</label><p>{{ option.description }}</p></div>
+            <label class="island-switch"><input :id="'island-' + option.key" type="checkbox" :checked="preferences[option.key]" @change="setPreference(option.key, $event.target.checked)"><span></span></label>
+          </div>
+        </div>
+        <div class="island-row">
+          <div><label for="island-font-family">字体</label><p>输入已安装字体的名称；留空使用系统字体，未安装时自动回退。</p></div>
+          <div class="font-controls"><input id="island-font-family" type="text" maxlength="100" :value="preferences.fontFamily" placeholder="系统默认字体" @input="setFontFamily($event.target.value)"><button type="button" class="island-button" @click="setPreference('fontFamily', '')">恢复默认</button></div>
+        </div>
+        <div class="island-row">
+          <div><label for="island-font-size">字号</label><p>14–40 像素，整体大小还可在下方调整。</p></div>
+          <div class="range-controls"><input id="island-font-size" type="range" min="14" max="40" step="1" :value="preferences.fontSize" @input="setNumber('fontSize', $event.target.value, 14, 40, true)"><output for="island-font-size">{{ preferences.fontSize }} px</output></div>
+        </div>
+        <div class="color-controls">
+          <div v-for="color in colorOptions" :key="color.key" class="color-control">
+            <label :for="'island-color-' + color.key">{{ color.label }}</label>
+            <div><input :id="'island-color-' + color.key" type="color" :value="preferences.colors[color.key]" @input="setColor(color.key, $event.target.value)"><span>{{ preferences.colors[color.key] }}</span><button type="button" class="island-button" :aria-label="'重置' + color.label" @click="setColor(color.key, color.default)">重置</button></div>
+          </div>
+        </div>
+      </AnimatedDetails>
 
-      <h4>自动隐藏</h4>
-      <div class="island-row">
-        <div><label for="island-auto-hide">暂停时自动隐藏</label><p>开启后暂停或没有音乐时隐藏；点击“重新显示 / 找回”可预览 3 秒。</p></div>
-        <label class="island-switch"><input id="island-auto-hide" type="checkbox" :checked="preferences.autoHide" @change="setPreference('autoHide', $event.target.checked)"><span></span></label>
-      </div>
-      <div class="island-row">
-        <div><label for="island-hide-fullscreen">其他应用全屏时隐藏</label><p>{{ !available ? '此选项仅在 Windows 桌面客户端可用。' : !capabilitiesLoaded ? '正在检查系统支持…' : capabilities.fullscreenDetection ? '同一屏幕的其他应用进入全屏时暂时隐藏，离开全屏后恢复。' : '当前系统不支持外部应用全屏检测；此选项仅在 Windows 可用。' }}</p></div>
-        <label class="island-switch"><input id="island-hide-fullscreen" type="checkbox" :checked="preferences.hideOnFullscreen" :disabled="!capabilities.fullscreenDetection" @change="setPreference('hideOnFullscreen', $event.target.checked)"><span></span></label>
-      </div>
-      <div class="island-row">
-        <div><label for="island-hide-lyrics">打开全屏歌词时隐藏</label><p>同一屏幕打开 BetterKuGou 的全屏歌词时隐藏灵动岛，各平台均可使用。</p></div>
-        <label class="island-switch"><input id="island-hide-lyrics" type="checkbox" :checked="preferences.hideOnLyricView" @change="setPreference('hideOnLyricView', $event.target.checked)"><span></span></label>
-      </div>
+      <AnimatedDetails class="settings-disclosure">
+        <template #summary><span>透明度与大小</span></template>
+        <div v-for="slider in appearanceOptions" :key="slider.key" class="island-row">
+          <div><label :for="'island-' + slider.key">{{ slider.label }}</label><p>{{ slider.description }}</p></div>
+          <div class="range-controls"><input :id="'island-' + slider.key" type="range" :min="slider.min" :max="slider.max" step="0.01" :value="preferences[slider.key]" @input="setNumber(slider.key, $event.target.value, slider.min, slider.max)"><output :for="'island-' + slider.key">{{ Math.round(preferences[slider.key] * 100) }}%</output></div>
+        </div>
+      </AnimatedDetails>
+
+      <AnimatedDetails class="settings-disclosure">
+        <template #summary><span>自动隐藏</span></template>
+        <div class="island-row">
+          <div><label for="island-auto-hide">暂停时自动隐藏</label><p>开启后暂停或没有音乐时隐藏；点击“重新显示 / 找回”可预览 3 秒。</p></div>
+          <label class="island-switch"><input id="island-auto-hide" type="checkbox" :checked="preferences.autoHide" @change="setPreference('autoHide', $event.target.checked)"><span></span></label>
+        </div>
+        <div class="island-row">
+          <div><label for="island-hide-fullscreen">其他应用全屏时隐藏</label><p>{{ !available ? '此选项仅在 Windows 桌面客户端可用。' : !capabilitiesLoaded ? '正在检查系统支持…' : capabilities.fullscreenDetection ? '同一屏幕的其他应用进入全屏时暂时隐藏，离开全屏后恢复。' : '当前系统不支持外部应用全屏检测；此选项仅在 Windows 可用。' }}</p></div>
+          <label class="island-switch"><input id="island-hide-fullscreen" type="checkbox" :checked="preferences.hideOnFullscreen" :disabled="!capabilities.fullscreenDetection" @change="setPreference('hideOnFullscreen', $event.target.checked)"><span></span></label>
+        </div>
+        <div class="island-row">
+          <div><label for="island-hide-lyrics">打开全屏歌词时隐藏</label><p>同一屏幕打开 BetterKuGou 的全屏歌词时隐藏灵动岛，各平台均可使用。</p></div>
+          <label class="island-switch"><input id="island-hide-lyrics" type="checkbox" :checked="preferences.hideOnLyricView" @change="setPreference('hideOnLyricView', $event.target.checked)"><span></span></label>
+        </div>
+      </AnimatedDetails>
+
     </fieldset>
     <Transition name="ui-fade"><p v-if="environmentError" class="island-feedback is-error" role="alert">{{ environmentError }} <button type="button" class="island-button" :disabled="loadingEnvironment" @click="loadEnvironment">重试读取</button></p></Transition>
     <Transition name="ui-fade" mode="out-in"><p v-if="actionError || message" :key="actionError || message" class="island-feedback" :class="{ 'is-error': actionError }" :role="actionError ? 'alert' : 'status'">{{ actionError || message }}</p></Transition>
@@ -90,6 +99,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { logger } from '../../utils/logger.js'
 import AnimatedSelect from './AnimatedSelect.vue'
+import AnimatedDetails from './AnimatedDetails.vue'
 
 const props = defineProps({
   modelValue: { type: Object, required: true },

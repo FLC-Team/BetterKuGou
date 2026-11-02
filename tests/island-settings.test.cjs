@@ -73,6 +73,7 @@ const islandDefaults = {
 }
 const boolKeys = ['enabled', 'showLogo', 'alwaysTwoLines', 'hideTranslation', 'songInfoOnly', 'boldText', 'karaokeEnabled', 'autoHide', 'hideOnFullscreen', 'hideOnLyricView']
 const passthrough = { inheritAttrs: false, setup(_props, { slots }) { return () => vue.h(vue.Fragment, null, slots.default?.()) } }
+const AnimatedDetails = { setup(_props, { slots }) { return () => vue.h('details', {}, [vue.h('summary', {}, slots.summary?.()), slots.default?.()]) } }
 const motionVue = { ...vue, Transition: passthrough, Teleport: passthrough }
 function compileComponent(name) {
   const filename = path.join(root, 'src/components/common', name + '.vue')
@@ -104,7 +105,7 @@ function mountControls(t, options = {}) {
   const manager = new Function(managerCode)()
   const DropdownMenu = new Function('Vue', 'contextMenuManager', 'window', 'document', 'ResizeObserver', compiledMenu)(motionVue, manager, window, document, Observer)
   const AnimatedSelect = new Function('Vue', 'DropdownMenu', 'window', 'MutationObserver', compiledSelect)(motionVue, DropdownMenu, window, Observer)
-  const Component = new Function('Vue', 'window', 'logger', 'AnimatedSelect', compiledComponent)(motionVue, window, logger, AnimatedSelect)
+  const Component = new Function('Vue', 'window', 'logger', 'AnimatedSelect', 'AnimatedDetails', compiledComponent)(motionVue, window, logger, AnimatedSelect, AnimatedDetails)
   const nodes = item => [item, ...item.children.flatMap(nodes)]
   const text = item => item.text + item.children.map(text).join('')
   const invoke = (item, name, value = {}) => {

@@ -14,19 +14,20 @@
 - `detailsMotion.js`：原生折叠的可取消高度动画控制器；返回 `setOpen` / `dispose`，用于 AnimatedDetails、应用更新及恢复入口 Shadow DOM。
 - `motionLayout.js`：网格离场坐标冻结及恢复的共享函数；移出正常布局后保留真实离场动画，允许其他项使用 FLIP 平滑移动，离场期间禁用交互和无障碍访问。
 - `ThemePackages.vue`：主题缩略预览、切换、文件导入更新、移除回退和当前主题导出。
-- `ThemeAdjustments.vue`：全部主题令牌按区域分组编辑、搜索和分组恢复，通过 custom v-model 交由设置页保存。
+- `ThemeAdjustments.vue`：全部主题令牌按区域分组编辑、搜索和分组恢复，通过 custom v-model 交由设置页保存；设置入口收纳在“外观与主题 → 界面精调与高级编辑”。
 - `ThemeStudio.vue`：App 常驻的区域/元素拾取编辑器与主窗口/桌面歌词高级 CSS 草稿；预览、取消、保存与失败反馈。
 - `ThemeRecovery.vue`：默认隐藏的独立 Shadow DOM 恢复面板；快捷键恢复时显示结果或重试，不受主题 CSS 影响。
 - `ArtworkCover.vue`：列表及底部播放栏共用封面，支持 `{size}`、缺图/坏图回退；先查本账号本地封面，真实图片 load 后后台缓存网络图片，保持懒加载，不修改歌曲数据。
 - `SongBadges.vue`：歌曲列表与播放队列复用的权限标签，通过 `songMetadata` 读取歌曲 VIP 元数据；标题、无障碍描述与徽标一致，不查询或推断当前账号的实际播放权限。
 - `ArtistLinks.vue`：通过 `getSongArtists(song)` 为每位歌手提供独立按钮，`select` 只返回所选 `{ id, name }`；普通区域换行，`compact` 区域支持鼠标滚轮横向滚动与键盘聚焦显露目标，滚动边界保留页面原生滚轮行为。
-- `AppUpdates.vue`：设置页应用更新区域，版本对照卡片集中展示实际版本、更新状态、真实下载进度和手动操作，分区展示更新说明与渠道/自动策略。
+- `AppUpdates.vue`：设置“更新与备份”面板的应用更新区域，版本对照卡片集中展示实际版本、更新状态、真实下载进度和手动操作，分区展示更新说明与渠道/自动策略。
 - `AppUpdates.css`：AppUpdates 专属 scoped 样式，沿用主题令牌与杂志式排版，提供窄容器、减少动态效果、高对比度和键盘焦点适配。
 - `PlaylistCacheSettings.vue`：设置页离线缓存开关、容量、并发、全局占用、本账号清理及全部账号缓存位置迁移；普通偏好通过 download v-model 编辑父级草稿，管理前等待 beforeAction 保存，实际目录与迁移进度按 revision 接收。
 
-- `LyricSettings.vue`：播放设置中的歌词库开关、自动保存/更新及匹配门槛，和翻译、罗马音、简繁、分词、脏词显示选项；使用 playback v-model 与既有设置保存流程。
+- `LyricSettings.vue`：独立“歌词内容”面板中的歌词库开关、自动保存/更新及匹配门槛，和翻译、罗马音、简繁、分词、脏词显示选项；使用 playback v-model 与既有设置保存流程。
 - `DesktopLyricSettings.vue`：设置页桌面歌词的播放动画、自动显隐、字体配色、阴影及窗口锁定分组；通过 desktopLyrics v-model 编辑同一父级草稿，保留窗口位置和未知兼容字段。
 - `IslandLyricSettings.vue`：设置页灵动岛的模式/屏幕/浮动位置、内容、字体颜色、透明度缩放、隐藏规则及左右内容；通过 islandLyrics v-model 编辑父级草稿，窗口预览前等待 beforeAction 保存。
+- `TaskbarLyricSettings.vue`：Windows 任务栏歌词的嵌入/轮询/显示器、布局对齐、内容、字体动效及边距尺寸；通过 taskbarLyrics v-model 编辑同一父级草稿，启用/预览/恢复前排空保存。复用 AnimatedSelect，能力不足禁用系统操作，保存失败保留草稿及重试，实际回退原因可见；先订阅状态/屏幕再读快照，拒绝迟到覆盖，卸载解绑。
 - `LyricLibrary.vue`：按歌名/歌手搜索已保存曲目，预览与选用歌词版本、保存本地编辑副本；原版本保留，保存失败保留草稿。
 
 ## 接口与流程
@@ -54,6 +55,7 @@
 - DesktopLyricSettings 用 AnimatedDetails 收纳选项，AnimatedSelect 保留字号、样式、对齐及阴影来源的受控值；原生 checkbox/range/color/text 提供键盘与标签入口。仅显示歌曲信息时暂停歌词内容选项，节能模式暂停装饰动画选项，悬停淡化与阴影子设置跟随对应开关禁用，保留原偏好以便恢复。字体恢复只清空字体，文字颜色恢复只清空三类颜色，阴影恢复只更新参数，不覆盖窗口位置或其他设置。
 - 桌面设置的打开和找回动作先等待 beforeAction 排空设置保存，再调用固定的 show/resetPosition；等待期间去重，失败显示可重试提示，卸载后不再执行迟到的窗口动作。浏览器禁用窗口按钮；偏好本身继续使用页面原有保存与错误重试流程。
 - IslandLyricSettings 不建立独立 store，五处选择入口复用 AnimatedSelect/DropdownMenu 的鼠标、键盘和动效。左右内容预设由 leftContent/rightContent 推导，不保存重复字段；Logo 显隐独立，字体和单项颜色恢复不改写其他偏好，选择屏幕同时清空旧浮动位置。
+- IslandLyricSettings 与 TaskbarLyricSettings 各自位于独立设置面板，启用、模式或嵌入、屏幕等常用项直接展示；内容、布局、字体、隐藏或尺寸等细项使用 AnimatedDetails 默认折叠。切换分类只隐藏面板，组件草稿、展开状态、服务订阅和进行中动作保持。
 - 灵动岛先订阅 onDisplaysChanged 再读取 getDisplays/getCapabilities，热插拔代次优先于迟到快照，断开屏幕不覆盖已保存选择；读取失败可重试，卸载解绑并拒绝迟到响应。外部全屏检测依能力启用，浏览器禁用系统窗口控件。手动启用先更新草稿，再与重新显示共用排空父级保存后的 3 秒预览；关闭只保存偏好。等待期间关闭选择器并防止重复窗口操作，结果及错误沿 ui-fade 展示。
 - PlaylistCacheSettings 的“更改位置”先排空设置草稿，再调用无参数 `electronAPI.playlistCache.chooseDirectory()`；主进程选择父目录并迁移至其 `offline-playlists` 子目录，组件不直接编辑路径配置。该操作覆盖全部账号且不要求登录，取消不报告成功；状态恢复实际路径、复制/校验进度、迁移失败和旧文件清理警告，离页不取消迁移。
 
