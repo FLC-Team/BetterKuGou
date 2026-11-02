@@ -2,6 +2,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const path = require('node:path')
 const { EventEmitter } = require('node:events')
+const { spawn } = require('node:child_process')
 const { createTaskbarLyricService, taskbarLayout } = require('../electron/services/taskbarLyricService')
 const { createWindowsTaskbarBridge } = require('../electron/services/windowsTaskbar')
 
@@ -63,7 +64,7 @@ test('auto-hidden taskbars with reliable UIA geometry stay above the bar for bot
 })
 
 function fixture(t, { platform = 'win32', request, stop } = {}) {
-  const windows = [], bridges = [], messages = [], placements = []
+  const windows = [], bridges = [], messages = [], placements = [], requests = []
   const screen = Object.assign(new EventEmitter(), { getAllDisplays: () => [display], getPrimaryDisplay: () => display,
     dipToScreenRect: (_win, rect) => rect, screenToDipRect: (_win, rect) => rect })
   class Window extends EventEmitter {
@@ -82,6 +83,7 @@ function fixture(t, { platform = 'win32', request, stop } = {}) {
     createBridge(options) {
       const bridge = { options, stops: 0, start: async () => {},
         request: async (command, value) => {
+          requests.push({ command, value })
           if (request) { const custom = request(command, value); if (custom) return custom }
           if (command === 'sample') return { bars: [bar], dark: false }
           if (command === 'detach') return { ok: true }
@@ -91,7 +93,7 @@ function fixture(t, { platform = 'win32', request, stop } = {}) {
       bridges.push(bridge); return bridge
     } })
   t.after(async () => { await service.close() })
-  return { service, windows, bridges, messages, screen, placements,
+  return { service, windows, bridges, messages, screen, placements, requests,
     async show() { const promise = service.show(); await settle(); windows.at(-1).emit('ready-to-show'); const ready = await promise; await settle(); return ready } }
 }
 
@@ -135,6 +137,35 @@ test('native refusal is reported as floating and does not repeatedly attempt the
   await settle()
   assert.equal(attempts, 1)
   assert.equal(f.placements.length, 0)
+})
+
+test('sampling timeout detaches into floating mode without stopping the helper and a fresh sample restores embedding', async t => {
+  let poll, result = { bars: [bar], dark: false }
+  t.mock.method(global, 'setInterval', callback => { poll = callback; return { unref() {} } })
+  t.mock.method(global, 'clearInterval', () => { poll = null })
+  const f = fixture(t, { request(command) { if (command === 'sample') return Promise.resolve(result) } })
+  f.service.configure({ embed: true })
+  await f.show()
+  assert.equal(f.service.getState().embedded, true)
+  assert.equal(f.service.getState().warning, '')
+  const initialRequests = f.requests.length
+  result = { bars: [], dark: false, warning: 'sampling-timeout' }
+  poll()
+  await settle()
+  assert.ok(f.requests.slice(initialRequests).some(item => item.command === 'detach'))
+  assert.equal(f.service.getState().embedded, false)
+  assert.equal(f.service.getState().status, 'floating')
+  assert.match(f.service.getState().warning, /响应较慢/)
+  assert.ok(f.windows[0].getBounds().y + f.windows[0].getBounds().height <= display.workArea.height)
+  assert.equal(f.bridges[0].stops, 0)
+  const fallbackRequests = f.requests.length
+  result = { bars: [bar], dark: false }
+  poll()
+  await settle()
+  assert.ok(f.requests.slice(fallbackRequests).some(item => item.command === 'apply' && item.value.embed))
+  assert.equal(f.service.getState().embedded, true)
+  assert.equal(f.service.getState().warning, '')
+  assert.equal(f.bridges[0].stops, 0)
 })
 
 test('floating layout uses Electron sizing and never sends raw native placement', async t => {
@@ -250,22 +281,105 @@ test('uncertain detach destroys its owned window and never applies top-level fal
   await f.service.close()
 })
 
-function bridgeFixture() {
+function bridgeFixture({ script = '# controlled fixture', handle = Buffer.alloc(8), ownerProcessId = 24680, write } = {}) {
   const timers = new Map()
+  const writes = [], ends = [], spawns = [], errors = []
   let timerId = 0
   const child = Object.assign(new EventEmitter(), { pid: 12345, stdout: new EventEmitter(), stderr: new EventEmitter(), stdin: new EventEmitter(), kills: 0 })
-  child.stdin.write = () => {}
-  child.stdin.end = () => {}
+  child.stdin.write = value => { writes.push(value); return write ? write(value, child) : true }
+  child.stdin.end = value => { ends.push(value) }
   child.kill = () => { child.kills++; queueMicrotask(() => child.emit('exit', 0)); return true }
-  const bridge = createWindowsTaskbarBridge({ handle: Buffer.alloc(8), readScript: () => '# controlled fixture',
-    spawnProcess: () => child, timers: {
+  const bridge = createWindowsTaskbarBridge({ handle, ownerProcessId, readScript: () => script, onError: error => errors.push(error),
+    spawnProcess: (executable, args, options) => { spawns.push({ executable, args, options }); return child }, timers: {
       setTimeout(callback, delay) { const id = ++timerId; timers.set(id, { callback, delay }); return id },
       clearTimeout(id) { timers.delete(id) }
     } })
-  return { bridge, child, timers,
+  return { bridge, child, timers, writes, ends, spawns, errors,
     fire(delay) { for (const [id, timer] of [...timers]) { if (timer.delay === delay) { timers.delete(id); timer.callback() } } },
     async start() { const ready = bridge.start(); child.stdout.emit('data', '{"ready":true}\n'); await ready } }
 }
+
+test('native bridge keeps argv short and constant while transferring large Unicode scripts over stdin', async () => {
+  const script = `# ${'任务栏 🎵 café\n# '.repeat(12000)}`
+  const handle = Buffer.alloc(8)
+  handle.writeBigUInt64LE(0x100000002n)
+  const large = bridgeFixture({ script, handle }), small = bridgeFixture()
+  await large.start()
+  await small.start()
+  assert.deepEqual(large.spawns[0].args, small.spawns[0].args)
+  assert.ok(large.spawns[0].args.join(' ').length < 4096)
+  assert.equal(large.spawns[0].options.windowsHide, true)
+  assert.deepEqual(large.spawns[0].options.stdio, ['pipe', 'pipe', 'pipe'])
+  assert.equal(large.writes.length, 1)
+  assert.match(large.writes[0], /^[A-Za-z0-9+/=]+\n$/)
+  assert.ok(large.writes[0].length > 32767)
+  assert.equal(Buffer.from(large.writes[0].trim(), 'base64').toString('utf8'),
+    `& {\n${script}\n} -OwnerWindow 4294967298 -OwnerProcessId 24680`)
+  for (const f of [large, small]) {
+    const stopped = f.bridge.stop()
+    f.child.emit('exit', 0)
+    await stopped
+    assert.equal(f.timers.size, 0)
+  }
+})
+
+test('native bridge rejects oversized source before spawning a helper', async () => {
+  const f = bridgeFixture({ script: '#'.repeat(1048576) })
+  await assert.rejects(f.bridge.start(), /脚本超过启动大小限制/)
+  assert.equal(f.spawns.length, 0)
+  assert.equal(f.writes.length, 0)
+  assert.equal(f.timers.size, 0)
+  await f.bridge.stop()
+})
+
+test('native bridge installs failure handlers and deadlines before writing startup source', async () => {
+  for (const synchronous of [true, false]) {
+    const error = new Error(synchronous ? 'source write threw' : 'source pipe failed')
+    let f
+    f = bridgeFixture({ write(_value, child) {
+      assert.equal(child.stdin.listenerCount('error'), 1)
+      assert.equal(child.stdout.listenerCount('data'), 1)
+      assert.ok([...f.timers.values()].some(timer => timer.delay === 10000))
+      if (synchronous) throw error
+      queueMicrotask(() => child.stdin.emit('error', error))
+      return true
+    } })
+    await assert.rejects(f.bridge.start(), error)
+    assert.equal(f.errors[0], error)
+    assert.deepEqual(f.ends, ['EXIT\n'])
+    assert.equal([...f.timers.values()].some(timer => timer.delay === 10000), false)
+    f.child.emit('exit', 0)
+    await f.bridge.stop()
+    assert.equal(f.timers.size, 0)
+  }
+})
+
+test('native bridge shares stdin for startup, JSON requests and EXIT and preserves split UTF-8 replies', async () => {
+  const f = bridgeFixture()
+  const ready = f.bridge.start()
+  assert.equal(f.bridge.start(), ready)
+  assert.equal(f.writes.length, 1)
+  f.child.stdout.emit('data', Buffer.from('{"ready":true}\n'))
+  await ready
+  assert.equal(f.timers.size, 0)
+  const pending = f.bridge.request('sample')
+  await settle()
+  assert.deepEqual(JSON.parse(f.writes[1]), { command: 'sample', id: 1 })
+  assert.ok([...f.timers.values()].some(timer => timer.delay === 3000))
+  const reply = { id: 1, ok: true, bars: [], dark: false, warning: '任务栏 🎵 café' }
+  const bytes = Buffer.from(`${JSON.stringify(reply)}\n`, 'utf8')
+  const split = bytes.indexOf(Buffer.from('任')) + 1
+  f.child.stdout.emit('data', bytes.subarray(0, split))
+  f.child.stdout.emit('data', bytes.subarray(split))
+  assert.deepEqual(await pending, reply)
+  assert.equal(f.timers.size, 0)
+  const stopped = f.bridge.stop()
+  assert.deepEqual(f.ends, ['EXIT\n'])
+  f.child.emit('exit', 0)
+  await stopped
+  assert.equal(f.child.kills, 0)
+  assert.equal(f.timers.size, 0)
+})
 
 test('native bridge rejects forced termination even when the killed process reports exit code zero', async () => {
   const f = bridgeFixture()
@@ -302,6 +416,31 @@ test('native bridge accepts zero exit after EXIT without forcing the helper', as
   await f.bridge.stop()
   assert.equal(f.child.kills, 0)
   assert.equal(f.timers.size, 0)
+})
+
+test('real Windows bootstrap executes a large Unicode script and retains stdin for JSON and EXIT', { skip: process.platform !== 'win32', timeout: 15000 }, async t => {
+  const source = `param([long]$OwnerWindow, [int]$OwnerProcessId)
+$ProgressPreference = 'SilentlyContinue'
+# ${'large bundled source '.repeat(2500)}
+[Console]::Out.WriteLine('{"ready":true}')
+[Console]::Out.Flush()
+while (($line = [Console]::ReadLine()) -ne $null) {
+  if ($line -eq 'EXIT') { break }
+  $request = $line | ConvertFrom-Json
+  $response = @{ id=$request.id; ok=$true; text='任务栏 🎵 café'; owner=$OwnerWindow.ToString(); pid=$OwnerProcessId }
+  [Console]::Out.WriteLine(($response | ConvertTo-Json -Compress))
+  [Console]::Out.Flush()
+}`
+  const bridge = createWindowsTaskbarBridge({ handle: Buffer.from([2, 0, 0, 0, 1, 0, 0, 0]), ownerProcessId: 24680, readScript: () => source,
+    spawnProcess(...args) { const child = spawn(...args); child.stderr.on('data', bytes => t.diagnostic(String(bytes))); return child } })
+  t.after(() => bridge.stop())
+  await bridge.start()
+  const result = await bridge.request('sample')
+  assert.equal(result.ok, true)
+  assert.equal(result.text, '任务栏 🎵 café')
+  assert.equal(result.owner, '4294967298')
+  assert.equal(result.pid, 24680)
+  await bridge.stop()
 })
 
 test('real Windows read-only taskbar probe completes ready/sample/exit without an owned window', { skip: process.platform !== 'win32', timeout: 15000 }, async t => {

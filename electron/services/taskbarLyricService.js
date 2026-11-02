@@ -141,7 +141,7 @@ function createTaskbarLyricService({ BrowserWindow, screen, preload, page, scrip
         }
         if (current !== state || state.closing || state.nativeRecovering) break
         publish({ visible: shouldShow, embedded: layout.embedded, status: layout.embedded ? 'embedded' : 'floating', edge: layout.edge,
-          availableWidth: layout.availableWidth, warning: state.nativeFailed ? '任务栏检测不可用，已使用悬浮模式；关闭后重新启用可重试。' : layout.warning })
+          availableWidth: layout.availableWidth, warning: state.nativeFailed ? '任务栏检测不可用，已使用悬浮模式；关闭后重新启用可重试。' : state.sampleWarning || layout.warning })
       } while (state.refit)
     } catch (error) { nativeFailure(state, error) } finally { state.fitting = false }
   }
@@ -170,6 +170,8 @@ function createTaskbarLyricService({ BrowserWindow, screen, preload, page, scrip
     try {
       const result = await state.bridge.request('sample')
       if (current !== state || state.closing) return
+      state.sampleWarning = result.warning === 'sampling-timeout' ? '任务栏检测响应较慢，暂时使用悬浮模式。'
+        : result.warning === 'sampling-failed' ? '任务栏检测暂时不可用，已使用悬浮模式。' : ''
       const convert = rect => screen.screenToDipRect ? screen.screenToDipRect(null, rect) : rect
       state.bars = (Array.isArray(result.bars) ? result.bars : []).filter(bar => /^\d+$/.test(bar?.handle) && validRect(bar.bounds) && validRect(bar.monitor)).map(bar => ({
         handle: bar.handle, edge: ['top', 'bottom', 'left', 'right'].includes(bar.edge) ? bar.edge : 'bottom', visible: bar.visible === true, reliable: bar.reliable === true,
