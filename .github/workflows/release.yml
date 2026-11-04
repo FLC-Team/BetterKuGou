@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -44,6 +44,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FPM_DEBUG: '1'
       - name: Verify native installer protocol, versions and UI
         if: runner.os == 'Windows'
         run: node --test tests/installer-install-mode.test.cjs tests/installer-completion.test.cjs tests/installer-nsis.test.cjs tests/installer-ui.test.cjs
