@@ -8,10 +8,9 @@
         <p class="search-info" v-else>{{ loading ? '正在寻找与你的关键词有关的声音' : '从歌名、歌手或专辑开始，找到下一首喜欢。' }}</p>
       </header>
       <nav class="search-tabs" aria-label="搜索类型"><button v-for="tab in searchTabs" :key="tab.id" type="button" :aria-current="searchType === tab.id ? 'page' : undefined" @click="selectSearchType(tab.id)">{{ tab.label }}</button></nav>
-      <p v-if="errorMessage && searchResults?.lists?.length" class="refresh-error" role="alert">{{ errorMessage }} <button type="button" class="retry-btn" :disabled="loading" @click="performSearch(searchKeyword, searchRequestAppend)">重试</button></p>
+      <AppNotice :message="errorMessage" title="搜索" type="error" :actions="[{ label: '重试', run: () => performSearch(searchKeyword, searchRequestAppend), disabled: loading }]" />
       <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
-      <div v-if="errorMessage && !searchResults?.lists?.length" class="empty-state" role="alert">
-        <p class="empty-text">暂时无法搜索</p><p class="empty-hint">{{ errorMessage }}</p>
+      <div v-if="errorMessage && !searchResults?.lists?.length" class="empty-state">
         <button type="button" class="retry-btn" @click="performSearch()">重新搜索</button>
       </div>
 

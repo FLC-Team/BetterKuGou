@@ -40,6 +40,7 @@ async function loadMainStore(initial = {}) {
       if (name === 'fs') return { promises: disk }
       if (name === './logger') return quiet
       if (name === './autoLaunch') return { isAutoLaunchSupported: () => false }
+      if (name === './audioEffectsConfig.cjs') return require('../electron/audioEffectsConfig.cjs')
       return require(name)
     }
   }

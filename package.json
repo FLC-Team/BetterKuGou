@@ -1,7 +1,7 @@
 {
   "name": "betterkugou",
   "private": true,
-  "version": "0.2.1",
+  "version": "1.0.0",
   "description": "BetterKuGou",
   "author": "鸢夏 <1925019494@qq.com>",
   "main": "electron/main.js",
@@ -10,6 +10,7 @@
     "dev": "vite",
     "build": "vite build",
     "check": "node scripts/check.cjs",
+    "build:audio-effects": "node scripts/build-audio-effects.cjs",
     "test": "node --test",
     "preview": "vite preview",
     "electron:dev": "vite",
@@ -23,6 +24,7 @@
     "build:win": "npm run build && electron-builder --win"
   },
   "build": {
+    "beforePack": "scripts/prepare-audio-effects.cjs",
     "appId": "com.betterkugou.app",
     "productName": "BetterKuGou",
     "directories": {
@@ -35,9 +37,24 @@
     ],
     "extraResources": [
       {
+        "from": "native/audio-effects/package/${arch}",
+        "to": "audio-effects"
+      },
+      {
+        "from": "electron/services",
+        "to": "audio-effects",
+        "filter": [
+          "audioEffectsWorker.cjs",
+          "audioEffectsProtocol.cjs"
+        ]
+      },
+      {
         "from": "electron/services",
         "to": "music-download",
-        "filter": ["musicDownloadWorker.cjs", "musicTransfer.cjs"]
+        "filter": [
+          "musicDownloadWorker.cjs",
+          "musicTransfer.cjs"
+        ]
       },
       {
         "from": "electron/services/playlistCacheWorker.cjs",
@@ -62,18 +79,26 @@
       }
     ],
     "win": {
-      "signAndEditExecutable": false,
+      "signAndEditExecutable": true,
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64", "ia32", "arm64"]
+          "arch": [
+            "x64",
+            "ia32",
+            "arm64"
+          ]
         }
       ],
       "icon": "public/logo.ico",
       "verifyUpdateCodeSignature": false
     },
     "linux": {
-      "target": ["AppImage", "deb", "rpm"],
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm"
+      ],
       "icon": "public/logo.png",
       "category": "AudioVideo;Audio;Player",
       "maintainer": "鸢夏 <1925019494@qq.com>",
@@ -90,7 +115,15 @@
       }
     },
     "mac": {
-      "target": ["dmg", "zip"],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
       "icon": "public/logo.png"
     },
     "dmg": {
@@ -102,15 +135,26 @@
       "iconSize": 96,
       "iconTextSize": 12,
       "contents": [
-        { "x": 184, "y": 218, "type": "file" },
-        { "x": 456, "y": 218, "type": "link", "path": "/Applications" }
+        {
+          "x": 184,
+          "y": 218,
+          "type": "file"
+        },
+        {
+          "x": 456,
+          "y": 218,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": false,
       "include": "installer/windows.nsh",
-      "installerLanguages": ["zh_CN"],
+      "installerLanguages": [
+        "zh_CN"
+      ],
       "runAfterFinish": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
@@ -122,6 +166,7 @@
     }
   },
   "dependencies": {
+    "@fue/ui": "file:vendor/fue-ui-0.1.0-bk.1.tgz",
     "axios": "^1.7.9",
     "node-taglib-sharp": "6.0.3",
     "opencc-js": "1.4.2",

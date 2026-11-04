@@ -90,6 +90,8 @@ test('offline worker paths and media registration cover development and packaged
     assert.equal(f.options().cacheRoot, path.join('/user-data', 'offline-playlists'))
     assert.equal(f.registrations[0][0].scheme, 'bk-cache')
     assert.equal(f.registrations[0][0].privileges.stream, true)
+    assert.equal(f.registrations[0][0].privileges.supportFetchAPI, true)
+    assert.equal(f.registrations[0][0].privileges.corsEnabled, true)
     assert.equal(f.registrations[0][0].privileges.bypassCSP, undefined)
     assert.equal(f.registrations[1], 'bk-cache')
     const request = { url: 'bk-cache://media/opaque' }
@@ -141,13 +143,27 @@ test('preload provides fixed cache capabilities and detachable state/auth subscr
   const received = []
   const disposeState = cache.onState(value => received.push(value))
   const disposeAuth = cache.onAuthExpired(value => received.push(value))
+  const disposeSource = cache.onSourceReady(value => received.push(value))
   ipc.emit('playlist-cache:state', { privateElectronEvent: true }, 'state')
   ipc.emit('playlist-cache:auth-expired', {}, 'auth')
-  assert.deepEqual(received, ['state', 'auth'])
-  disposeState(); disposeAuth()
+  ipc.emit('playlist-cache:source-ready', { privileged: true }, 'source')
+  assert.deepEqual(received, ['state', 'auth', 'source'])
+  disposeState(); disposeAuth(); disposeSource()
   assert.equal(ipc.listenerCount('playlist-cache:state'), 0)
+  assert.equal(ipc.listenerCount('playlist-cache:source-ready'), 0)
   assert.equal(cache.invoke, undefined)
   assert.equal(cache.download, undefined)
+})
+
+test('completed audio notifications use the fixed main-window source-ready channel', async () => {
+  const f = fixture()
+  const source = { generation: 1, userId: 'placeholder-account', source: 'catalog', hash: 'song-a', quality: '128' }
+  f.options().onSourceReady(source)
+  assert.deepEqual(f.windows[0].sent.at(-1), ['playlist-cache:source-ready', source])
+  await f.api.performApplicationCleanup()
+  const count = f.windows[0].sent.length
+  f.options().onSourceReady(source)
+  assert.equal(f.windows[0].sent.length, count)
 })
 
 test('packaging includes the standalone offline worker', () => {

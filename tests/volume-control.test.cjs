@@ -4,6 +4,7 @@ const path = require('node:path')
 const vm = require('node:vm')
 const test = require('node:test')
 const vue = require('vue')
+const { registerAppNotice } = require('./helpers/noticeHarness.cjs')
 const { parse, compileTemplate } = require('@vue/compiler-sfc')
 
 const root = path.resolve(__dirname, '..')
@@ -79,6 +80,7 @@ function mountControl(t, overrides = {}) {
     onToggleMute: () => { toggles++; state.isMuted = !state.isMuted }
   }) })
   const container = node('root')
+  const notices = registerAppNotice(app)
   app.mount(container)
   let mounted = true
   const unmount = () => { if (mounted) { app.unmount(); mounted = false } }
@@ -90,7 +92,7 @@ function mountControl(t, overrides = {}) {
   const find = predicate => all().find(predicate)
   const byClass = name => find(item => String(item.props.class || '').split(' ').includes(name))
   const input = () => find(item => item.props['aria-label'] === '音量百分比')
-  return { state, changes, document, window, body, container, node, find, byClass, input, all,
+  return { state, changes, document, window, body, container, node, find, byClass, input, all, notices,
     get control() { return control }, get toggles() { return toggles }, unmount,
     menuManager: sandbox.contextMenuManager }
 }
@@ -149,13 +151,18 @@ test('both boundaries commit while blank, nonfinite, fractional and out-of-range
     await vue.nextTick()
     assert.deepEqual(fixture.changes, [], String(value))
     assert.equal(fixture.input().props['aria-invalid'], true)
-    assert.equal(fixture.byClass('volume-error').props.role, 'alert')
+    const notification = fixture.find(item => item.type === 'article' && item.props.role === 'alert')
+    assert.ok(notification, 'invalid drafts use the shared notification surface')
+    assert.equal(fixture.notices.entries.length, 1)
+    assert.equal(fixture.notices.entries[0].title, '音量输入')
+    assert.equal(fixture.find(item => item.type === 'span' && item.text === '请输入 0–100 之间的整数')?.text, '请输入 0–100 之间的整数')
   }
   for (const value of [0, 100]) {
     await typeVolume(fixture, value)
     dispatch(fixture.byClass('volume-editor'), 'submit')
     await vue.nextTick()
     assert.equal(fixture.state.volume, value)
+    assert.equal(fixture.notices.entries.length, 0, 'valid input clears its notification')
     assert.equal(fixture.byClass('volume-button').props['aria-pressed'], value === 0)
     if (value === 0) await openEditor(fixture)
   }

@@ -4,6 +4,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const vm = require('node:vm')
 const vue = require('vue')
+const { parse, compileTemplate } = require('@vue/compiler-sfc')
 
 function deferred() {
   let resolve
@@ -44,6 +45,7 @@ function loadFavorites({ props = {}, api = {}, cache = {}, reactiveView = false,
     ArtistLinks: {},
     getSongArtists: metadata.getSongArtists,
     filterSongs: metadata.filterSongs,
+    getSongSearchKeyword: metadata.getSongSearchKeyword,
     nextplayIcon: 'nextplay.svg',
     contextMenuManager: menuManager,
     logger,
@@ -93,7 +95,7 @@ function loadFavorites({ props = {}, api = {}, cache = {}, reactiveView = false,
     : vue.watch(() => view.musicLibrary.state.playlistRevisions,
       options.watch['musicLibrary.state.playlistRevisions'].handler.bind(view), { deep: true })
   return {
-    view, storage, writes, emitted, calls, timers, menuManager,
+    view, storage, writes, emitted, calls, timers, menuManager, options,
     activate() { options.activated.call(view); return view.loadPromise || Promise.resolve() },
     deactivate() { options.deactivated.call(view) },
     unmount() { stopRevisionWatch(); options.beforeUnmount.call(view) },
@@ -105,6 +107,168 @@ function loadFavorites({ props = {}, api = {}, cache = {}, reactiveView = false,
     }
   }
 }
+
+/** Render production controls and event methods while isolating layout and remote data loading. */
+function mountFavoriteActions(t, ordinaryPlaylist) {
+  const songs = Array.from({ length: 3 }, (_, index) => ({ hash: `fixture-${index}`, name: `Fixture song ${index}`,
+    index: index + 1, fileid: index + 10 }))
+  const refreshes = []
+  const library = { canWrite: true, state: { loaded: true, favorites: songs, favoriteCandidates: [],
+    resource: { id: 23, listId: 23 }, playlistRevisions: {} },
+    isFavorite: () => true,
+    async refreshFavorites(options) { refreshes.push(options) }
+  }
+  const f = loadFavorites({ api: { getAllPlaylistTracks: async () => songs } })
+  const filename = path.join(__dirname, '../src/views/FavoriteView.vue')
+  const { descriptor } = parse(fs.readFileSync(filename, 'utf8'), { filename })
+  const template = compileTemplate({ source: descriptor.template.content, filename, id: 'favorite-actions',
+    compilerOptions: { mode: 'function', hoistStatic: false } })
+  assert.deepEqual(template.errors, [])
+  const leaf = { render: () => vue.h('span') }
+  const contextMenu = { props: ['visible', 'items'], render() {
+    return this.visible ? vue.h('div', (this.items || []).filter(item => item.label).map(item =>
+      vue.h('button', { onClick: item.action }, item.label))) : null
+  } }
+  const windowedList = { props: ['items'], render() { return vue.h('div', [this.$slots.header?.(),
+    ...(this.items || []).flatMap((item, index) => this.$slots.default?.({ item, index }) || [])]) } }
+  const render = new Function('Vue', template.code)({ ...vue, vModelText: {}, vModelCheckbox: {},
+    Transition: { setup(_props, { slots }) { return () => slots.default?.()[0] } } })
+  const node = (type, text = '') => ({ type, text, props: {}, children: [], parent: null, focus() {} })
+  const renderer = vue.createRenderer({
+    createElement: type => node(type), createText: text => node('text', text), createComment: text => node('comment', text),
+    setText: (item, text) => { item.text = text },
+    setElementText: (item, text) => { item.text = text; item.children = [] },
+    patchProp: (item, key, _old, value) => { item.props[key] = value },
+    insert(item, parent, anchor) {
+      if (item.parent) item.parent.children.splice(item.parent.children.indexOf(item), 1)
+      item.parent = parent
+      const index = anchor ? parent.children.indexOf(anchor) : -1
+      parent.children.splice(index < 0 ? parent.children.length : index, 0, item)
+    },
+    remove(item) { if (item.parent) item.parent.children.splice(item.parent.children.indexOf(item), 1); item.parent = null },
+    parentNode: item => item.parent,
+    nextSibling: item => item.parent?.children[item.parent.children.indexOf(item) + 1] || null
+  })
+  const emitted = []
+  const Page = {
+    components: { ...f.options.components, ContextMenu: contextMenu, WindowedList: windowedList,
+      ArtworkCover: leaf, SongBadges: leaf, ArtistLinks: leaf, LibraryActions: leaf, PlaylistOverview: leaf },
+    directives: f.options.directives, methods: f.options.methods, computed: f.options.computed, emits: f.options.emits,
+    watch: Object.fromEntries(['favoriteList', 'searchQuery', 'sortOrder'].map(key => [key, f.options.watch[key]])),
+    data: () => ({ ...f.options.data(), favoriteList: songs, currentSong: null, musicLibrary: library,
+      playlistId: ordinaryPlaylist ? 23 : null, playlistName: 'Fixture playlist', userPlaylists: [], playlistsLoaded: true,
+      playlistResource: ordinaryPlaylist ? { id: 23, listId: 23, source: 'owned', isOwned: true } : null,
+      settings: { playback: {} } }),
+    render
+  }
+  const listeners = Object.fromEntries(f.options.emits.map(event => [
+    `on${event[0].toUpperCase()}${event.slice(1).replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase())}`,
+    (...args) => emitted.push([event, ...args])
+  ]))
+  const root = node('root')
+  const componentRef = vue.ref(null)
+  const app = renderer.createApp({ render: () => vue.h(Page, { ...listeners, ref: componentRef }) })
+  app.component('AppNotice', leaf)
+  app.mount(root)
+  t.after(() => app.unmount())
+  const allNodes = item => [item, ...item.children.flatMap(allNodes)]
+  const nodeText = item => item.type === 'comment' ? '' : item.text + item.children.map(nodeText).join('')
+  return { ...f, root, emitted, refreshes, instance: componentRef.value,
+    buttons: () => allNodes(root).filter(item => item.type === 'button'),
+    checkboxes: () => allNodes(root).filter(item => item.type === 'input' && item.props.type === 'checkbox'), nodeText }
+}
+
+for (const ordinaryPlaylist of [false, true]) test(`collection actions omit bulk shortcuts while keeping playback, refresh and chosen downloads (playlist: ${ordinaryPlaylist})`, async t => {
+  const f = mountFavoriteActions(t, ordinaryPlaylist)
+  const button = label => f.buttons().find(item => f.nodeText(item).trim() === label)
+  assert.equal(button('下载歌单'), undefined)
+  assert.equal(button('清空收藏'), undefined)
+  assert.equal(f.instance.clearAll, undefined)
+  assert.deepEqual(f.emitted, [], 'rendering a collection must not trigger downloads or mutations')
+
+  button('播放全部').props.onClick()
+  assert.deepEqual(f.emitted.filter(event => event[0] === 'play-all').map(event => event[1].length), [3])
+  await button('刷新歌单').props.onClick()
+  await vue.nextTick()
+  assert.equal(ordinaryPlaylist ? f.calls.tracks.length : f.refreshes.length, 1)
+  if (!ordinaryPlaylist) assert.equal(f.refreshes[0].retryDirectory, true)
+
+  assert.equal(button('下载所选'), undefined, 'no download shortcut is shown before explicit selection')
+  assert.equal(f.checkboxes().length, 0, 'ordinary browsing shows song indices without checkboxes')
+  button('批量操作').props.onClick()
+  await vue.nextTick()
+  assert.equal(f.checkboxes().length, 4, 'explicit batch mode shows select-all and each visible song')
+  f.checkboxes()[1].props.onChange({ target: { checked: true } })
+  f.checkboxes()[3].props.onChange({ target: { checked: true } })
+  await vue.nextTick()
+  button('下载所选').props.onClick()
+  const selected = f.emitted.find(event => event[0] === 'download')[1]
+  assert.equal(selected.length, 2)
+  assert.deepEqual(Array.from(selected, song => song.hash), ['fixture-0', 'fixture-2'])
+
+  f.instance.currentContextSong = f.instance.favoriteList[1]
+  f.instance.contextMenuVisible = true
+  await vue.nextTick()
+  const singleDownload = button('下载歌曲') || button('下载')
+  assert.ok(singleDownload, 'the existing per-song context menu still offers downloading')
+  singleDownload.props.onClick()
+  const downloads = f.emitted.filter(event => event[0] === 'download')
+  assert.equal(downloads.length, 2)
+  assert.equal(downloads[1][1].hash, 'fixture-1')
+  assert.equal(Array.isArray(downloads[1][1]), false)
+  assert.equal(button('下载歌单'), undefined)
+  assert.equal(button('清空收藏'), undefined)
+  button('完成').props.onClick()
+  await vue.nextTick()
+  assert.equal(f.checkboxes().length, 0)
+  assert.equal(f.instance.selectedSongs.length, 0)
+})
+
+test('favorite batch selections cannot leak across searches, reordered results or replaced rows', async t => {
+  const f = mountFavoriteActions(t, false)
+  const view = f.instance
+  const selectFirst = async () => {
+    view.startSelection()
+    view.toggleSelected(view.filteredFavoriteList[0], true)
+    await vue.nextTick()
+    assert.equal(view.selectedSongs.length, 1)
+  }
+  await selectFirst()
+  const staleCheckbox = f.checkboxes()[1]
+  view.searchQuery = 'Fixture song 2'
+  assert.equal(view.selectionMode, false)
+  staleCheckbox.props.onChange({ target: { checked: true } })
+  assert.equal(view.selectedSongs.length, 0, 'an old row event cannot reselect a hidden result')
+  await vue.nextTick()
+  assert.equal(f.checkboxes().length, 0)
+
+  view.startSelection()
+  view.selectAll(true)
+  assert.deepEqual(Array.from(view.selectedSongs, song => song.hash), ['fixture-2'])
+  view.sortOrder = 'desc'
+  assert.equal(view.selectionMode, false)
+  await selectFirst()
+  view.favoriteList = view.favoriteList.map(song => ({ ...song, hash: `${song.hash}-new` }))
+  assert.equal(view.selectedSongs.length, 0)
+  assert.equal(view.selectionMode, false)
+})
+
+test('favorite song labels remove filename extensions while preserving meaningful title text and playback identity', async t => {
+  const f = mountFavoriteActions(t, false)
+  const songs = [
+    { hash: 'file-song', index: 1, name: 'Artist - Track (Live).MP3', singername: 'Artist', fileid: 11 },
+    { hash: 'title-song', index: 2, name: 'Wrong filename.mp3', songname: 'Track - Part Two', singername: 'Artist', fileid: 12 }
+  ]
+  f.instance.favoriteList = songs
+  await vue.nextTick()
+  const titles = f.buttons().filter(item => item.props.class === 'song-name')
+  assert.deepEqual(titles.map(item => f.nodeText(item).trim()), ['Track (Live)', 'Track - Part Two'])
+  titles[0].props.onClick({ stopPropagation() {} })
+  const searched = f.emitted.find(event => event[0] === 'search')[1]
+  assert.equal(searched.hash, 'file-song')
+  assert.equal(searched.name, 'Artist - Track (Live).MP3')
+  assert.equal(searched.fileid, 11)
+})
 
 function revisionFixture(t, request, desktopCache = false) {
   const library = vue.reactive({ state: { playlistRevisions: {} } })

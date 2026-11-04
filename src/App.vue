@@ -49,6 +49,13 @@ const ThemeStudio = createLazyView('外观编辑器', () => import('./components
 
 const themeStudioOpen = ref(false)
 const settingsViewRef = ref(null)
+const requestedSettingsSection = ref('')
+watch(settingsViewRef, view => {
+  if (view && requestedSettingsSection.value) {
+    view.scrollToSection(requestedSettingsSection.value)
+    requestedSettingsSection.value = ''
+  }
+})
 const preparingInstall = ref(false)
 let installPreparationRequestId = null
 let unsubscribeInstallPreparation = null
@@ -211,10 +218,27 @@ const selectedPlaylistData = ref(null)
 const userPlaylistsLoaded = ref(false)
 const userPlaylistsError = ref('')
 const libraryNotice = ref('')
+const libraryNoticeType = ref('info')
+const libraryNoticeRevision = ref(0)
+
+/** 同一操作重复完成时也重新提醒，具体气泡由全局 Fue 通知承载。 */
+function showLibraryNotice(message, type = 'info') {
+  libraryNotice.value = message
+  libraryNoticeType.value = type
+  libraryNoticeRevision.value++
+}
+
+const libraryNoticeActions = computed(() => {
+  const actions = []
+  if (libraryNotice.value.includes('收藏')) actions.push({ label: '打开我喜欢', run: () => { handleNavigate('favorite'); libraryNotice.value = '' } })
+  if (libraryNotice.value.includes('下载')) actions.push({ label: '我的音乐', run: () => { handleNavigate('my-music'); libraryNotice.value = '' } })
+  return actions
+})
 const playlistDialog = ref(null)
 const detailsSong = ref(null)
 const detailsResource = ref(null)
 const detailsVisible = ref(false)
+const detailsPanelMounted = ref(false)
 const playlistCacheState = ref(null)
 let playlistCacheTask = Promise.resolve(null)
 let unsubscribePlaylistCache = null
@@ -238,8 +262,13 @@ const removedPlaylistIds = new Set()
 /** 账户改变后释放私有页面缓存；仅打开登录页面不影响已有页面。 */
 const resetPageSession = () => {
   musicLibrary.reset()
+  libraryNotice.value = ''
   playlistDialog.value = null
   detailsVisible.value = false
+  detailsPanelMounted.value = false
+  detailsSong.value = null
+  detailsResource.value = null
+  playlistIntentVersion++
   navigationVersion++
   navigationPending.value = false
   navigationHistory.value = []
@@ -342,6 +371,7 @@ const restorePageScroll = (element) => {
 const currentSong = ref(null)
 const playlist = ref([])
 const playlistIndex = ref(0)
+let playlistIntentVersion = 0
 const hasPlayer = computed(() => Boolean(currentSong.value && typeof currentSong.value === 'object' &&
   Array.isArray(playlist.value) && playlist.value.length > 0))
 
@@ -397,7 +427,7 @@ async function handleLibraryFavorite(song) {
   libraryNotice.value = ''
   try { await musicLibrary.toggleFavorite(song) } catch (error) {
     if (error.code === 'STALE_ACCOUNT') return
-    libraryNotice.value = error.message || '收藏操作失败，请重试'
+    showLibraryNotice(error.message || '收藏操作失败，请重试', 'error')
   }
 }
 
@@ -564,6 +594,7 @@ function restoreNavigationPage(page) {
   currentView.value = page.view
   showSettings.value = page.view === 'settings'
   showLogin.value = false
+  detailsVisible.value = false
 }
 
 /** 设置页离场须先落盘；失败保留草稿，重复操作及账号变更后的迟到结果不提交。 */
@@ -618,6 +649,16 @@ const handleNavigate = (view, data) => {
   return navigateToPage({ view, data: cloneDeep(data || null) })
 }
 
+/** The player shortcut reuses normal navigation and opens the requested settings section after lazy loading. */
+async function handleOpenAudioEffects() {
+  requestedSettingsSection.value = 'audioEffects'
+  if (!await navigateToPage({ view: 'settings', data: null })) { requestedSettingsSection.value = ''; return }
+  if (settingsViewRef.value) {
+    settingsViewRef.value.scrollToSection('audioEffects')
+    requestedSettingsSection.value = ''
+  }
+}
+
 // 处理创建歌单
 const handleCreatePlaylist = () => {
   if (!userLoggedIn.value) return handleShowLogin()
@@ -641,7 +682,7 @@ async function handlePlaylistDirectoryChanged(change) {
   }
   if (change?.removed?.id != null) {
     try { const state = await callPlaylistCache('removePlaylist', change.removed.id); if (session === pageSessionVersion.value) applyPlaylistCacheState(state) }
-    catch (error) { if (session === pageSessionVersion.value) libraryNotice.value = '云端歌单已移除，但离线入口清理失败，请联网刷新后重试'; logger.warn('App', '清理已移除歌单缓存失败', { name: error?.name }) }
+    catch (error) { if (session === pageSessionVersion.value) showLibraryNotice('云端歌单已移除，但离线入口清理失败，请联网刷新后重试', 'warning'); logger.warn('App', '清理已移除歌单缓存失败', { name: error?.name }) }
   }
   if (session !== pageSessionVersion.value) return
   await fetchUserPlaylists()
@@ -656,6 +697,7 @@ function handleSongDetails(song, resource = null) {
   if (musicPlayerRef.value) musicPlayerRef.value.showPlaylist = false
   detailsSong.value = song
   detailsResource.value = resource
+  detailsPanelMounted.value = true
   detailsVisible.value = true
 }
 async function handleShareSong(song) {
@@ -663,26 +705,27 @@ async function handleShareSong(song) {
     const result = buildSongShareText(song)
     if (window.electronAPI?.writeClipboardText) await window.electronAPI.writeClipboardText(result.text)
     else await navigator.clipboard.writeText(result.text)
-    libraryNotice.value = result.hasLink ? '已复制歌曲信息与公开分享链接' : '已复制歌曲信息；来源未提供公开分享链接'
+    showLibraryNotice(result.hasLink ? '已复制歌曲信息与公开分享链接' : '已复制歌曲信息；来源未提供公开分享链接', 'success')
   } catch (error) {
-    libraryNotice.value = '复制失败，请重试'
+    showLibraryNotice('复制失败，请重试', 'error')
     logger.warn('App', '复制歌曲分享信息失败', { name: error?.name })
   }
 }
 async function handleDownloadSongs(input) {
   const songs = (Array.isArray(input) ? input : [input]).filter(Boolean)
   if (!songs.length) return
-  if (!window.electronAPI?.downloads) { libraryNotice.value = '歌曲下载需要桌面客户端'; return }
+  if (!window.electronAPI?.downloads) { showLibraryNotice('歌曲下载需要桌面客户端', 'warning'); return }
   if (songs.length > 1 && !confirm(`将 ${songs.length} 首歌曲加入下载任务？下载将使用当前保存的目录与音质偏好。`)) return
   try {
     await window.electronAPI.downloads.enqueue({ songs: cloneDeep(songs),
       playlistName: currentView.value === 'playlist' ? selectedPlaylistData.value?.name : '' })
-    libraryNotice.value = `已加入 ${songs.length} 首歌曲的下载任务，可在“我的音乐 → 下载”查看`
-  } catch (error) { libraryNotice.value = error.message || '创建下载任务失败，请重试' }
+    showLibraryNotice(`已加入 ${songs.length} 首歌曲的下载任务，可在“我的音乐 → 下载”查看`, 'success')
+  } catch (error) { showLibraryNotice(error.message || '创建下载任务失败，请重试', 'error') }
 }
 
 // 处理播放歌曲
 const handlePlay = (song) => {
+  playlistIntentVersion++
   restoredPlaybackState.value = null
   logger.trace('App', '🎵 [App.vue] handlePlay 调用:', song.name || song.filename)
   logger.trace('App', '🎵 [App.vue] 歌曲 hash:', song.hash)
@@ -712,6 +755,7 @@ const handlePlayAll = async (songs) => {
 
   try {
     // 一次发布完整队列，避免 nextTick 微任务分批反复渲染和覆盖后续选歌。
+    playlistIntentVersion++
     restoredPlaybackState.value = null
     playlist.value = [...songs]
     playlistIndex.value = 0
@@ -726,13 +770,26 @@ const handlePlayAll = async (songs) => {
   }
 }
 
-// 处理下一首播放
-const handlePlayNext = (song) => {
+/** 空队列直接播放首项；挂载期间先保留入队意图，现有播放器沿原优先队列接管。 */
+const handlePlayNext = async (song) => {
+  if (!song?.hash || preparingInstall.value || isAppUnmounting) return false
   logger.trace('App', '下一首播放:', song)
-  // 通过ref访问MusicPlayer组件的方法
+  if (!hasPlayer.value) {
+    handlePlay(song)
+    return true
+  }
   if (musicPlayerRef.value) {
     musicPlayerRef.value.addToPlayNextQueue(song)
+    return true
   }
+  if (!playlist.value.some(item => librarySongKey(item) === librarySongKey(song))) playlist.value = [...playlist.value, song]
+  const intent = playlistIntentVersion
+  const session = pageSessionVersion.value
+  await nextTick()
+  if (session !== pageSessionVersion.value || intent !== playlistIntentVersion || !hasPlayer.value ||
+      !playlist.value.some(item => librarySongKey(item) === librarySongKey(song))) return false
+  musicPlayerRef.value?.addToPlayNextQueue(song)
+  return true
 }
 
 // 处理从播放列表移除
@@ -765,6 +822,7 @@ const handleSearchRequest = (keywords) => {
 
 // 处理清空播放列表
 const handleClearPlaylist = () => {
+  playlistIntentVersion++
   logger.trace('App', '清空播放列表')
   restoredPlaybackState.value = null
 
@@ -948,7 +1006,7 @@ const handleFavoritesChanged = () => {
 
 // 快捷键处理
 const handleKeyDown = (event) => {
-  if (preparingInstall.value) return
+  if (event.defaultPrevented || preparingInstall.value) return
   // 如果正在输入,忽略快捷键
   const target = event.target
   if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
@@ -1521,14 +1579,9 @@ provide('songActions', songActionEvents)
 </script>
 
 <template>
+  <AppNotice :message="preparingInstall ? '保存完成后将关闭 BetterKuGou，请稍候。' : ''" title="正在保存，准备更新" type="info" :duration="0" :closable="false" />
   <Teleport to="body">
-    <Transition name="ui-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><div v-if="preparingInstall" class="install-preparation" role="status" aria-live="polite">
-      <div class="install-preparation-message">
-        <span class="loading-spinner" aria-hidden="true"></span>
-        <p>正在保存，准备更新</p>
-        <span>保存完成后将关闭 BetterKuGou，请稍候。</span>
-      </div>
-    </div></Transition>
+    <Transition name="ui-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><div v-if="preparingInstall" class="install-preparation" aria-hidden="true"></div></Transition>
   </Teleport>
   <div class="app-container" :class="{ 'has-player': hasPlayer, 'has-floating-player': hasPlayer && settings.custom?.playerStyle === 'netease' }">
     <TitleBar
@@ -1668,6 +1721,7 @@ provide('songActions', songActionEvents)
         @song-changed="handleSongChanged"
         @playback-state-changed="queueSessionPersist({ immediate: true })"
         @toggle-playlist="handleTogglePlaylist"
+        @open-audio-effects="handleOpenAudioEffects"
         @toggle-favorite="handleToggleFavorite"
         @clear-playlist="handleClearPlaylist"
         @playlist-updated="handlePlaylistUpdated"
@@ -1679,17 +1733,11 @@ provide('songActions', songActionEvents)
   </div>
   <ThemeStudio v-if="themeStudioOpen" @close="themeStudioOpen = false" />
   <PlaylistDialog v-if="playlistDialog" v-bind="playlistDialog" :playlists="userPlaylists" @close="playlistDialog = null" @changed="handlePlaylistDirectoryChanged" />
-  <SongDetailsPanel v-if="detailsVisible" :visible="detailsVisible" :song="detailsSong" :resource="detailsResource" :current-song="currentSong"
+  <SongDetailsPanel v-if="detailsPanelMounted" :visible="detailsVisible" :song="detailsSong" :resource="detailsResource" :current-song="currentSong"
     v-on="songActionEvents" @close="detailsVisible = false" @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll" @play-next="handlePlayNext" @search="handleSearch" />
   <ThemeRecovery :prepare-restore="prepareThemeRecovery" />
-  <Teleport to="body">
-    <Transition name="ui-pop"><div v-if="libraryNotice" class="library-notice" role="alert">
-      <span>{{ libraryNotice }}</span>
-      <button v-if="libraryNotice.includes('收藏')" type="button" @click="handleNavigate('favorite'); libraryNotice = ''">打开我喜欢</button>
-      <button v-if="libraryNotice.includes('下载')" type="button" @click="handleNavigate('my-music'); libraryNotice = ''">我的音乐</button>
-      <button type="button" aria-label="关闭提示" @click="libraryNotice = ''">×</button>
-    </div></Transition>
-  </Teleport>
+  <AppNotice :message="libraryNotice" :type="libraryNoticeType" :revision="libraryNoticeRevision"
+    :actions="libraryNoticeActions" @close="libraryNotice = ''" />
 </template>
 
 <style src="./App.css" scoped></style>

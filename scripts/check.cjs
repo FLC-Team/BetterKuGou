@@ -29,6 +29,11 @@ function checkJavaScript(file, source, startLine = 1) {
       && node.callee.object?.name === 'console') {
       report(file, '业务日志应通过现有 logger 输出，以保持级别过滤和脱敏', node.loc?.start.line)
     }
+    if (file.startsWith(path.join(root, 'src') + path.sep) && node.type === 'CallExpression'
+      && (node.callee?.name === 'alert' || (node.callee?.type === 'MemberExpression'
+        && ['window', 'globalThis'].includes(node.callee.object?.name) && node.callee.property?.name === 'alert'))) {
+      report(file, '消息提醒必须使用 AppNotice / Fue 通知，禁止原生 alert', node.loc?.start.line)
+    }
     if (node.type === 'ObjectExpression') {
       const keys = new Map()
       for (const property of node.properties) {
@@ -63,6 +68,9 @@ function checkFile(file) {
     if (file.endsWith('.vue')) {
       const { descriptor, errors: parseErrors } = parse(source, { filename: file })
       for (const error of parseErrors) report(file, String(error))
+      if (file.startsWith(path.join(root, 'src') + path.sep) && /\brole\s*=\s*["']alert["']/.test(descriptor.template?.content || '')) {
+        report(file, '消息提醒必须交给 AppNotice / Fue 通知，禁止自制 role="alert" 提示块')
+      }
       for (const script of [descriptor.script, descriptor.scriptSetup].filter(Boolean)) {
         if (script.src) checkImport(file, script.src, script.loc.start.line)
         else checkJavaScript(file, script.content, script.loc.start.line)

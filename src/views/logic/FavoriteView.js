@@ -12,7 +12,7 @@ import ContextMenu from '../../components/common/ContextMenu.vue'
 import WindowedList from '../../components/common/WindowedList.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import { useSettingsStore } from '../../stores/settingsStore.js'
-import { filterSongs } from '../../utils/songMetadata.js'
+import { filterSongs, getSongSearchKeyword } from '../../utils/songMetadata.js'
 import { callPlaylistCache } from '../../utils/playlistCache.js'
 import { cloneDeep } from '../../utils/objectUtils.js'
 
@@ -68,6 +68,7 @@ export default {
       hasOfflineSnapshot: false,
       cacheWriteFailed: false,
       favoriteList: [],
+      selectionMode: false,
       selectedIndices: [],
       searchQuery: '',
       favoritePlaylistId: null, // 收藏歌单的 ID
@@ -114,7 +115,7 @@ export default {
     filteredFavoriteList() {
       return filterSongs(this.sortedFavoriteList, this.searchQuery)
     },
-    selectedSongs() { return this.favoriteList.filter(song => this.selectedIndices.includes(song.index)) },
+    selectedSongs() { return this.selectionMode ? this.filteredFavoriteList.filter(song => this.selectedIndices.includes(song.index)) : [] },
     hasSearchQuery() { return this.searchQuery.trim().length > 0 },
     offlineCacheAvailable() {
       return typeof window !== 'undefined' && !!window.electronAPI?.playlistCache && !!localStorage.getItem('kugou_userid')
@@ -193,14 +194,16 @@ export default {
     }
   },
   watch: {
-    favoriteList() { this.selectedIndices = [] },
+    favoriteList: { flush: 'sync', handler() { this.finishSelection() } },
+    searchQuery: { flush: 'sync', handler() { this.finishSelection() } },
+    sortOrder: { flush: 'sync', handler() { this.finishSelection() } },
     'musicLibrary.state.revision'() {
       if (!this.isPlaylistView && this.musicLibrary?.state.loaded) this.applyCloudFavorites()
     },
     playlistRevision() {
       if (this.isActive && this.playlistNeedsRefresh) this.loadFavorites(true)
     },
-    playlistId() { this.loadFavorites() },
+    playlistId() { this.finishSelection(); this.loadFavorites() },
     playlistsLoaded(ready) {
       if (ready && !this.loaded) this.loadFavorites()
     },
@@ -221,6 +224,7 @@ export default {
   deactivated() {
     setListMotionActive(this.$refs?.songList?.$el, false)
     this.isActive = false
+    this.finishSelection()
     this.closeContextMenu()
   },
   beforeUnmount() {
@@ -529,9 +533,6 @@ export default {
       }
     },
 
-    canEditFavorites() {
-      return !!this.musicLibrary?.canWrite && !this.isDisposed && !!this.requestScope && this.hasCurrentScope(this.requestScope)
-    },
     applyCloudFavorites() {
       if (this.isDisposed || this.isPlaylistView || !this.musicLibrary?.state.loaded) return
       this.favoriteList = this.musicLibrary.state.favorites.map((song, index) => ({ ...song, index: index + 1 }))
@@ -544,7 +545,17 @@ export default {
       try { await this.musicLibrary.bindFavorites(resource); this.applyCloudFavorites() }
       catch (error) { this.errorMessage = error.message || '绑定失败，请重试' }
     },
+    startSelection() { this.selectedIndices = []; this.selectionMode = true },
+    finishSelection(restoreFocus = false) {
+      this.selectedIndices = []
+      this.selectionMode = false
+      if (restoreFocus) this.$nextTick(() => this.$refs?.selectionToggle?.focus())
+    },
+    selectAll(checked) {
+      if (this.selectionMode) this.selectedIndices = checked ? this.filteredFavoriteList.map(song => song.index) : []
+    },
     toggleSelected(song, checked) {
+      if (!this.selectionMode || !this.filteredFavoriteList.includes(song)) return
       this.selectedIndices = checked ? [...new Set([...this.selectedIndices, song.index])] : this.selectedIndices.filter(index => index !== song.index)
     },
     async removeSelectedSongs(songs = this.selectedSongs) {
@@ -562,16 +573,7 @@ export default {
       return `${mins}:${secs.toString().padStart(2, '0')}`
     },
     
-    // 提取歌曲名称（去掉"歌手 - "前缀）
-    getSongName(fullName) {
-      if (!fullName) return '未知歌曲'
-      // 如果包含 " - "，取后面的部分作为歌名
-      const parts = fullName.split(' - ')
-      if (parts.length > 1) {
-        return parts.slice(1).join(' - ') // 处理歌名中也可能包含 " - " 的情况
-      }
-      return fullName
-    },
+    getSongName(song) { return getSongSearchKeyword(song) || '未知歌曲' },
     
     // 播放歌曲
     playSong(song) {
@@ -688,13 +690,6 @@ export default {
         logger.trace('FavoriteView', '播放全部')
         this.$emit('play-all', this.favoriteList)
       }
-    },
-    
-    // 清空列表
-    async clearAll() {
-      if (!this.canEditFavorites() || !confirm(`确定从酷狗账号移除全部 ${this.favoriteList.length} 首收藏吗？此操作会同步到其他设备。`)) return
-      try { await this.musicLibrary.clearFavorites() }
-      catch (error) { this.errorMessage = error.message || '清空失败，请重试' }
     },
     
     // 移除收藏

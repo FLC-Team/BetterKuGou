@@ -114,7 +114,7 @@ function loadSettingsView(store, applyTheme = () => {}, options = {}) {
     'localSettings', 'syncFromStore', 'persistEditableSettings', 'flushEditableSettings', 'prepareThemeRecovery',
     'handleExportSettings', 'handleImportSettings', 'settingsSaveError', 'actionMessage', 'saveState',
     'activeSection', 'scrollToSection', 'isSectionVisible', 'searchQuery', 'searchResults', 'sectionRefs',
-    'settingsMain', 'startEditingShortcut', 'editingShortcut', 'lyricSettingsRef', 'openSearchResult'
+    'settingsMain', 'startEditingShortcut', 'editingShortcut', 'lyricSettingsRef', 'openSearchResult', 'playbackOptions'
   ]
   const view = scope.run(() => vm.runInContext(`${script}\n;({ ${names.join(', ')} })`, sandbox))
   return {
@@ -302,11 +302,11 @@ function loadApp(electronAPI = {}, overrides = {}) {
     handleInstallPreparation, preparingInstall, settingsViewRef, sameInstallSession,
     collectSessionSnapshot, queueSessionPersist, restoredPlaybackState, handleSongChanged,
     handleSearch, handleSearchRequest, searchQuery, searchDraft,
-    handleGoBack, handleBackToMain, handleShowSettings, handleCloseSettings,
+    handleGoBack, handleBackToMain, handleShowSettings, handleCloseSettings, handleOpenAudioEffects, requestedSettingsSection,
     navigationHistory, navigationPending, canGoBack, artistData, albumData, rankData,
     selectedPlaylistData, getPageKey, rememberPageScroll, restorePageScroll, setInstallPreparation,
     playlistCacheState, musicLibrary, cacheTask: () => playlistCacheTask,
-    handlePlay, handleShareSong, libraryNotice, handleSongDetails, detailsVisible, detailsSong,
+    handlePlay, handlePlayNext, handleShareSong, libraryNotice, handleSongDetails, detailsVisible, detailsSong, detailsPanelMounted,
     handlePlaylistDirectoryChanged
   })`, sandbox))
   return {
@@ -321,6 +321,123 @@ function loadApp(electronAPI = {}, overrides = {}) {
     }
   }
 }
+
+test('detail navigation closes the overlay only after the requested navigation commits', async t => {
+  const app = loadApp(); t.after(() => app.dispose())
+  const confirmed = { hash: 'confirmed', name: 'Confirmed' }
+  app.handlePlay(confirmed)
+  app.handleSongDetails({ hash: 'version', name: 'Version' })
+  assert.equal(app.detailsPanelMounted.value, true)
+  await app.handleSearchRequest('Version')
+  assert.equal(app.currentView.value, 'search')
+  assert.equal(app.detailsVisible.value, false)
+  assert.equal(app.detailsPanelMounted.value, true, 'the component survives to finish its own leave transition')
+  assert.equal(app.currentSong.value.hash, confirmed.hash)
+  app.handleSongDetails(confirmed)
+  await app.handleNavigate('artist', { id: 7, name: 'Artist' })
+  assert.equal(app.detailsVisible.value, false)
+  app.currentView.value = 'settings'
+  app.settingsViewRef.value = { flushEditableSettings: async () => false }
+  app.handleSongDetails(confirmed)
+  assert.equal(await app.handleNavigate('album', { id: 8, name: 'Album' }), false)
+  assert.equal(app.detailsVisible.value, true, 'a failed save cannot discard the current overlay')
+  app.handleAuthExpired()
+  assert.equal(app.detailsPanelMounted.value, false, 'account cleanup also releases hidden private panel state')
+  assert.equal(app.detailsSong.value, null)
+})
+
+test('play-next starts an empty queue and preserves a second selection during player mounting', async t => {
+  const app = loadApp(); t.after(() => app.dispose())
+  const first = { hash: 'first', name: 'First' }, second = { hash: 'second', name: 'Second' }
+  assert.equal(await app.handlePlayNext(first), true)
+  assert.equal(app.currentSong.value.hash, 'first')
+  assert.deepEqual([...app.playlist.value.map(song => song.hash)], ['first'])
+  const queued = []
+  const adding = app.handlePlayNext(second)
+  app.musicPlayerRef.value = { addToPlayNextQueue: song => queued.push(song.hash) }
+  assert.equal(await adding, true)
+  assert.deepEqual(queued, ['second'])
+  assert.deepEqual([...app.playlist.value.map(song => song.hash)], ['first', 'second'])
+  assert.equal(app.currentSong.value.hash, 'first')
+  assert.equal(await app.handlePlayNext({ name: 'Invalid' }), false)
+})
+
+test('clearing a just-created queue cancels a late play-next mount callback', async t => {
+  const app = loadApp(); t.after(() => app.dispose())
+  await app.handlePlayNext({ hash: 'first', name: 'First' })
+  const adding = app.handlePlayNext({ hash: 'second', name: 'Second' })
+  app.handleClearPlaylist()
+  const calls = []
+  app.musicPlayerRef.value = { addToPlayNextQueue: song => calls.push(song.hash) }
+  assert.equal(await adding, false)
+  assert.equal(app.playlist.value.length, 0)
+  assert.deepEqual(calls, [])
+})
+
+test('three synchronous play-next choices preserve every mounting priority and replacement cancels old choices', async t => {
+  const app = loadApp(); t.after(() => app.dispose())
+  const songs = ['first', 'second', 'third'].map(hash => ({ hash, name: hash }))
+  const first = app.handlePlayNext(songs[0])
+  const second = app.handlePlayNext(songs[1])
+  const third = app.handlePlayNext(songs[2])
+  const calls = []
+  app.musicPlayerRef.value = { addToPlayNextQueue: song => calls.push(song.hash) }
+  assert.deepEqual(await Promise.all([first, second, third]), [true, true, true])
+  assert.deepEqual(calls, ['second', 'third'])
+  assert.deepEqual([...app.playlist.value.map(song => song.hash)], ['first', 'second', 'third'])
+  app.musicPlayerRef.value = null
+  const old = app.handlePlayNext({ hash: 'obsolete', name: 'Obsolete' })
+  await app.handlePlayAll(songs)
+  app.musicPlayerRef.value = { addToPlayNextQueue: song => calls.push(song.hash) }
+  assert.equal(await old, false)
+  assert.deepEqual(calls, ['second', 'third'])
+})
+
+test('keyboard events already consumed by menus cannot trigger playback shortcuts', async t => {
+  const app = loadApp({}, { settings: { shortcuts: { keys: { playPause: 'Space' } } } }); t.after(() => app.dispose())
+  let toggles = 0
+  app.musicPlayerRef.value = { togglePlay() { toggles++ } }
+  const event = { key: ' ', defaultPrevented: true, target: { tagName: 'DIV', closest: () => null }, preventDefault() {} }
+  app.handleKeyDown(event)
+  assert.equal(toggles, 0)
+  app.handleKeyDown({ ...event, defaultPrevented: false })
+  assert.equal(toggles, 1)
+})
+
+test('the player audio-effects shortcut navigates immediately and focuses the section after lazy mounting', async t => {
+  const app = loadApp(); t.after(() => app.dispose())
+  app.currentSong.value = { hash: 'playing' }; app.playlist.value = [app.currentSong.value]
+  const queue = app.playlist.value, song = app.currentSong.value, sections = []
+  await app.handleOpenAudioEffects()
+  assert.equal(app.currentView.value, 'settings')
+  assert.equal(app.requestedSettingsSection.value, 'audioEffects')
+  assert.equal(app.navigationHistory.value.length, 1)
+  app.settingsViewRef.value = { scrollToSection: section => sections.push(section), flushEditableSettings: async () => true }
+  await vue.nextTick()
+  assert.deepEqual(sections, ['audioEffects'])
+  assert.equal(app.requestedSettingsSection.value, '')
+  assert.equal(app.currentSong.value, song); assert.equal(app.playlist.value, queue)
+  await app.handleOpenAudioEffects()
+  assert.equal(sections.at(-1), 'audioEffects')
+  assert.equal(app.navigationHistory.value.length, 1, 'reopening the same section does not add duplicate history')
+})
+
+test('the audio-effects shortcut preserves failed settings drafts and cancels section focus when navigation is blocked', async t => {
+  const app = loadApp(); t.after(() => app.dispose())
+  const sections = []
+  app.currentView.value = 'settings'
+  app.settingsViewRef.value = { scrollToSection: section => sections.push(section), flushEditableSettings: async () => false }
+  await vue.nextTick()
+  await app.handleOpenAudioEffects()
+  assert.deepEqual(sections, [])
+  assert.equal(app.requestedSettingsSection.value, '')
+  app.currentView.value = 'home'
+  app.setInstallPreparation(true)
+  await app.handleOpenAudioEffects()
+  assert.equal(app.currentView.value, 'home')
+  assert.equal(app.requestedSettingsSection.value, '')
+  assert.deepEqual(sections, [])
+})
 
 test('song searches expose results and refill even an identical submitted query without changing playback', async t => {
   const app = loadApp()
@@ -675,6 +792,211 @@ test('titlebar renders an accessible back button that follows history availabili
   }).then(() => { assert.equal(findBack(container), undefined) })
 })
 
+test('fullscreen switching feedback updates and clears without replacing the confirmed title or lyrics', async t => {
+  const filename = path.join(root, 'src/components/player/LyricView.vue')
+  const { descriptor } = parse(fs.readFileSync(filename, 'utf8'), { filename })
+  const stub = { inheritAttrs: false, render: () => null }
+  const logic = vm.runInNewContext(stripImports(fs.readFileSync(path.join(root, 'src/components/player/LyricView.js'), 'utf8'))
+    .replace('export default', 'const component =') + '\ncomponent', {
+    logger: quietLogger, process: { env: { NODE_ENV: 'test' } },
+    window: { innerWidth: 1200, innerHeight: 800 }, useSettingsStore: () => ({ settings: { playback: {} } }),
+    ContextMenu: stub, ArtistLinks: stub, ArtworkCover: stub, VolumeControl: stub, LibraryActions: stub,
+    ...loadModule('src/utils/songMetadata.js', {}, ['getSongSearchKeyword']),
+    repeatAllIcon: '', repeatOneIcon: '', shuffleIcon: ''
+  })
+  const compiled = compileTemplate({ source: descriptor.template.content, filename, id: 'lyric-switch-feedback',
+    compilerOptions: { mode: 'function', hoistStatic: false } })
+  assert.deepEqual(compiled.errors, [])
+  const render = new Function('Vue', compiled.code)({ ...vue,
+    Transition: { inheritAttrs: false, setup(_props, { slots }) { return () => slots.default?.() } } })
+  // Audio timing and layout are covered by player tests; this mounts the production template and props.
+  const component = { ...logic, render, watch: {}, mounted() {}, beforeUnmount() {},
+    data() { return { ...logic.data.call(this), parsedLyrics: [{ time: 0, text: '仍在播放的歌词' }] } },
+    methods: { ...logic.methods, getLyricLineStyle: () => ({}), createLyricLineRef: () => () => {} }
+  }
+  const makeNode = (type, text = '') => ({ type, text, props: {}, children: [], parent: null })
+  const renderer = vue.createRenderer({
+    createElement: makeNode, createText: text => makeNode('text', text), createComment: text => makeNode('comment', text),
+    setText: (node, text) => { node.text = text }, setElementText: (node, text) => { node.text = text; node.children = [] },
+    patchProp: (node, key, _previous, value) => { node.props[key] = value },
+    insert(node, parent, anchor) {
+      if (node.parent) node.parent.children.splice(node.parent.children.indexOf(node), 1)
+      node.parent = parent
+      const index = anchor ? parent.children.indexOf(anchor) : -1
+      parent.children.splice(index < 0 ? parent.children.length : index, 0, node)
+    },
+    remove(node) { if (node.parent) node.parent.children.splice(node.parent.children.indexOf(node), 1); node.parent = null },
+    parentNode: node => node.parent,
+    nextSibling: node => node.parent?.children[node.parent.children.indexOf(node) + 1] || null
+  })
+  const state = vue.reactive({ song: { hash: 'A', name: '当前已确认歌曲' }, switchingTrackName: '' })
+  const app = renderer.createApp({ render: () => vue.h(component, { ...state, visible: true,
+    lyrics: '[00:00.00]仍在播放的歌词', currentPlayTime: 30, duration: 180 }) })
+  const container = makeNode('root')
+  app.mount(container)
+  t.after(() => app.unmount())
+  const all = node => [node, ...node.children.flatMap(all)]
+  const byClass = name => all(container).filter(node => String(node.props.class || '').split(' ').includes(name))
+  const title = byClass('song-title-search')[0]
+  const lyricLine = byClass('lyric-line')[0]
+  const text = node => node.type === 'comment' ? '' : node.text + node.children.map(text).join('')
+  assert.equal(logic.props.switchingTrackName.default, '')
+  assert.equal(byClass('track-switch-status').length, 0)
+  const liveRegion = byClass('track-switch-status-stage')[0]
+  assert.equal(liveRegion.props.role, 'status')
+  assert.equal(liveRegion.props['aria-live'], 'polite')
+  for (const target of ['待播歌曲 B', '最新歌曲 C']) {
+    state.switchingTrackName = target
+    await vue.nextTick()
+    assert.equal(byClass('track-switch-status').length, 1)
+    assert.equal(text(byClass('track-switch-status')[0]), `正在切换到 ${target}…`)
+    assert.equal(byClass('song-title-search')[0], title)
+    assert.equal(text(title), '当前已确认歌曲')
+    assert.equal(byClass('lyric-line')[0], lyricLine)
+    assert.equal(text(lyricLine), '仍在播放的歌词')
+  }
+  state.switchingTrackName = ''
+  await vue.nextTick()
+  assert.equal(byClass('track-switch-status').length, 0)
+  assert.equal(byClass('song-title-search')[0], title)
+  assert.equal(byClass('lyric-line')[0], lyricLine)
+})
+
+test('renderer settings normalize independent track transition preferences and retain disabled values', async () => {
+  const keys = ['smoothTrackSwitch', 'preloadNextTrack', 'skipTrailingSilence']
+  for (const value of [undefined, true, false, 'true', 'false', 1, 0, null, {}, []]) {
+    const playback = value === undefined ? {} : Object.fromEntries(keys.map(key => [key, value]))
+    const loaded = loadStore({ get: async () => ({ schemaVersion: 1, playback }) })
+    await loaded.initSettings()
+    const store = loaded.useSettingsStore()
+    for (const key of keys) {
+      assert.equal(store.defaults().playback[key], true)
+      assert.equal(store.settings.playback[key], typeof value === 'boolean' ? value : true)
+    }
+    await store.updateSettings({ playback: { smoothTrackSwitch: false, preloadNextTrack: true, skipTrailingSilence: false } })
+    await store.updateSettings({ playback: { quality: '320' } })
+    for (const key of keys) assert.equal(store.settings.playback[key], key === 'preloadNextTrack')
+    assert.equal(store.settings.schemaVersion, 1)
+  }
+})
+
+test('track transition settings remain searchable and preserve failed drafts before an independent retry', async () => {
+  const keys = ['smoothTrackSwitch', 'preloadNextTrack', 'skipTrailingSilence']
+  const fixture = await queuedSettingsFixture()
+  const view = loadSettingsView(fixture.store)
+  try {
+    const options = view.playbackOptions.filter(option => keys.includes(option.id))
+    assert.equal(options.length, 3)
+    view.sectionRefs.playback.value = {
+      querySelectorAll: () => options.map(option => ({ textContent: option.label }))
+    }
+    for (const option of options) {
+      view.searchQuery.value = option.label
+      assert.equal(view.searchResults.value.length, 1)
+      assert.equal(view.searchResults.value[0].id, 'playback')
+      assert.equal(view.searchResults.value[0].matches[0].label, option.label)
+    }
+    for (const key of keys) view.localSettings.playback[key] = false
+    const failed = view.flushEditableSettings()
+    await fixture.flush()
+    fixture.requests[0].reject(new Error('Disk full'))
+    assert.equal(await failed, false)
+    for (const key of keys) {
+      assert.equal(view.localSettings.playback[key], false)
+      assert.equal(fixture.store.settings.playback[key], true)
+    }
+    assert.equal(view.saveState.value, 'error')
+    view.localSettings.playback.preloadNextTrack = true
+    const retry = view.flushEditableSettings()
+    await fixture.flush()
+    fixture.commit(1)
+    assert.equal(await retry, true)
+    for (const key of keys) assert.equal(fixture.current().playback[key], key === 'preloadNextTrack')
+  } finally { view.dispose() }
+})
+
+test('renderer close preferences migrate old data, reject invalid values and survive partial updates and reopening', async () => {
+  for (const value of [undefined, true, false, 'true', 'false', 1, 0, null, {}, []]) {
+    let current = { schemaVersion: 1, software: { minimizeToTray: value, promptBeforeClose: value } }
+    const bridge = {
+      get: async () => current,
+      set: async snapshot => { current = JSON.parse(JSON.stringify(snapshot)); return current }
+    }
+    const loaded = loadStore(bridge)
+    await loaded.initSettings()
+    const store = loaded.useSettingsStore()
+    assert.equal(store.defaults().software.promptBeforeClose, true)
+    assert.equal(store.defaults().software.minimizeToTray, false)
+    assert.equal(store.settings.software.promptBeforeClose, typeof value === 'boolean' ? value : true)
+    assert.equal(store.settings.software.minimizeToTray, value === true)
+    for (const minimizeToTray of [true, false]) {
+      await store.updateSettings({ software: { minimizeToTray, promptBeforeClose: false } })
+      await store.updateSettings({ software: { defaultPage: 'favorites' } })
+      const reopened = loadStore(bridge)
+      await reopened.initSettings()
+      assert.equal(reopened.useSettingsStore().settings.software.minimizeToTray, minimizeToTray)
+      assert.equal(reopened.useSettingsStore().settings.software.promptBeforeClose, false)
+      assert.equal(reopened.useSettingsStore().settings.software.defaultPage, 'favorites')
+    }
+  }
+})
+
+test('close settings retain both failed preferences and can restore the prompt after retrying', async () => {
+  const fixture = await queuedSettingsFixture()
+  const view = loadSettingsView(fixture.store, undefined, { clock: sessionClock() })
+  try {
+    view.localSettings.software.minimizeToTray = true
+    view.localSettings.software.promptBeforeClose = false
+    const failed = view.flushEditableSettings()
+    await fixture.flush()
+    fixture.requests[0].reject(new Error('Disk full'))
+    assert.equal(await failed, false)
+    assert.equal(view.localSettings.software.minimizeToTray, true)
+    assert.equal(view.localSettings.software.promptBeforeClose, false)
+    assert.equal(fixture.store.settings.software.minimizeToTray, false)
+    assert.equal(fixture.store.settings.software.promptBeforeClose, true)
+    assert.equal(view.saveState.value, 'error')
+    const retry = view.flushEditableSettings()
+    await fixture.flush()
+    fixture.commit(1)
+    assert.equal(await retry, true)
+    assert.equal(fixture.current().software.minimizeToTray, true)
+    assert.equal(fixture.current().software.promptBeforeClose, false)
+
+    view.localSettings.software.minimizeToTray = false
+    view.localSettings.software.promptBeforeClose = true
+    const restoring = view.flushEditableSettings()
+    await fixture.flush()
+    fixture.commit(2)
+    assert.equal(await restoring, true)
+    assert.equal(fixture.current().software.minimizeToTray, false)
+    assert.equal(fixture.current().software.promptBeforeClose, true)
+  } finally { view.dispose() }
+})
+
+test('remembering a close choice outside settings updates its controls without losing an unrelated draft', async () => {
+  const fixture = await queuedSettingsFixture()
+  const view = loadSettingsView(fixture.store, undefined, { clock: sessionClock() })
+  try {
+    view.localSettings.software.defaultPage = 'favorites'
+    const external = fixture.current()
+    external.software.minimizeToTray = true
+    external.software.promptBeforeClose = false
+    fixture.publish(external)
+    await vue.nextTick()
+    assert.equal(view.localSettings.software.minimizeToTray, true)
+    assert.equal(view.localSettings.software.promptBeforeClose, false)
+    assert.equal(view.localSettings.software.defaultPage, 'favorites')
+    const saved = view.flushEditableSettings()
+    await fixture.flush()
+    fixture.commit(0)
+    assert.equal(await saved, true)
+    assert.equal(fixture.current().software.minimizeToTray, true)
+    assert.equal(fixture.current().software.promptBeforeClose, false)
+    assert.equal(fixture.current().software.defaultPage, 'favorites')
+  } finally { view.dispose() }
+})
+
 test('renderer settings migrate the previous restart preference and preserve explicit toggles', async () => {
   for (const value of [undefined, true, false, 'true', 'false', 1, 0, null, {}, []]) {
     const playback = value === undefined ? {} : { restartOnPreviousNearEnd: value }
@@ -992,7 +1314,7 @@ test('settings categories preserve the shared draft and do not schedule or submi
   view.settingsMain.value = { scrollTo: position => scrolls.push(position.top) }
   const sharedDraft = view.localSettings
 
-  for (const id of ['lyrics', 'desktop', 'island', 'taskbar', 'about', 'playback']) {
+  for (const id of ['lyrics', 'desktop', 'island', 'taskbar', 'about', 'playback', 'audioEffects']) {
     view.scrollToSection(id)
     await vue.nextTick()
     assert.equal(view.activeSection.value, id)

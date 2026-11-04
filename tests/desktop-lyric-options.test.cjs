@@ -61,7 +61,8 @@ function fixture({ reduced = false, unlock = async () => ({ success: true }) } =
   }
   const window = new Element(), media = new Element()
   media.matches = reduced; window.matchMedia = () => media
-  const api = {}
+  const notices = []
+  const api = { reportNotice: notice => notices.push(JSON.parse(JSON.stringify(notice))) }
   for (const name of ['SongUpdate', 'LyricUpdate', 'TimeUpdate', 'PlaybackUpdate', 'SettingsUpdate', 'LockChanged', 'RuntimeState', 'Error']) {
     api['on' + name] = callback => { subscriptions.set(name, callback); return () => subscriptions.delete(name) }
   }
@@ -75,7 +76,7 @@ function fixture({ reduced = false, unlock = async () => ({ success: true }) } =
   vm.runInContext(source, context, { filename: 'desktopLyric.html' })
   document.events.get('DOMContentLoaded')()
   return {
-    nodes, animations, images, calls, frames, timers, media,
+    nodes, animations, images, calls, notices, frames, timers, media,
     node: id => nodes.get(id), emit: (name, ...args) => subscriptions.get(name)?.(...args),
     advance(ms = 0) {
       now += ms
@@ -259,7 +260,7 @@ test('the isolated unlock button is present only while allowed and retains retry
   await button.click()
   assert.equal(button.hidden, false)
   assert.equal(button.disabled, false)
-  assert.equal(view.node('controlFeedback').dataset.error, 'true')
+  assert.equal(view.notices.at(-1).type, 'error')
   success = true; await button.click()
   assert.equal(button.hidden, true)
   assert.equal(button.style.display, 'none')

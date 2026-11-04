@@ -2,16 +2,17 @@
   <section class="downloads-view" aria-label="音乐下载">
     <header><div><p class="eyebrow">YOUR MUSIC / DOWNLOADS</p><h2>下载</h2><p>保存音乐、封面与歌词，随时离线聆听。</p></div><button type="button" :disabled="!api || loading" @click="refresh">刷新</button></header>
     <p v-if="!api" role="status">文件下载仅在桌面客户端中可用。</p>
-    <p v-if="error || state.error" class="error" role="alert">{{ error || state.error }}</p>
+    <AppNotice :message="error || state.error" type="error" title="音乐下载" :actions="[{ label: '刷新任务', run: refresh, disabled: !api || loading }]" />
     <p class="directory">{{ state.downloadPath }}</p>
     <div v-if="loading && !state.tasks.length" role="status">正在读取下载任务…</div>
-    <p v-else-if="!state.tasks.length" class="empty">还没有下载任务。在歌曲菜单中选择下载，或下载整张歌单。</p>
+    <p v-else-if="!state.tasks.length" class="empty">还没有下载任务。在歌曲菜单中选择下载，或勾选需要的歌曲后下载所选。</p>
     <p v-else class="summary">{{ completed }} 首已完成 · {{ state.tasks.length }} 个任务</p>
     <TransitionGroup name="ui-list" tag="div" class="task-list">
       <article v-for="task in state.tasks" :key="task.id" class="task" :aria-busy="busy.has(task.id)">
         <div class="task-copy"><h3>{{ task.title }}</h3><p>{{ task.artist }} · {{ task.quality }}</p><p v-if="task.playlistName">{{ task.playlistName }}</p><p role="status">{{ labels[task.status] || task.status }}<template v-if="task.total"> · {{ bytes(task.received) }} / {{ bytes(task.total) }}</template></p></div>
         <progress v-if="running.has(task.status)" :value="task.percent == null ? undefined : task.percent" max="100" :aria-label="`${task.title} 下载进度`"></progress>
-        <p v-if="task.error" class="error" role="alert">{{ task.error }}</p><p v-for="warning in task.warnings" :key="warning" class="warning">{{ warning }}</p>
+        <AppNotice :message="task.error" type="error" :title="task.title + ' · 下载'" :actions="task.status === 'failed' ? [{ label: '重试', run: () => act('retry', task), disabled: busy.has(task.id) }] : []" />
+        <AppNotice :message="(task.warnings || []).join('；')" type="warning" :title="task.title + ' · 下载'" :actions="task.status === 'completed-with-warning' ? [{ label: '补全并另存副本', run: () => act('retryMetadata', task), disabled: busy.has(task.id) }] : []" />
         <div class="actions">
           <button v-if="running.has(task.status) || task.status === 'queued'" type="button" :disabled="busy.has(task.id)" @click="act('pause', task)">暂停</button>
           <button v-if="task.status === 'paused'" type="button" :disabled="busy.has(task.id)" @click="act('resume', task)">继续</button>
@@ -39,5 +40,5 @@ async function act(method,task){if(busy.has(task.id))return;busy.add(task.id);er
 onMounted(()=>{unsubscribe=api?.onState?.(accept);void refresh()});onBeforeUnmount(()=>{disposed=true;unsubscribe?.()})
 </script>
 <style scoped>
-.downloads-view{padding:clamp(16px,3vw,32px);color:var(--color-text);}.downloads-view header{display:flex;justify-content:space-between;align-items:center;gap:20px}.downloads-view h2{font-size:32px;margin:6px 0}.eyebrow{font-size:11px;letter-spacing:.16em}.directory,.summary,.downloads-view p{color:var(--color-text-secondary);overflow-wrap:anywhere}.task-list{display:grid;gap:14px}.task{padding:22px;border:1px solid var(--color-border);border-radius:16px;background:var(--color-background-light);transition:background .2s,transform .2s}.task h3{margin:0;font-size:17px}.task p{font-size:13px;margin:8px 0}.task progress{width:100%;height:5px;accent-color:var(--color-primary)}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.downloads-view button{padding:8px 14px;border:1px solid var(--color-border);border-radius:18px;color:var(--color-text);background:var(--color-background);cursor:pointer}.downloads-view button:disabled{opacity:.5;cursor:default}.downloads-view .error{color:var(--color-error,#c84a4a)}.downloads-view .warning{color:var(--color-text-secondary)}.empty{padding:40px 0}@media(prefers-reduced-motion:reduce){.task{transition:none}}
+.downloads-view{padding:clamp(16px,3vw,32px);color:var(--color-text);}.downloads-view header{display:flex;justify-content:space-between;align-items:center;gap:20px}.downloads-view h2{font-size:32px;margin:6px 0}.eyebrow{font-size:11px;letter-spacing:.16em}.directory,.summary,.downloads-view p{color:var(--color-text-secondary);overflow-wrap:anywhere}.task-list{display:grid;gap:14px}.task{padding:22px;border:1px solid var(--color-border);border-radius:16px;background:var(--color-background-light);transition:background .2s,transform .2s}.task h3{margin:0;font-size:17px}.task p{font-size:13px;margin:8px 0}.task progress{width:100%;height:5px;accent-color:var(--color-primary)}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.downloads-view button{padding:8px 14px;border:1px solid var(--color-border);border-radius:18px;color:var(--color-text);background:var(--color-background);cursor:pointer}.downloads-view button:disabled{opacity:.5;cursor:default}.empty{padding:40px 0}@media(prefers-reduced-motion:reduce){.task{transition:none}}
 </style>

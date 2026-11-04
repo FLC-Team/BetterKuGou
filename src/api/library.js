@@ -1,5 +1,6 @@
 import { apiClient } from './music.js'
 import { findLibraryList, normalizeLibrarySong, normalizePlaylistResource } from '../utils/libraryMetadata.js'
+import { logger } from '../utils/logger.js'
 
 const identity = () => ({ token: localStorage.getItem('kugou_token'), userId: localStorage.getItem('kugou_userid') })
 const sameIdentity = value => {
@@ -80,6 +81,58 @@ export const getPlaylistDetail = (globalCollectionId, options = {}) => libraryRe
 export const getSimilarPlaylists = (globalCollectionId, options = {}) => libraryRequest('/playlist/similar', { ids: id(globalCollectionId) }, options)
 export const getAudioRelated = (albumAudioId, params = {}, options = {}) =>
   libraryRequest('/audio/related', { ...params, album_audio_id: numericId(albumAudioId, '歌曲') }, options)
+
+/** Fill missing display/play identities through metadata endpoints only, preserving each original record. */
+export async function completeLibrarySongs(input, options = {}) {
+  const account = identity()
+  const assertCurrent = () => { if (!sameIdentity(account) || options.signal?.aborted) throw cancelled() }
+  assertCurrent()
+  const songs = input.map(song => normalizeLibrarySong(song))
+  const mergeMissing = (song, detail) => {
+    if (!detail) return
+    for (const field of ['hash', 'name', 'singername', 'album_id', 'album_audio_id', 'audio_id', 'album_name', 'cover', 'timelen']) {
+      if (!song[field] || song[field] === '0') song[field] = detail[field]
+    }
+    if (!song.singerinfo.length) song.singerinfo = detail.singerinfo
+  }
+  // List hydration only merges metadata; it never starts the player's URL lookup or audio download.
+  const requestMetadata = async (route, params, required) => {
+    assertCurrent()
+    try {
+      const response = await libraryRequest(route, params, options)
+      assertCurrent()
+      const entries = findLibraryList(response)
+      if (!entries) throw Object.assign(new Error('歌曲资料格式暂不可读取，请重试。'), { code: 'INVALID_LIBRARY_METADATA' })
+      return entries
+    } catch (error) {
+      assertCurrent()
+      if (required || error?.code === 'ERR_CANCELED') throw error
+      // Optional artwork outages must not hide songs that already have playable identities.
+      logger.warn('library-api', '补全歌曲展示资料失败', { endpoint: route, error })
+      return []
+    }
+  }
+  const ids = [...new Set(songs.filter(song => (!song.hash || !song.name || !song.cover) &&
+    Number.isSafeInteger(Number(song.album_audio_id)) && Number(song.album_audio_id) > 0).map(song => String(song.album_audio_id)))]
+  for (let offset = 0; offset < ids.length; offset += 50) {
+    const batch = ids.slice(offset, offset + 50)
+    const required = songs.some(song => !song.hash && batch.includes(String(song.album_audio_id)))
+    const entries = await requestMetadata('/krm/audio', { album_audio_id: batch.join(','),
+      fields: 'base,audio_info,album_info,authors.base' }, required)
+    const details = new Map(entries.map(entry => { const song = normalizeLibrarySong(entry); return [String(song.album_audio_id), song] }))
+    songs.forEach(song => mergeMissing(song, details.get(String(song.album_audio_id))))
+  }
+  const missingCovers = [...new Map(songs.filter(song => song.hash && !song.cover).map(song => [song.hash, song])).values()]
+  for (let offset = 0; offset < missingCovers.length; offset += 50) {
+    const batch = missingCovers.slice(offset, offset + 50)
+    const entries = await requestMetadata('/privilege/lite', { hash: batch.map(song => song.hash).join(','),
+      album_id: batch.map(song => song.album_id || 0).join(',') }, false)
+    const details = new Map(entries.map(entry => { const song = normalizeLibrarySong(entry); return [song.hash, song] }))
+    songs.forEach(song => mergeMissing(song, details.get(song.hash)))
+  }
+  assertCurrent()
+  return songs
+}
 
 export const getOwnPlaylistTracks = (listId, page = 1, pagesize = 100, options = {}) =>
   libraryRequest('/playlist/track/all/new', { listid: numericId(listId), page, pagesize }, { ...options, authenticated: true })

@@ -83,7 +83,7 @@ function desktopFixture({ realMain = false } = {}) {
       if (name === './services/updateService') return { createUpdateService: () => ({ configure() {}, stop: async () => {} }) }
       return require(name)
     },
-    __dirname: path.resolve(__dirname, '../electron'), process: { platform: 'linux', env: {} }, setTimeout, clearTimeout, setInterval, clearInterval
+    __dirname: path.resolve(__dirname, '../electron'), process: { platform: 'linux', resourcesPath: '/resources', env: {} }, setTimeout, clearTimeout, setInterval, clearInterval
   })
   vm.runInContext(fs.readFileSync(path.resolve(__dirname, '../electron/main.js'), 'utf8'), sandbox)
   const api = vm.runInContext('({createDesktopLyricWindow, subscribeToSettingsUpdates, closeDesktopLyricWindow, flushDesktopLyricBounds, getDesktopLyricBounds, runDesktopTrayAction, saveDesktopPreference, updateDesktopLyricPolicy})', sandbox)
@@ -252,13 +252,25 @@ test('failed geometry persistence stays retryable and tray unlock failure is vis
   fixture.failWrite(true)
   assert.equal(await fixture.flushDesktopLyricBounds(), false)
   assert.ok(win.messages.some(([channel]) => channel === 'desktop-lyric:error'))
+  fixture.main.hide()
+  const showsBeforeFailure = fixture.main.shows
   await fixture.runDesktopTrayAction(() => fixture.saveDesktopPreference({ desktopLyrics: { locked: false } }), '解锁失败')
-  assert.equal(fixture.dialogs.length, 1)
-  assert.equal(fixture.dialogs[0].type, 'error')
+  assert.equal(fixture.dialogs.length, 0, 'tray errors use Fue notifications instead of a separate native dialog')
+  const notices = fixture.main.messages.filter(([channel]) => channel === 'app:notice')
+  assert.equal(notices.length, 1)
+  assert.equal(notices[0][1].type, 'error')
+  assert.equal(notices[0][1].title, '桌面歌词')
+  assert.match(notices[0][1].message, /失败|未能/)
+  assert.equal(fixture.main.visible, true, 'the failure must be visible even when the lyric window is locked')
+  assert.equal(fixture.main.shows, showsBeforeFailure + 1)
   assert.equal(win.ignoresMouse, true)
   fixture.failWrite(false)
   assert.equal(await fixture.flushDesktopLyricBounds(), true)
   assert.equal(fixture.writes.at(-1).desktopLyrics.bounds.x, 30)
+  await fixture.runDesktopTrayAction(() => fixture.saveDesktopPreference({ desktopLyrics: { locked: false } }), '解锁失败')
+  assert.equal(win.ignoresMouse, false, 'retry still unlocks only after persistence succeeds')
+  assert.equal(fixture.writes.at(-1).desktopLyrics.locked, false)
+  assert.equal(fixture.main.messages.filter(([channel]) => channel === 'app:notice').length, 1, 'successful retry must not repeat the old failure')
   fixture.closeDesktopLyricWindow()
   await fixture.flushDesktopLyricBounds()
 })

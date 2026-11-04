@@ -15,12 +15,12 @@
         <Transition name="ui-fade"><iframe v-if="target === 'desktop'" :srcdoc="desktopPreview" sandbox title="桌面歌词样式预览" class="desktop-preview"></iframe></Transition>
         <p v-if="target === 'desktop'">此预览显示示例歌词；应用后会更新真实桌面歌词窗口。小 / 中 / 大与经典 / 渐变 / 简约模式继续保留，CSS 按你的规则覆盖。</p>
         <div class="studio-actions sticky-actions"><button type="button" @click="preview" :disabled="saving">预览主窗口</button><button type="button" @click="cancelPreview">取消预览</button><button type="button" class="primary" @click="apply" :disabled="saving">{{ saving ? '保存中…' : '应用并保存主题' }}</button></div>
-        <Transition name="ui-fade" mode="out-in"><p v-if="message" :key="messageId" :class="{ error }" :role="error ? 'alert' : 'status'">{{ message }}</p></Transition>
+        <AppNotice :message="message" :revision="messageId" :type="error ? 'error' : 'info'" title="界面编辑器" />
         <small>任何时候可用 Ctrl + Alt + Shift + R 恢复内置外观；草稿关闭后不保存。</small>
       </fieldset></div></Transition>
     </section>
     </Transition>
-    <Transition name="picker-hint"><div v-if="picking" data-bk-theme-safety class="bk-picker-hint">点击要编辑的元素 · Esc 取消</div></Transition>
+    <AppNotice :message="picking ? '点击要编辑的元素 · Esc 取消' : ''" title="拾取界面元素" :duration="0" @close="stopPicking(); minimized = false" />
     <Transition name="ui-fade"><div v-if="picking && highlight" data-bk-theme-safety class="bk-picker-highlight" :style="highlight"></div></Transition>
   </Teleport>
 </template>
@@ -158,21 +158,18 @@ textarea { resize: vertical; font: 11px/1.8 Consolas, monospace; }
 .sticky-actions { position: sticky; bottom: -15px; padding: 12px 0; margin-bottom: 0; background: #1b2230; }
 .animated-details { border-top: 1px solid #445063; padding: 12px 0; } .animated-details :deep(summary) { cursor: pointer; margin-bottom: 12px; font-size: 12px; }
 .region-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; } .property-input { display: flex; gap: 5px; } input[type=color] { width: 32px; flex: 0 0 32px; padding: 2px; min-height: 34px; }
-.error { color: #ffacb8; } .desktop-preview { width: 100%; height: 170px; border: 1px solid #526074; border-radius: 8px; }
+.desktop-preview { width: 100%; height: 170px; border: 1px solid #526074; border-radius: 8px; }
 .bk-picker-highlight { position: fixed; z-index: 2147483644; border: 2px solid #76b6ff; background: #4189e022; pointer-events: none; box-sizing: border-box; }
-.bk-picker-hint { position: fixed; z-index: 2147483646; left: 50%; top: 60px; transform: translateX(-50%); padding: 10px 18px; border-radius: 30px; background: #15395a; color: white; font: 12px system-ui; pointer-events: none; }
 .bk-picker-highlight { transition: left .1s ease-out, top .1s ease-out, width .1s ease-out, height .1s ease-out, opacity .15s ease; }
 .studio-enter-active, .studio-leave-active { transition: opacity .2s ease, transform .24s cubic-bezier(.2,.8,.2,1); }
 .studio-enter-from, .studio-leave-to { opacity: 0; transform: translateY(12px) scale(.97); }
 .studio-leave-active { pointer-events: none; }
 .studio-collapse-enter-active, .studio-collapse-leave-active { transition: max-height .24s ease, padding .24s ease, opacity .18s ease; overflow: hidden; }
 .studio-collapse-enter-from, .studio-collapse-leave-to { max-height: 0; padding-block: 0; opacity: 0; }
-.picker-hint-enter-active, .picker-hint-leave-active { transition: opacity .18s ease, translate .18s ease; }
-.picker-hint-enter-from, .picker-hint-leave-to { opacity: 0; translate: 0 -8px; }
 button, input, textarea { transition: border-color .16s ease, background-color .16s ease, scale .16s ease; }
 button:hover:not(:disabled) { background: #31445f; border-color: #9ccaff; }
 button:active:not(:disabled) { scale: .96; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid #9ccaff; outline-offset: 3px; }
 @media (max-width: 600px) { .region-fields { grid-template-columns: 1fr; } }
-@media (prefers-reduced-motion: reduce) { .bk-theme-studio, .studio-body, .bk-picker-hint, .bk-picker-highlight, button, input, textarea { transition-duration: .001ms !important; } }
+@media (prefers-reduced-motion: reduce) { .bk-theme-studio, .studio-body, .bk-picker-highlight, button, input, textarea { transition-duration: .001ms !important; } }
 </style>

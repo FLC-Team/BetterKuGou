@@ -1,21 +1,43 @@
 <template>
-  <div class="my-music-view library-page">
-    <header><p class="eyebrow">MY LIBRARY / 我的音乐</p><h1>每一次聆听，都有回响<span>.</span></h1><p>回到熟悉的旋律，也追随喜欢的歌手继续发现。</p></header>
-    <nav class="tabs" aria-label="我的音乐分类"><button v-for="tab in tabs" :key="tab.id" type="button" :aria-current="activeTab === tab.id ? 'page' : undefined" @click="selectTab(tab.id)">{{ tab.label }}</button></nav>
+  <div class="my-music-view library-page list-page">
+    <div class="list-content">
+    <header class="collection-hero library-hero">
+      <div class="collection-art library-art" aria-hidden="true">
+        <span class="library-art-label">THE PERSONAL COLLECTION</span>
+        <svg class="library-record" viewBox="0 0 120 120" fill="none"><path d="M13 29v65M23 24v75" stroke="currentColor" stroke-width="3" stroke-linecap="round" /><rect x="34" y="18" width="72" height="86" rx="6" fill="currentColor" opacity=".07" /><rect x="34" y="18" width="72" height="86" rx="6" stroke="currentColor" stroke-width="2.5" /><circle cx="70" cy="57" r="25" stroke="currentColor" stroke-width="2.5" /><circle cx="70" cy="57" r="19" stroke="currentColor" opacity=".2" /><circle cx="70" cy="57" r="8" fill="currentColor" /><circle cx="70" cy="57" r="2" class="record-hole" /><path d="M60 92h20" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" /></svg>
+        <span class="library-art-footer">SIDE A <span>YOUR SOUNDTRACK</span></span>
+      </div>
+      <div class="collection-copy">
+        <p class="eyebrow">MY LIBRARY / 私人音乐档案</p>
+        <h1 class="page-title">我的音乐<span class="title-dot">.</span></h1>
+        <p class="collection-description">每一次聆听，都有回响。<br />回到熟悉的旋律，追随喜欢的歌手继续发现。</p>
+        <div class="collection-meta"><span>听过的，喜欢的，值得留下的</span></div>
+      </div>
+    </header>
+    <div ref="libraryTabs" class="library-tabs" role="tablist" aria-label="我的音乐分类">
+      <button v-for="(tab, index) in tabs" :id="`my-music-tab-${tab.id}`" :key="tab.id" type="button" class="library-tab" role="tab" :aria-selected="activeTab === tab.id" aria-controls="my-music-panel" :tabindex="activeTab === tab.id ? 0 : -1" @click="selectTab(tab.id)" @keydown="handleTabKey($event, index)">
+        <span class="tab-heading"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path :d="tab.icon" /></svg><span class="tab-number">{{ String(index + 1).padStart(2, '0') }}</span></span>
+        <span class="tab-label">{{ tab.label }}</span><span class="tab-caption">{{ tab.caption }}</span>
+      </button>
+    </div>
+    <section id="my-music-panel" class="library-panel" role="tabpanel" :aria-labelledby="`my-music-tab-${activeTab}`" :aria-busy="activeTab !== 'downloads' && page.loading" tabindex="0">
+    <AppNotice :message="playbackNotice" :revision="playbackNoticeRevision" title="播放提示" type="warning" :actions="[{ label: '刷新列表', run: () => loadPage(false, true), disabled: page.loading }]" />
     <DownloadsView v-if="activeTab === 'downloads'" />
-    <div v-else-if="!userLoggedIn" class="status"><p>登录后查看你的听歌记录、关注和云盘。</p><button type="button" @click="$emit('show-login')">登录账号</button></div>
+    <div v-else-if="!userLoggedIn" class="empty-state"><p class="empty-text">让音乐，回到你的身边</p><p class="empty-hint">登录后查看你的听歌记录、关注和云盘。</p><button type="button" class="primary-btn" @click="$emit('show-login')">登录账号</button></div>
     <template v-else>
-      <div class="section-heading"><h2>{{ tabs.find(tab => tab.id === activeTab)?.label }}</h2><button type="button" :disabled="page.loading" @click="loadPage(false, true)">{{ page.loading ? '正在更新…' : '刷新' }}</button></div>
-      <div v-if="activeTab === 'listen'" class="filters"><label for="listen-period">统计范围</label><select id="listen-period" v-model="listenType" @change="changeScope"><option value="0">最近一周</option><option value="1">全部时间</option></select></div>
-      <p v-if="activeTab === 'cloud'" class="hint">只读取和播放你上传的歌曲，文件保留在原云盘中。</p>
-      <Transition name="ui-fade"><p v-if="page.error" class="error" role="alert">{{ page.error }} <button type="button" :disabled="page.loading" @click="loadPage(page.requestAppend, true)">重试</button></p></Transition>
-      <p v-if="page.loading && !page.items.length" class="status" role="status"><span class="loading-spinner"></span>正在读取你的音乐…</p>
-      <p v-else-if="page.loaded && !page.items.length" class="status">这里还没有内容，先去发现一些喜欢的音乐。</p>
-      <div v-if="activeTab === 'follow'" class="cards"><button v-for="(artist, index) in page.items" :key="`${artistId(artist)}-${index}`" type="button" class="music-card artist-card" @click="openArtist(artist)"><ArtworkCover :src="artist.sizable_avatar || artist.avatar || artist.pic || artist.image || ''" class="card-cover" /><strong>{{ artistName(artist) }}</strong><span>查看歌手</span></button></div>
-      <div v-else-if="activeTab === 'news'" class="cards"><button v-for="(album, index) in page.items" :key="`${album.album_id || album.id}-${index}`" type="button" class="music-card" @click="openAlbum(album)"><ArtworkCover :src="album.sizable_cover || album.cover || album.imgurl || ''" class="card-cover" /><strong>{{ album.album_name || album.name || '新作品' }}</strong><span>{{ album.author_name || album.publish_date || '查看作品' }}</span></button></div>
-      <LibrarySongs v-else :songs="page.items" :current-song="currentSong" :total="page.total" v-on="songEvents" />
-      <button v-if="page.loaded && page.more" type="button" class="load-more" :disabled="page.loading" @click="loadPage(true)">{{ page.loading ? '正在加载…' : '加载更多' }}</button>
+      <div class="section-heading library-section-heading"><div class="section-title"><span class="section-index" aria-hidden="true">{{ String(activeTabIndex + 1).padStart(2, '0') }}</span><h2>{{ selectedTab.label }}</h2><span v-if="page.loaded" class="collection-count">{{ page.total ?? page.items.length }} {{ activeTab === 'follow' ? '位歌手' : activeTab === 'news' ? '张作品' : '首歌曲' }}</span></div><button type="button" class="action-btn refresh-library" :disabled="page.loading" @click="loadPage(false, true)"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 10a8 8 0 1 0-1 7M20 4v6h-6" /></svg>{{ page.loading ? '正在更新…' : '刷新' }}</button></div>
+      <div v-if="activeTab === 'listen'" class="listen-filters" role="group" aria-label="统计范围"><button v-for="period in [{ id: '0', label: '最近一周' }, { id: '1', label: '全部时间' }]" :key="period.id" type="button" :aria-pressed="listenType === period.id" @click="selectListenType(period.id)">{{ period.label }}</button></div>
+      <p v-if="activeTab === 'cloud'" class="library-hint">只读取和播放你上传的歌曲，文件保留在原云盘中。</p>
+      <AppNotice :message="page.error" title="音乐加载失败" type="error" :actions="[{ label: '重试', run: () => loadPage(page.requestAppend, true), disabled: page.loading }]" />
+      <div v-if="page.loading && !page.items.length" class="loading-container" role="status"><span class="loading-spinner" aria-hidden="true"></span><p>正在读取你的音乐…</p></div>
+      <div v-else-if="page.loaded && !page.items.length" class="empty-state"><p class="empty-text">这里还没有内容</p><p class="empty-hint">先去发现一些喜欢的音乐，让这里慢慢丰富起来。</p></div>
+      <div v-if="activeTab === 'follow' && page.items.length" class="library-cards"><button v-for="(artist, index) in page.items" :key="`${artistId(artist)}-${index}`" type="button" class="music-card artist-card" @click="openArtist(artist)"><span class="card-art"><ArtworkCover :src="artist.avatar || ''" class="card-cover" /><span class="card-arrow" aria-hidden="true">↗</span></span><strong>{{ artistName(artist) }}</strong><span class="card-description">关注的歌手</span></button></div>
+      <div v-else-if="activeTab === 'news' && page.items.length" class="library-cards"><button v-for="(album, index) in page.items" :key="`${album.album_id || album.id}-${index}`" type="button" class="music-card" @click="openAlbum(album)"><span class="card-art"><ArtworkCover :src="album.sizable_cover || album.cover || album.imgurl || ''" class="card-cover" /><span class="card-arrow" aria-hidden="true">↗</span></span><strong>{{ album.album_name || album.name || '新作品' }}</strong><span class="card-description">{{ album.author_name || album.publish_date || '查看作品' }}</span></button></div>
+      <LibrarySongs v-else-if="!['follow', 'news'].includes(activeTab) && page.items.length" :songs="page.items" :current-song="currentSong" :total="page.total" :selection-scope="resourceKey" v-on="songEvents" />
+      <button v-if="page.loaded && page.more" type="button" class="action-btn load-more" :disabled="page.loading" @click="loadPage(true)">{{ page.loading ? '正在加载…' : '加载更多' }}</button>
     </template>
+    </section>
+    </div>
   </div>
 </template>
 
@@ -23,8 +45,8 @@
 import ArtworkCover from '../components/common/ArtworkCover.vue'
 import LibrarySongs from '../components/common/LibrarySongs.vue'
 import DownloadsView from '../components/common/DownloadsView.vue'
-import { getUserHistory, getUserListen, getFollowedArtists, getFollowedNewSongs, getCloudSongs } from '../api/library.js'
-import { findLibraryList, normalizeLibrarySong } from '../utils/libraryMetadata.js'
+import { getUserHistory, getUserListen, getFollowedArtists, getFollowedNewSongs, getCloudSongs, completeLibrarySongs } from '../api/library.js'
+import { findLibraryList, normalizeLibrarySong, normalizeLibraryArtist } from '../utils/libraryMetadata.js'
 import { createLibraryPageState, appendLibraryPage } from './logic/libraryPage.js'
 import { logger } from '../utils/logger.js'
 
@@ -32,19 +54,54 @@ export default {
   name: 'MyMusicView', components: { ArtworkCover, LibrarySongs, DownloadsView },
   props: { currentSong: { type: Object, default: null }, userLoggedIn: Boolean, userId: { type: [String, Number], default: '' } },
   emits: ['play', 'play-all', 'play-next', 'navigate', 'search', 'toggle-favorite', 'add-to-playlist', 'download', 'share', 'show-details', 'show-login'],
-  data() { return { activeTab: 'history', listenType: '0', pages: {}, generation: 0, controller: null, activeRequestKey: '', disposed: false,
-    tabs: [{ id: 'history', label: '最近播放' }, { id: 'listen', label: '听歌排行' }, { id: 'follow', label: '关注歌手' }, { id: 'news', label: '关注的新作品' }, { id: 'cloud', label: '音乐云盘' }, { id: 'downloads', label: '下载' }] } },
+  data() { return { activeTab: 'history', listenType: '0', pages: {}, generation: 0, controller: null, activeRequestKey: '', disposed: false, playbackNotice: '', playbackNoticeRevision: 0,
+    tabs: [
+      { id: 'history', label: '最近播放', caption: 'RECENTLY PLAYED', icon: 'M3 10a9 9 0 1 1 2 8M3 4v6h6M12 7v5l3 2' },
+      { id: 'listen', label: '听歌排行', caption: 'ON REPEAT', icon: 'M4 20V12h4v8M10 20V5h4v15M16 20V9h4v11M2 20h20' },
+      { id: 'follow', label: '关注歌手', caption: 'MY ARTISTS', icon: 'M16 8a4 4 0 1 1-8 0 4 4 0 0 1 8 0ZM4 21v-2a6 6 0 0 1 10-4.5M19 13v8M15 17h8' },
+      { id: 'news', label: '关注的新作品', caption: 'NEW RELEASES', icon: 'M11 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6M11 8a4 4 0 1 0 5 5M17 2v6M14 5h6M7 17h6' },
+      { id: 'cloud', label: '音乐云盘', caption: 'IN THE CLOUD', icon: 'M7 18H6a4 4 0 0 1-1-7.9 7 7 0 0 1 13.6-1.6A4.8 4.8 0 0 1 20 18M11 21a2 2 0 1 0 0-4 2 2 0 0 0 0 4ZM13 19v-7l4 1' },
+      { id: 'downloads', label: '下载', caption: 'KEEP IT CLOSE', icon: 'M12 3v12M7 10l5 5 5-5M4 15v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5' }
+    ] } },
   computed: {
-    resourceKey() { return `${this.activeTab}:${this.listenType}:${this.userId}` },
+    resourceKey() { return `${this.activeTab}:${this.activeTab === 'listen' ? this.listenType : ''}:${this.userId}` },
+    activeTabIndex() { return this.tabs.findIndex(tab => tab.id === this.activeTab) },
+    selectedTab() { return this.tabs[this.activeTabIndex] },
     page() { return this.pages[this.resourceKey] || createLibraryPageState() },
-    songEvents() { return Object.fromEntries(this.$options.emits.map(event => [event, (...args) => this.$emit(event, ...args)])) }
+    songEvents() { return Object.fromEntries(this.$options.emits.map(event => [event, (...args) => this.forwardSongEvent(event, ...args)])) }
   },
   watch: { userId() { this.controller?.abort(); this.generation++; this.pages = {}; this.loadPage() }, userLoggedIn() { this.controller?.abort(); this.generation++; this.pages = {}; this.loadPage() } },
   mounted() { this.loadPage() },
   beforeUnmount() { this.disposed = true; this.generation++; this.controller?.abort() },
   methods: {
+    /** Keep unavailable history entries visible without replacing playback with an unusable song. */
+    forwardSongEvent(event, ...args) {
+      if (['play', 'play-next', 'play-all'].includes(event)) {
+        const songs = event === 'play-all' ? args[0] : [args[0]]
+        const playable = songs.filter(song => typeof song?.hash === 'string' && song.hash.trim())
+        if (playable.length !== songs.length) {
+          this.playbackNotice = event === 'play-all' && playable.length
+            ? `${songs.length - playable.length} 首歌曲暂时无法取得播放信息，已跳过；可刷新列表后重试。`
+            : '这首歌曲暂时无法取得播放信息，请刷新后重试。'
+          this.playbackNoticeRevision++
+          if (!playable.length) return
+          args[0] = playable
+        } else this.playbackNotice = ''
+      }
+      this.$emit(event, ...args)
+    },
     cancelPageRequest() { this.controller?.abort(); this.generation++; if (this.pages[this.activeRequestKey]) this.pages[this.activeRequestKey].loading = false },
-    selectTab(id) { if (id === this.activeTab) return; this.cancelPageRequest(); this.activeTab = id; this.loadPage() },
+    selectTab(id) { if (id === this.activeTab || !this.tabs.some(tab => tab.id === id)) return; this.cancelPageRequest(); this.activeTab = id; this.loadPage() },
+    /** The tab strip keeps one keyboard stop and activates the focused resource. */
+    handleTabKey(event, index) {
+      const offsets = { ArrowRight: 1, ArrowLeft: -1 }
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? this.tabs.length - 1 : event.key in offsets ? (index + offsets[event.key] + this.tabs.length) % this.tabs.length : null
+      if (next === null) return
+      event.preventDefault()
+      this.selectTab(this.tabs[next].id)
+      this.$nextTick(() => this.$refs.libraryTabs?.querySelectorAll('[role="tab"]')[next]?.focus())
+    },
+    selectListenType(type) { if (type === this.listenType) return; this.listenType = type; this.changeScope() },
     changeScope() { this.cancelPageRequest(); this.loadPage() },
     /** Cursor history, numbered cloud pages and nonpaged collections retain separate resource state. */
     async loadPage(append = false, force = false) {
@@ -65,7 +122,8 @@ export default {
         if (this.disposed || generation !== this.generation) return
         const raw = findLibraryList(response)
         if (!raw) throw new Error('内容格式暂不可读取，请重试。')
-        const items = ['follow', 'news'].includes(tab) ? raw : raw.map(song => normalizeLibrarySong(song, tab === 'cloud' ? { source: 'cloud', sourceUserId: this.userId } : {}))
+        const items = tab === 'follow' ? raw.map(normalizeLibraryArtist) : tab === 'news' ? raw : await completeLibrarySongs(raw.map(song => normalizeLibrarySong(song, tab === 'cloud' ? { source: 'cloud', sourceUserId: this.userId } : {})), { signal: controller.signal })
+        if (this.disposed || generation !== this.generation || controller.signal.aborted) return
         const previousCursor = state.cursor
         appendLibraryPage(state, items, response, { append })
         if (['follow', 'listen'].includes(tab)) state.more = false
@@ -81,6 +139,5 @@ export default {
 }
 </script>
 
-<style scoped>
-.library-page{padding:40px clamp(24px,5vw,76px) 70px;overflow:auto;color:var(--color-text)}header{max-width:760px;margin-bottom:32px}.eyebrow{font-size:11px;letter-spacing:.16em;color:var(--color-text-secondary)}h1{font-size:clamp(27px,3.2vw,46px);letter-spacing:-.04em;margin:12px 0 18px}h1 span{color:var(--color-primary)}header>p:last-child,.hint{color:var(--color-text-secondary);line-height:1.8;font-size:14px}.tabs,.filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:20px 0}.tabs{border-bottom:1px solid var(--color-border);padding-bottom:14px}button,select{font:inherit;background:transparent;color:inherit;border:1px solid var(--color-border);border-radius:999px;padding:9px 17px;cursor:pointer}.tabs button[aria-current]{color:var(--color-primary);border-color:var(--color-primary);background:var(--color-background-light)}button:disabled{opacity:.45;cursor:default}button:focus-visible,select:focus-visible{outline:2px solid var(--color-primary);outline-offset:3px}.filters{font-size:13px}.section-heading{display:flex;justify-content:space-between;align-items:center;margin-top:32px}.section-heading h2{font-size:21px}.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(145px,1fr));gap:28px 24px;margin:18px 0}.music-card{display:flex;flex-direction:column;text-align:left;gap:10px;min-width:0;border:0;border-radius:10px;padding:0;background:none}.card-cover{width:100%;aspect-ratio:1;border-radius:10px;transition:transform .25s}.artist-card .card-cover{border-radius:50%}.music-card:hover .card-cover{transform:translateY(-4px)}.music-card strong{font-size:14px;line-height:1.6}.music-card>span{font-size:12px;color:var(--color-text-secondary)}.status{padding:50px 0;text-align:center;color:var(--color-text-secondary)}.error{padding:14px;border:1px solid var(--color-border);border-radius:12px}.load-more{display:block;margin:30px auto}.loading-spinner{display:inline-block;margin-right:8px}@media(prefers-reduced-motion:reduce){.card-cover{transition:none}}@media(max-width:650px){.library-page{padding:24px 20px 60px}.cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:22px 14px}}
-</style>
+<style src="./styles/ListPage.css" scoped></style>
+<style src="./styles/MyMusicView.css" scoped></style>

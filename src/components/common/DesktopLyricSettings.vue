@@ -5,7 +5,7 @@
       <div class="desktop-actions"><button id="desktop-open" type="button" :disabled="!available || working" @click="runAction('show')">{{ working ? '处理中…' : '打开桌面歌词' }}</button><button id="desktop-recover" type="button" :disabled="!canRecover || working" @click="runAction('resetPosition')">找回并解锁</button></div>
     </header>
     <p v-if="!available" class="desktop-note">桌面歌词窗口仅在桌面客户端中可用。</p>
-    <Transition name="ui-fade" mode="out-in"><p v-if="message" :key="message" class="desktop-note" :class="{ 'desktop-error': failed }" :role="failed ? 'alert' : 'status'">{{ message }}</p></Transition>
+    <AppNotice :message="message" :type="failed ? 'error' : 'success'" title="桌面歌词" />
 
     <AnimatedDetails class="desktop-section" :open="true">
       <template #summary><span><strong>播放与动画</strong><small>行数、逐字高亮与换句效果</small></span><span class="desktop-disclosure" aria-hidden="true">⌄</span></template>
@@ -210,7 +210,6 @@ button:disabled { opacity: .5; cursor: default; }
 input[type="color"] { width: 32px; height: 30px; flex: 0 0 32px; padding: 2px; border: 1px solid var(--color-border); border-radius: 7px; background: transparent; cursor: pointer; }
 .desktop-shadow-controls { min-width: 0; padding: 0; margin: 0; border: 0; transition: opacity .18s ease; }
 .desktop-reset-row { justify-content: flex-end; padding: 8px 0 20px; }
-.desktop-note.desktop-error { color: var(--color-error); }
 @container (max-width: 540px) { .desktop-heading { flex-direction: column; gap: 12px; } .desktop-row { gap: 14px; } .desktop-range { flex-basis: 150px; width: 150px; } .desktop-font-row { align-items: flex-start; flex-direction: column; } .desktop-font { justify-content: flex-start; max-width: 100%; } }
 @container (max-width: 390px) { .desktop-range-row { flex-wrap: wrap; gap: 9px; } .desktop-range-row > div:first-child { flex-basis: 100%; } .desktop-range { flex: 1 1 100%; width: 100%; } .desktop-row label { font-size: 12px; } }
 @media (prefers-reduced-motion: reduce) { *, *::after { transition: none !important; animation: none !important; } }

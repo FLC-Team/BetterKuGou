@@ -4,7 +4,7 @@
       <div class="playlist-dialog-mask" @click.self="close" @keydown.esc.stop="close">
         <section ref="panel" class="playlist-dialog" role="dialog" aria-modal="true" aria-labelledby="playlist-dialog-title" tabindex="-1" @keydown.tab="trapFocus">
           <header><div><p class="eyebrow">YOUR COLLECTION</p><h2 id="playlist-dialog-title">{{ heading }}</h2></div><button type="button" :disabled="busy" aria-label="关闭" @click="close">×</button></header>
-          <p v-if="error" class="error" role="alert">{{ error }}</p>
+          <AppNotice :message="error" type="error" title="歌单操作" />
           <form v-if="mode === 'create'" @submit.prevent="create">
             <label>歌单名称<input ref="nameInput" v-model="name" required maxlength="200" :disabled="busy" autocomplete="off" /></label>
             <label class="privacy"><input v-model="isPrivate" type="checkbox" :disabled="busy" />设为私密歌单</label>
@@ -156,6 +156,6 @@ function collect() { return run(async request => {
 .playlist-dialog { width:min(480px,100%); max-height:80vh; overflow:auto; padding:28px; border-radius:24px; background:var(--color-background-light); color:var(--color-text); box-shadow:0 24px 80px #0004; border:1px solid var(--color-border); }
 header { display:flex; justify-content:space-between; align-items:center; gap:20px; } h2 { margin:6px 0 24px; } .eyebrow { font-size:10px; letter-spacing:.18em; color:var(--color-text-secondary); }
 form,label { display:grid; gap:10px; } form { gap:22px; } input:not([type=checkbox]) { width:100%; padding:12px; border:1px solid var(--color-border); border-radius:10px; background:var(--color-background-lighter); color:inherit; box-sizing:border-box; }
-.privacy { display:flex; align-items:center; gap:10px; margin:18px 0; } button { padding:10px 16px; border:1px solid var(--color-border); border-radius:10px; color:inherit; background:var(--color-background-lighter); cursor:pointer; } button:disabled { opacity:.45; cursor:wait; } .primary { background:var(--color-primary); color:white; } .danger,.error { color:var(--color-error,#c44); } .error { line-height:1.6; } .pending { color:var(--color-text-secondary); }
+.privacy { display:flex; align-items:center; gap:10px; margin:18px 0; } button { padding:10px 16px; border:1px solid var(--color-border); border-radius:10px; color:inherit; background:var(--color-background-lighter); cursor:pointer; } button:disabled { opacity:.45; cursor:wait; } .primary { background:var(--color-primary); color:white; } .danger { color:var(--color-error,#c44); } .pending { color:var(--color-text-secondary); }
 .destinations { display:grid; gap:8px; max-height:45vh; overflow:auto; } .destinations button { display:flex; justify-content:space-between; text-align:left; }
 </style>

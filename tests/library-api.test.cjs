@@ -18,6 +18,7 @@ const plain = value => JSON.parse(JSON.stringify(value))
 function fixture(respond = () => ({ status: 1, data: { list: [] } })) {
   const storage = new Map([['kugou_token', 'placeholder-token'], ['kugou_userid', '123']])
   const requests = []
+  const warnings = []
   const apiClient = {
     async get(route, config) {
       const request = { route, method: 'get', params: config.params, config }
@@ -30,9 +31,93 @@ function fixture(respond = () => ({ status: 1, data: { list: [] } })) {
       return respond(request, requests.length)
     },
   }
-  const api = load('src/api/library.js', { apiClient, ...metadata, localStorage: { getItem: key => storage.get(key) ?? null } })
-  return { api, storage, requests }
+  const api = load('src/api/library.js', { apiClient, ...metadata, logger: { warn: (...args) => warnings.push(args) },
+    localStorage: { getItem: key => storage.get(key) ?? null } })
+  return { api, storage, requests, warnings }
 }
+
+test('history wrappers and followed singer extensions retain real identities and artwork fields', () => {
+  const song = metadata.normalizeLibrarySong({ mxid: 81, song: { FileName: 'Artist - Track.mp3',
+    FileHash: ' ABC ', album_img: 'https://imge.kugou.com/{size}/album.jpg', SingerName: 'Artist' }, time: 1700000000 })
+  assert.equal(song.hash, 'abc')
+  assert.equal(song.album_audio_id, 81)
+  assert.equal(song.name, 'Artist - Track.mp3')
+  assert.equal(song.cover, 'https://imge.kugou.com/{size}/album.jpg')
+  assert.equal(song.singerinfo[0].name, 'Artist')
+  for (const extra of [{ singerid: 42, k_pic: '//singerimg.kugou.com/{size}/artist.jpg' },
+    JSON.stringify({ singerid: 42, k_pic: '//singerimg.kugou.com/{size}/artist.jpg' })]) {
+    const artist = metadata.normalizeLibraryArtist({ userid: 999, nickname: 'Artist', ext_params: extra })
+    assert.equal(artist.singerid, 42)
+    assert.equal(artist.singername, 'Artist')
+    assert.equal(artist.avatar, '//singerimg.kugou.com/{size}/artist.jpg')
+  }
+  const person = metadata.normalizeLibraryArtist({ userid: 999, nickname: 'Person', ext_params: '{broken' })
+  assert.equal(person.singerid, undefined, 'a followed user ID cannot become a singer ID')
+})
+
+test('history metadata fills missing playable hashes and covers without changing source, permissions or file identity', async () => {
+  const f = fixture(({ route, params }) => {
+    assert.equal(route, '/krm/audio')
+    assert.equal(params.album_audio_id, '81,82')
+    assert.equal(params.fields, 'base,audio_info,album_info,authors.base')
+    return { status: 1, data: [81, 82].map(id => ({ base: { album_audio_id: id, songname: `Track ${id}` },
+      audio_info: { hash_128: `HASH${id}`, duration_128: 180000 },
+      album_info: { sizable_cover: `https://imge.kugou.com/{size}/${id}.jpg` },
+      authors: [{ base: { author_id: 9, author_name: 'Artist' } }], copyright: { privilege: 10 } })) }
+  })
+  const input = [{ mxid: 81, fileid: 12, privilege: 1 }, { album_audio_id: 82, hash: 'existing', name: 'Original.mp3',
+    source: 'cloud', sourceUserId: '123', originalName: 'Original.mp3' }]
+  const songs = await f.api.completeLibrarySongs(input)
+  assert.equal(songs[0].hash, 'hash81')
+  assert.equal(songs[0].cover, 'https://imge.kugou.com/{size}/81.jpg')
+  assert.equal(songs[0].singerinfo[0].id, 9)
+  assert.equal(songs[0].fileid, 12)
+  assert.equal(songs[0].privilege, 1)
+  assert.equal(songs[1].hash, 'existing')
+  assert.equal(songs[1].source, 'cloud')
+  assert.equal(songs[1].sourceUserId, '123')
+  assert.equal(songs[1].originalName, 'Original.mp3')
+  assert.equal(input[0].hash, undefined)
+  assert.equal(f.requests.length, 1, 'metadata resolution never fetches an audio URL')
+})
+
+test('hash-only covers use privilege metadata and optional artwork failure preserves playable rows', async () => {
+  const f = fixture(({ route }) => {
+    assert.equal(route, '/privilege/lite')
+    return { status: 1, data: [{ hash: 'ABC', info: { album_img: 'https://imge.kugou.com/album.jpg' } }] }
+  })
+  const [song] = await f.api.completeLibrarySongs([{ hash: 'abc', name: 'Track', fileid: 42 }])
+  assert.equal(song.cover, 'https://imge.kugou.com/album.jpg')
+  assert.equal(song.fileid, 42)
+  const unavailable = fixture(() => ({ status: 0, error_code: 503 }))
+  const [availableSong] = await unavailable.api.completeLibrarySongs([{ hash: 'abc', name: 'Track' }])
+  assert.equal(availableSong.hash, 'abc')
+  assert.equal(unavailable.warnings.length, 1)
+  await assert.rejects(unavailable.api.completeLibrarySongs([{ mxid: 42 }]), { code: 'LIBRARY_REQUEST_FAILED' })
+})
+
+test('metadata batches are bounded, skip complete records and reject account changes before further requests', async () => {
+  const complete = fixture(() => { throw new Error('unexpected request') })
+  await complete.api.completeLibrarySongs([{ hash: 'abc', name: 'Track', cover: 'https://imge.kugou.com/a.jpg', album_audio_id: 1 }])
+  assert.equal(complete.requests.length, 0)
+  const input = Array.from({ length: 51 }, (_, index) => ({ mxid: index + 1 }))
+  const batched = fixture(({ params }) => ({ status: 1, data: params.album_audio_id.split(',').map(id => ({
+    album_audio_id: Number(id), hash: `hash${id}`, name: `Track ${id}`, cover: `https://imge.kugou.com/${id}.jpg`
+  })) }))
+  assert.equal((await batched.api.completeLibrarySongs(input)).length, 51)
+  assert.deepEqual(batched.requests.map(request => request.params.album_audio_id.split(',').length), [50, 1])
+
+  let finish
+  const changing = fixture(() => new Promise(resolve => { finish = resolve }))
+  const pending = changing.api.completeLibrarySongs(input)
+  changing.storage.set('kugou_userid', '456')
+  finish({ status: 1, data: [] })
+  await assert.rejects(pending, { code: 'ERR_CANCELED' })
+  assert.equal(changing.requests.length, 1)
+  const controller = new AbortController()
+  controller.abort()
+  await assert.rejects(complete.api.completeLibrarySongs([], { signal: controller.signal }), { code: 'ERR_CANCELED' })
+})
 
 test('playlist identities remain separate and fuzzy names never authorize favorite mutations', () => {
   const resource = metadata.normalizePlaylistResource({ id: 'legacy', global_collection_id: 'collection_1_123_9_0',

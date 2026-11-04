@@ -27,9 +27,9 @@
       <Transition name="ui-fade" @before-leave="$event.inert = true" @before-enter="$event.inert = false" @leave-cancelled="$event.inert = false"><div v-if="confirmClear" class="cache-confirm" role="group" aria-label="确认清理缓存"><p>清理本账号的音频、歌词和封面缓存，保留歌单列表；正在播放的文件会在释放后清理。</p><button type="button" :disabled="working" @click="runAction('clear')">确认清理</button><button type="button" :disabled="working" @click="confirmClear = false">取消</button></div></Transition>
     </div>
     <Transition name="ui-fade"><div v-if="migrating" class="cache-migration" role="status"><p class="cache-note cache-working">{{ migrationStage }}</p><progress :value="migrationTotal > 0 ? migrationCompletedBytes : undefined" :max="migrationTotal || 1" aria-label="缓存迁移进度"></progress><p v-if="migrationTotal > 0" class="cache-note">{{ formatBytes(migrationCompletedBytes) }} / {{ formatBytes(migrationTotal) }}</p><p class="cache-note">离开设置页后，迁移仍会继续。</p></div><p v-else-if="busy" class="cache-note cache-working" role="status">正在处理缓存…</p></Transition>
-    <Transition name="ui-fade" mode="out-in"><p v-if="visibleError" :key="visibleError" class="cache-error" role="alert">{{ visibleError }}</p></Transition>
-    <Transition name="ui-fade" mode="out-in"><p v-if="state.migrationWarning?.message" :key="state.migrationWarning.message" class="cache-note" role="status">{{ state.migrationWarning.message }}</p></Transition>
-    <Transition name="ui-fade" mode="out-in"><p v-if="message" :key="message" class="cache-note" role="status">{{ message }}</p></Transition>
+    <AppNotice :message="visibleError" type="error" title="离线缓存" />
+    <AppNotice :message="state.migrationWarning?.message" type="warning" title="缓存迁移" />
+    <AppNotice :message="message" type="success" title="离线缓存" />
   </div>
 </template>
 
@@ -181,7 +181,6 @@ button:hover:not(:disabled) { border-color: var(--color-primary); color: var(--c
 button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
 button:active:not(:disabled) { scale: .98; }
 button:disabled { opacity: .5; cursor: default; }
-.cache-error { margin-top: 12px; color: var(--color-error); line-height: 1.8; }
 .cache-switch span { transition: background-color .18s ease; }
 .cache-working::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 7px; border: 1px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: cache-working .7s linear infinite; }
 .cache-confirm { border-left: 2px solid var(--color-primary); padding-left: 14px; }

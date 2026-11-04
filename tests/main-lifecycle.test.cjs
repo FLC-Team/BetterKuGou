@@ -5,11 +5,17 @@ const path = require('node:path')
 const vm = require('node:vm')
 const { EventEmitter } = require('node:events')
 
-function loadMain({ uninitialized = false, platform = 'linux', packaged = false, toolbarResult = true, missingIcon = false, minimizeToTray = true } = {}) {
+function loadMain({ uninitialized = false, failInitialization = false, platform = 'linux', packaged = false, toolbarResult = true, missingIcon = false, minimizeToTray = true, promptBeforeClose = false, legacyCloseSettings = false } = {}) {
   const windows = []
   const timers = new Map()
   const iconPaths = []
   const warnings = []
+  const dialogs = []
+  const errors = []
+  const settingsWrites = []
+  const settingsWrite = { beforeCommit: null }
+  const settings = { software: { minimizeToTray, updates: { autoCheck: true }, defaultPage: 'home' }, islandLyrics: { enabled: false } }
+  if (!legacyCloseSettings) settings.software.promptBeforeClose = promptBeforeClose
   let timerId = 0
   let stopCalls = 0
   let startCalls = 0
@@ -25,11 +31,24 @@ function loadMain({ uninitialized = false, platform = 'linux', packaged = false,
   app.isPackaged = packaged
   app.commandLine = { appendSwitch() {} }
   app.whenReady = () => readyGate
+  app.setAppUserModelId = id => {
+    assert.equal(windows.length, 0, 'Windows identity is assigned before any window is created')
+    app.userModelId = id
+  }
   app.getPath = () => '/user-data'
   app.getAppPath = () => '/app'
   app.getVersion = () => '0.1.0'
   app.quitCalls = 0
-  app.quit = () => { app.quitCalls += 1 }
+  app.completedQuitCalls = 0
+  app.quit = () => {
+    app.quitCalls += 1
+    let prevented = false
+    app.emit('before-quit', { preventDefault: () => { prevented = true } })
+    if (!prevented) {
+      app.completedQuitCalls += 1
+      Window.getAllWindows().forEach(window => window.close())
+    }
+  }
   class Window extends EventEmitter {
     constructor(options) {
       super()
@@ -41,9 +60,11 @@ function loadMain({ uninitialized = false, platform = 'linux', packaged = false,
       this.thumbarCalls = []
       this.thumbarButtons = null
       this.thumbarResult = toolbarResult
+      this.backgroundThrottling = true
       this.webContents = Object.assign(new EventEmitter(), {
         send: (...args) => this.sent.push(args), mainFrame: {},
-        openDevTools() {}, session: { clearCache: async () => {} }
+        openDevTools() {}, session: { clearCache: async () => {} },
+        setBackgroundThrottling: value => { this.backgroundThrottling = value }
       })
       windows.push(this)
     }
@@ -51,17 +72,19 @@ function loadMain({ uninitialized = false, platform = 'linux', packaged = false,
     loadURL() { return Promise.resolve() }
     loadFile() { return Promise.resolve() }
     hide() { this.hidden = true }
-    show() { this.showCalls += 1; this.emit('show') }
+    show() { this.hidden = false; this.showCalls += 1; this.emit('show') }
     focus() {}
     getBounds() { return { x: this.options.x, y: this.options.y, width: this.options.width, height: this.options.height } }
     setBounds(bounds) { Object.assign(this.options, bounds) }
-    close() { this.destroyed = true; this.emit('closed') }
-    requestClose() {
+    destroy() { if (!this.destroyed) { this.destroyed = true; this.emit('closed') } }
+    close() {
+      if (this.destroyed) return false
       let prevented = false
       this.emit('close', { preventDefault: () => { prevented = true } })
-      if (!prevented) this.close()
+      if (!prevented) this.destroy()
       return !prevented
     }
+    requestClose() { return this.close() }
     setThumbarButtons(buttons) {
       this.thumbarCalls.push(buttons)
       // Electron 32 accepts an empty flag list for enabled buttons; "enabled" rejects registration.
@@ -78,7 +101,17 @@ function loadMain({ uninitialized = false, platform = 'linux', packaged = false,
   const electron = {
     app, BrowserWindow: Window,
     ipcMain,
-    globalShortcut: { unregisterAll() {} }, dialog: {}, shell: {},
+    globalShortcut: { unregisterAll() {} }, dialog: {
+      showMessageBox(window, options) {
+        if (!options) { options = window; window = null }
+        if (options.type === 'error') {
+          errors.push({ window, options })
+          return Promise.resolve({ response: 0 })
+        }
+        return new Promise((resolve, reject) => dialogs.push({ window, options, resolve, reject }))
+      },
+      showErrorBox(title, message) { errors.push({ title, message }) }
+    }, shell: {},
     nativeImage: { createFromPath: filename => {
       iconPaths.push(filename)
       const image = { path: filename, isEmpty: () => missingIcon, resize: () => image }
@@ -105,10 +138,16 @@ function loadMain({ uninitialized = false, platform = 'linux', packaged = false,
       }) }
       if (name === './settingsStore') return {
         normalizeDesktopLyrics: require('../electron/settingsStore').normalizeDesktopLyrics,
-        initSettingsStore: async () => {}, ensureCacheDirectory: async () => {},
+        initSettingsStore: async () => { if (failInitialization) throw new Error('controlled initialization failure') }, ensureCacheDirectory: async () => {},
+        setSettings: async patch => {
+          settingsWrites.push(JSON.parse(JSON.stringify(patch)))
+          await settingsWrite.beforeCommit?.(patch)
+          Object.assign(settings.software, patch.software)
+          return JSON.parse(JSON.stringify(settings))
+        },
         onSettingsChange: () => () => {}, getSettings: () => {
         if (uninitialized) throw new Error('Settings store not initialized')
-        return { software: { minimizeToTray, updates: {} }, islandLyrics: { enabled: false } }
+        return JSON.parse(JSON.stringify(settings))
       } }
       return require(name)
     },
@@ -123,8 +162,278 @@ function loadMain({ uninitialized = false, platform = 'linux', packaged = false,
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../electron/main.js'), 'utf8'), context)
   const api = vm.runInContext('({ createWindow, createLoadingWindow, createDesktopLyricWindow, performApplicationCleanup, startMemoryCleanup, stopMemoryCleanup, broadcastPlayerControl, updateTaskbarButtons, notifyInstallPreparation, restoreMainWindowOnActivate, getCleanupTask: () => cleanupPromise })', context)
   return { api, app, windows, timers, releaseStop, releaseReady, releaseBackend, backendStopStarted, ipcMain, handlers, iconPaths, warnings,
+    dialogs, errors, settings, settingsWrites, settingsWrite,
     stopCalls: () => stopCalls, startCalls: () => startCalls }
 }
+
+async function settleCloseRequest() {
+  for (let index = 0; index < 16; index++) await Promise.resolve()
+}
+
+for (const platform of ['win32', 'linux', 'darwin']) {
+  for (const packaged of [false, true]) {
+    test(`${platform} ${packaged ? 'packaged' : 'development'} startup uses the application icon and Windows shortcut identity`, async () => {
+      const fixture = loadMain({ platform, packaged, failInitialization: true })
+      fixture.releaseReady()
+      await settleCloseRequest()
+      const config = require('../package.json')
+      assert.equal(fixture.app.userModelId, platform === 'win32' ? config.build.appId : undefined)
+      assert.equal(fixture.windows.length, 2, 'startup creates both the loading window and the error window')
+      const loading = fixture.windows[0]
+      const main = fixture.windows[1]
+      const expectedIcon = path.join(__dirname, packaged ? '../dist/logo.png' : '../public/logo.png')
+      assert.equal(loading.options.icon, expectedIcon)
+      assert.equal(main.options.icon, expectedIcon)
+    })
+  }
+}
+
+for (const legacyCloseSettings of [false, true]) {
+  test(`${legacyCloseSettings ? 'legacy' : 'new'} settings ask before closing and cancellation never remembers a choice`, async () => {
+    const fixture = loadMain({ promptBeforeClose: true, legacyCloseSettings, minimizeToTray: false })
+    fixture.api.createWindow()
+    const main = fixture.windows[0]
+    assert.equal(main.requestClose(), false)
+    assert.equal(fixture.dialogs.length, 1)
+    const prompt = fixture.dialogs[0]
+    assert.equal(prompt.window, main)
+    assert.deepEqual(Array.from(prompt.options.buttons), ['最小化到托盘', '退出程序', '取消'])
+    assert.equal(prompt.options.defaultId, 1)
+    assert.equal(prompt.options.cancelId, 2)
+    assert.equal(prompt.options.checkboxLabel, '不再提示')
+    assert.equal(prompt.options.checkboxChecked, false)
+    prompt.resolve({ response: 2, checkboxChecked: true })
+    await settleCloseRequest()
+    assert.equal(main.hidden, false)
+    assert.equal(main.destroyed, false)
+    assert.equal(fixture.app.quitCalls, 0)
+    assert.equal(fixture.settingsWrites.length, 0)
+    main.requestClose()
+    assert.equal(fixture.dialogs.length, 2)
+    fixture.dialogs[1].resolve({ response: 2 })
+    await settleCloseRequest()
+  })
+}
+
+test('unchecked tray choice applies only once and repeated close requests share one prompt', async () => {
+  const fixture = loadMain({ promptBeforeClose: true, minimizeToTray: false })
+  fixture.api.createWindow()
+  const main = fixture.windows[0]
+  main.requestClose()
+  main.requestClose()
+  fixture.ipcMain.emit('window-close', mainEvent(main))
+  assert.equal(fixture.dialogs.length, 1)
+  fixture.dialogs[0].resolve({ response: 0, checkboxChecked: false })
+  await settleCloseRequest()
+  assert.equal(main.hidden, true)
+  assert.equal(fixture.settingsWrites.length, 0)
+  assert.equal(fixture.settings.software.minimizeToTray, false)
+  assert.equal(fixture.settings.software.promptBeforeClose, true)
+  main.show()
+  main.requestClose()
+  assert.equal(fixture.dialogs.length, 2)
+  fixture.dialogs[1].resolve({ response: 2 })
+  await settleCloseRequest()
+})
+
+for (const response of [0, 1]) {
+  test(`remembered ${response === 0 ? 'tray' : 'exit'} choice waits for persistence, preserves other settings and survives a new process`, async () => {
+    const fixture = loadMain({ platform: 'darwin', promptBeforeClose: true, minimizeToTray: response !== 0 })
+    fixture.api.createWindow()
+    const main = fixture.windows[0]
+    let releaseSave
+    fixture.settingsWrite.beforeCommit = () => new Promise(resolve => { releaseSave = resolve })
+    main.requestClose()
+    fixture.dialogs[0].resolve({ response, checkboxChecked: true })
+    await settleCloseRequest()
+    assert.deepEqual(fixture.settingsWrites, [{ software: { minimizeToTray: response === 0, promptBeforeClose: false } }])
+    assert.equal(main.hidden, false)
+    assert.equal(main.destroyed, false)
+    assert.equal(fixture.app.quitCalls, 0)
+    main.requestClose()
+    assert.equal(fixture.dialogs.length, 1, 'pending persistence must also suppress duplicate prompts')
+    releaseSave()
+    await settleCloseRequest()
+    assert.equal(fixture.settings.software.promptBeforeClose, false)
+    assert.equal(fixture.settings.software.minimizeToTray, response === 0)
+    assert.equal(fixture.settings.software.defaultPage, 'home')
+    assert.deepEqual(fixture.settings.software.updates, { autoCheck: true })
+    if (response === 0) {
+      assert.equal(main.hidden, true)
+      assert.equal(fixture.app.quitCalls, 0)
+      main.show()
+      main.requestClose()
+      await settleCloseRequest()
+      assert.equal(main.hidden, true)
+      assert.equal(fixture.dialogs.length, 1)
+    } else {
+      assert.equal(fixture.app.quitCalls, 1)
+      assert.equal(main.destroyed, false, 'explicit exit waits for background cleanup even on macOS')
+      fixture.releaseStop()
+      await fixture.api.getCleanupTask()
+      await settleCloseRequest()
+      assert.equal(fixture.app.completedQuitCalls, 1)
+      assert.equal(main.destroyed, true)
+    }
+
+    const restarted = loadMain({ ...fixture.settings.software })
+    restarted.api.createWindow()
+    restarted.windows[0].requestClose()
+    await settleCloseRequest()
+    assert.equal(restarted.dialogs.length, 0)
+    if (response === 0) assert.equal(restarted.windows[0].hidden, true)
+    else {
+      assert.equal(restarted.app.quitCalls, 1)
+      restarted.releaseStop()
+      await restarted.api.getCleanupTask()
+    }
+  })
+}
+
+test('unchecked exit overrides the saved tray preference without changing it', async () => {
+  const fixture = loadMain({ promptBeforeClose: true, minimizeToTray: true })
+  fixture.api.createWindow()
+  const main = fixture.windows[0]
+  main.requestClose()
+  assert.equal(fixture.dialogs[0].options.defaultId, 0)
+  fixture.dialogs[0].resolve({ response: 1, checkboxChecked: false })
+  await settleCloseRequest()
+  assert.equal(main.hidden, false)
+  assert.equal(fixture.app.quitCalls, 1)
+  assert.equal(fixture.settingsWrites.length, 0)
+  assert.equal(fixture.settings.software.minimizeToTray, true)
+  assert.equal(fixture.settings.software.promptBeforeClose, true)
+  fixture.releaseStop()
+  await fixture.api.getCleanupTask()
+  await settleCloseRequest()
+  assert.equal(main.destroyed, true)
+})
+
+for (const failure of ['dialog', 'save']) {
+  test(`${failure} failure keeps the window open and allows another close attempt`, async () => {
+    const fixture = loadMain({ promptBeforeClose: true, minimizeToTray: false })
+    fixture.api.createWindow()
+    const main = fixture.windows[0]
+    fixture.ipcMain.emit('renderer:ready', mainEvent(main))
+    if (failure === 'save') fixture.settingsWrite.beforeCommit = async () => { throw new Error('test write failure') }
+    main.requestClose()
+    if (failure === 'dialog') fixture.dialogs[0].reject(new Error('test dialog failure'))
+    else fixture.dialogs[0].resolve({ response: 1, checkboxChecked: true })
+    await settleCloseRequest()
+    assert.equal(fixture.errors.length, 0)
+    assert.match(main.sent.find(([channel]) => channel === 'app:notice')?.[1]?.message || '', /未能完成关闭操作/)
+    assert.equal(main.hidden, false)
+    assert.equal(main.destroyed, false)
+    assert.equal(fixture.app.quitCalls, 0)
+    assert.equal(fixture.settings.software.promptBeforeClose, true)
+    fixture.settingsWrite.beforeCommit = null
+    main.requestClose()
+    assert.equal(fixture.dialogs.length, 2)
+    fixture.dialogs[1].resolve({ response: 0, checkboxChecked: true })
+    await settleCloseRequest()
+    assert.equal(main.hidden, true)
+    assert.equal(fixture.settings.software.promptBeforeClose, false)
+  })
+}
+
+test('close IPC accepts only the current main top frame and uses the same prompt as native close', async () => {
+  const fixture = loadMain({ promptBeforeClose: true })
+  fixture.api.createWindow()
+  const main = fixture.windows[0]
+  const desktop = fixture.api.createDesktopLyricWindow()
+  fixture.ipcMain.emit('window-close', mainEvent(desktop))
+  fixture.ipcMain.emit('window-close', { ...mainEvent(main), senderFrame: {} })
+  assert.equal(fixture.dialogs.length, 0)
+  assert.equal(desktop.hidden, false)
+  assert.equal(desktop.destroyed, false)
+  fixture.ipcMain.emit('window-close', mainEvent(main))
+  assert.equal(fixture.dialogs.length, 1)
+  main.requestClose()
+  assert.equal(fixture.dialogs.length, 1)
+  fixture.dialogs[0].resolve({ response: 2 })
+  await settleCloseRequest()
+  desktop.destroy()
+})
+
+test('a pending prompt cannot change preferences or hide a replacement window', async () => {
+  const fixture = loadMain({ promptBeforeClose: true, minimizeToTray: true })
+  fixture.api.createWindow()
+  const previous = fixture.windows[0]
+  previous.requestClose()
+  previous.destroy()
+  fixture.api.createWindow()
+  const replacement = fixture.windows[1]
+  replacement.requestClose()
+  assert.equal(fixture.dialogs.length, 2, 'a replacement window has its own pending-close guard')
+  fixture.dialogs[0].resolve({ response: 0, checkboxChecked: true })
+  await settleCloseRequest()
+  assert.equal(fixture.settingsWrites.length, 0)
+  assert.equal(replacement.hidden, false)
+  assert.equal(fixture.app.quitCalls, 0)
+  fixture.dialogs[1].resolve({ response: 2 })
+  await settleCloseRequest()
+})
+
+test('application exit invalidates an outstanding close prompt', async () => {
+  const fixture = loadMain({ promptBeforeClose: true })
+  fixture.api.createWindow()
+  const main = fixture.windows[0]
+  main.requestClose()
+  fixture.app.quit()
+  fixture.dialogs[0].resolve({ response: 0, checkboxChecked: true })
+  await settleCloseRequest()
+  assert.equal(fixture.settingsWrites.length, 0)
+  assert.equal(main.hidden, false)
+  assert.equal(fixture.app.quitCalls, 1)
+  fixture.releaseStop()
+  await fixture.api.getCleanupTask()
+  await settleCloseRequest()
+  assert.equal(fixture.app.completedQuitCalls, 1)
+})
+
+test('installation preparation blocks new close requests and invalidates pending prompt results', async () => {
+  const fixture = loadMain({ promptBeforeClose: true })
+  fixture.api.createWindow()
+  const main = fixture.windows[0]
+  fixture.ipcMain.emit('renderer:ready', mainEvent(main))
+  assert.equal(fixture.api.notifyInstallPreparation({ requestId: 'close-test', phase: 'prepare' }), true)
+  main.requestClose()
+  fixture.ipcMain.emit('window-close', mainEvent(main))
+  await settleCloseRequest()
+  assert.equal(fixture.dialogs.length, 0)
+  assert.equal(main.hidden, false)
+  assert.equal(main.destroyed, false)
+  fixture.api.notifyInstallPreparation({ requestId: 'close-test', phase: 'canceled' })
+  main.requestClose()
+  assert.equal(fixture.dialogs.length, 1)
+  fixture.api.notifyInstallPreparation({ requestId: 'close-test-2', phase: 'prepare' })
+  fixture.dialogs[0].resolve({ response: 1, checkboxChecked: true })
+  await settleCloseRequest()
+  assert.equal(fixture.settingsWrites.length, 0)
+  assert.equal(fixture.app.quitCalls, 0)
+  fixture.api.notifyInstallPreparation({ requestId: 'close-test-2', phase: 'canceled' })
+  fixture.api.stopMemoryCleanup()
+})
+
+test('a close preference save completed after application exit cannot execute a second close action', async () => {
+  const fixture = loadMain({ promptBeforeClose: true })
+  fixture.api.createWindow()
+  const main = fixture.windows[0]
+  let releaseSave
+  fixture.settingsWrite.beforeCommit = () => new Promise(resolve => { releaseSave = resolve })
+  main.requestClose()
+  fixture.dialogs[0].resolve({ response: 0, checkboxChecked: true })
+  await settleCloseRequest()
+  fixture.app.quit()
+  releaseSave()
+  await settleCloseRequest()
+  assert.equal(main.hidden, false)
+  assert.equal(fixture.app.quitCalls, 1)
+  fixture.releaseStop()
+  await fixture.api.getCleanupTask()
+  await settleCloseRequest()
+  assert.equal(fixture.app.completedQuitCalls, 1)
+})
 
 test('startup creates the main window immediately and only its mounted top frame can reveal it', async () => {
   const fixture = loadMain()
@@ -196,7 +505,7 @@ test('desktop playback availability follows main reload, readiness, crash and in
   assert.equal(latest().available, false)
   fixture.ipcMain.emit('renderer:ready', event)
   assert.equal(latest().available, true)
-  main.close()
+  main.destroy()
   assert.equal(latest().available, false)
   assert.equal(latest().playing, false)
   desktop.close()
@@ -217,7 +526,7 @@ test('explicit quit allows the main window to close despite minimize-to-tray', a
   assert.equal(fixture.windows[0].hidden, false)
 })
 
-for (const platform of ['win32', 'linux']) {
+for (const platform of ['win32', 'linux', 'darwin']) {
   for (const withDesktopLyrics of [false, true]) {
     test(`${platform} main close with island disabled cleans up ${withDesktopLyrics ? 'desktop lyrics and' : 'all'} background services before quitting`, async () => {
       const fixture = loadMain({ platform, minimizeToTray: false })
@@ -226,20 +535,23 @@ for (const platform of ['win32', 'linux']) {
       const desktop = withDesktopLyrics ? fixture.api.createDesktopLyricWindow() : null
       fixture.api.startMemoryCleanup()
 
-      assert.equal(main.requestClose(), true)
+      assert.equal(main.requestClose(), false)
+      await settleCloseRequest()
       const cleanup = fixture.api.getCleanupTask()
       assert.equal(typeof cleanup?.then, 'function', 'main close must start cleanup even with the island disabled')
       await fixture.app.listeners('window-all-closed')[0]()
       await fixture.backendStopStarted
       assert.equal(fixture.stopCalls(), 1, 'a later window-all-closed must reuse the same cleanup')
-      assert.equal(fixture.app.quitCalls, 0, 'quit must wait for the backend to finish stopping')
+      assert.equal(fixture.app.completedQuitCalls, 0, 'quit must wait for the backend to finish stopping')
+      assert.equal(main.destroyed, false, 'the main renderer remains alive until cleanup finishes')
       if (desktop) assert.equal(desktop.destroyed, true)
       assert.equal(fixture.timers.size, 0)
 
       fixture.releaseStop()
       await cleanup
       await Promise.resolve()
-      assert.equal(fixture.app.quitCalls, 1)
+      assert.equal(fixture.app.completedQuitCalls, 1)
+      assert.equal(main.destroyed, true)
     })
   }
 }
@@ -265,13 +577,13 @@ test('minimize-to-tray keeps the main window, desktop lyrics and background serv
   assert.equal(fixture.timers.size, 0)
 })
 
-test('macOS main close keeps desktop lyrics and services until explicit quit and Dock activation rebuilds the main window', async () => {
+test('macOS unexpected main destruction keeps auxiliary services and Dock activation rebuilds the main window', async () => {
   const fixture = loadMain({ platform: 'darwin', minimizeToTray: false })
   fixture.api.createWindow()
   const main = fixture.windows[0]
   const desktop = fixture.api.createDesktopLyricWindow()
 
-  assert.equal(main.requestClose(), true)
+  main.destroy()
   assert.equal(main.destroyed, true)
   assert.equal(desktop.destroyed, false)
   assert.equal(fixture.api.getCleanupTask(), null)
@@ -343,6 +655,48 @@ function mainEvent(window) {
   return { sender: window.webContents, senderFrame: window.webContents.mainFrame }
 }
 
+test('failed initialization shows only the unified-notice shell and exits through the existing cleanup', async () => {
+  const fixture = loadMain({ failInitialization: true, uninitialized: true })
+  fixture.releaseReady()
+  await settleCloseRequest()
+  assert.equal(fixture.windows.length, 2, 'loading window and fatal-notice shell only')
+  const main = fixture.windows[1]
+  assert.equal(fixture.startCalls(), 0, 'the backend must not start against failed settings')
+  assert.equal(fixture.app.quitCalls, 0, 'keep the failure readable until acknowledged')
+  assert.equal(fixture.errors.length, 0, 'no independent native error dialog')
+  const getFailure = fixture.handlers.get('app:get-startup-failure')
+  assert.equal(getFailure({ sender: {}, senderFrame: {} }), null)
+  assert.match(getFailure(mainEvent(main)).message, /无法读取或保存设置/)
+  assert.equal(fixture.handlers.get('app:quit-after-startup-failure')({ sender: main.webContents, senderFrame: {} }), false)
+  fixture.ipcMain.emit('renderer:ready', mainEvent(main))
+  assert.equal(main.hidden, false)
+  assert.equal(fixture.windows[0].destroyed, true)
+  assert.equal([...fixture.timers.values()].some(timer => timer.delay === 15000), false)
+  assert.equal(fixture.handlers.get('app:quit-after-startup-failure')(mainEvent(main)), true)
+  await fixture.backendStopStarted
+  fixture.releaseStop()
+  await fixture.api.getCleanupTask()
+  await settleCloseRequest()
+  assert.equal(fixture.app.completedQuitCalls, 1)
+  assert.equal(main.destroyed, true)
+})
+
+test('fatal-notice shell that never mounts times out and releases its startup timer', async () => {
+  const fixture = loadMain({ failInitialization: true, uninitialized: true })
+  fixture.releaseReady()
+  await settleCloseRequest()
+  const timer = [...fixture.timers.entries()].find(([, value]) => value.delay === 15000)
+  assert.ok(timer)
+  fixture.timers.delete(timer[0])
+  timer[1].callback()
+  await fixture.backendStopStarted
+  fixture.releaseStop()
+  await fixture.api.getCleanupTask()
+  await settleCloseRequest()
+  assert.equal(fixture.app.completedQuitCalls, 1)
+  assert.equal(fixture.timers.size, 0)
+})
+
 function latestTaskbar(window) {
   const buttons = window.thumbarButtons
   assert.equal(buttons?.length, 3, 'Windows preview must expose exactly three transport buttons')
@@ -375,6 +729,29 @@ test('Windows thumbnail controls wait for renderer readiness and reuse the exist
   assert.deepEqual(playerActions(main), [], 'disabled startup clicks must not be replayed after mount')
   latestTaskbar(main).forEach(button => button.click())
   assert.deepEqual(playerActions(main), ['prev', 'play', 'next'])
+})
+
+test('audio scheduling remains responsive in the background and restores throttling on pause, clear and reload', () => {
+  const fixture = loadMain()
+  fixture.api.createWindow()
+  const main = fixture.windows[0]
+  const event = mainEvent(main)
+  assert.equal(main.backgroundThrottling, true)
+  fixture.ipcMain.emit('player:playback-state', event, 'playing')
+  assert.equal(main.backgroundThrottling, false)
+  main.hide()
+  assert.equal(main.backgroundThrottling, false, 'hiding a playing window must not slow fades')
+  fixture.ipcMain.emit('player:playback-state', event, 'paused')
+  assert.equal(main.backgroundThrottling, true)
+  fixture.ipcMain.emit('player:playback-state', { sender: {}, senderFrame: {} }, 'playing')
+  assert.equal(main.backgroundThrottling, true, 'another renderer cannot disable throttling')
+  fixture.ipcMain.emit('player:playback-state', event, 'playing')
+  fixture.ipcMain.emit('player:track-update', event, null)
+  assert.equal(main.backgroundThrottling, true)
+  fixture.ipcMain.emit('player:playback-state', event, 'playing')
+  main.webContents.emit('did-start-navigation', {}, 'app://reload', false, true)
+  assert.equal(main.backgroundThrottling, true)
+  fixture.api.stopMemoryCleanup()
 })
 
 test('taskbar pause icons follow playback and retained callbacks read the latest state', () => {
@@ -447,7 +824,7 @@ test('closed window taskbar callbacks cannot control a replacement main window',
   fixture.ipcMain.emit('renderer:ready', mainEvent(previous))
   fixture.ipcMain.emit('player:playback-state', mainEvent(previous), 'playing')
   const oldButtons = latestTaskbar(previous)
-  previous.close()
+  previous.destroy()
   fixture.api.createWindow()
   const replacement = fixture.windows[1]
   replacement.emit('ready-to-show')

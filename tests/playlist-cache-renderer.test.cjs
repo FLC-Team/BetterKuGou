@@ -284,6 +284,7 @@ function mountMusicPage(t, name, data, props, cache) {
   const leaf = { render: () => null }
   const sandbox = vm.createContext({ listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},  module: { exports: {} }, logger,
     window: { innerWidth: 1200, innerHeight: 800 }, localStorage: { getItem: () => null },
+    ...vm.runInNewContext(read('src/utils/songMetadata.js').replace(/^export /gm, '') + '\n;({getSongSearchKeyword})'),
     SongBadges: leaf, ArtistLinks: leaf, LibraryActions: leaf, PlaylistOverview: leaf, ContextMenu: leaf, VolumeControl: leaf, ArtworkCover: artwork.component,
     repeatAllIcon: '', repeatOneIcon: '', shuffleIcon: ''
   })
@@ -387,6 +388,32 @@ test('artwork lookup preserves lazy images and only a real current load queues a
   image.props.onLoad(fixture.event(image))
   await flush()
   assert.equal(fixture.calls.filter(([method]) => method === 'cacheArtwork').length, 1)
+})
+
+test('followed artist avatars reuse the existing cache after reopening with one normalized URL', async t => {
+  const stored = new Map()
+  const cache = {
+    getArtwork: url => stored.has(url) ? { url: 'bk-cache://cover/artist', leaseId: 'artist-lease' } : null,
+    cacheArtwork: url => { stored.set(url, true); return {} }
+  }
+  const url = 'https://singerimg.kugou.com/400/artist.jpg'
+  const first = mountArtwork(t, cache)
+  first.state.src = '  //singerimg.kugou.com/{size}/artist.jpg  '
+  await flush()
+  assert.equal(first.image().props.src, url)
+  first.image().props.onLoad(first.event(first.image()))
+  await flush()
+  assert.equal(stored.has(url), true)
+  first.unmount()
+  const reopened = mountArtwork(t, cache)
+  reopened.state.src = '//singerimg.kugou.com/{size}/artist.jpg'
+  await flush()
+  assert.equal(reopened.image().props.src, 'bk-cache://cover/artist')
+  reopened.image().props.onLoad(reopened.event(reopened.image()))
+  await flush()
+  assert.equal(reopened.calls.some(([method]) => method === 'cacheArtwork'), false)
+  reopened.unmount()
+  assert.deepEqual(reopened.released, ['artist-lease'])
 })
 
 test('cached artwork failures fall back to its original URL and release leases on changes and unmount', async t => {

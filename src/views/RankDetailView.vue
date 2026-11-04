@@ -12,23 +12,18 @@
           <div class="collection-actions"><button type="button" class="play-all-btn" :disabled="songs.length === 0" @click="handlePlayAll"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>播放全部</button></div>
         </div>
       </header>
-      <div class="period-toolbar"><button type="button" class="action-btn" @click="openPeriods">{{ periodsLoading ? '正在读取往期…' : '往期榜单' }}</button><label v-if="periodsOpen">榜单期数 <select v-model="selectedRankCid" @change="changePeriod"><option value="">最新一期</option><option v-for="period in periods" :key="periodId(period)" :value="String(periodId(period))">{{ periodName(period) }}</option></select></label><span v-if="periodsOpen && !periodsLoading && !periods.length && !periodsError">这个榜单暂无往期内容</span><span v-if="periodsError" role="alert">{{ periodsError }} <button type="button" @click="loadPeriods">重试</button></span></div>
+      <div class="period-toolbar"><button type="button" class="action-btn" @click="openPeriods">{{ periodsLoading ? '正在读取往期…' : '往期榜单' }}</button><label v-if="periodsOpen">榜单期数 <select v-model="selectedRankCid" @change="changePeriod"><option value="">最新一期</option><option v-for="period in periods" :key="periodId(period)" :value="String(periodId(period))">{{ periodName(period) }}</option></select></label><span v-if="periodsOpen && !periodsLoading && !periods.length && !periodsError">这个榜单暂无往期内容</span><AppNotice :message="periodsError" title="往期榜单加载失败" type="error" :actions="[{ label: '重试', run: loadPeriods, disabled: periodsLoading }]" /></div>
       <div class="section-heading"><h2>曲目</h2><span>跟随音乐的热度</span></div>
 
-      <Transition name="ui-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">      <div v-if="error && songs.length > 0" class="refresh-error" role="alert"><span>{{ error }}</span><button type="button" class="retry-btn" @click="loadData">重试</button></div></Transition>
+      <AppNotice :message="error" title="曲目加载失败" type="error" :actions="[{ label: '重试', run: loadData, disabled: loading }]" />
       <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
       <div v-if="loading && songs.length === 0" class="loading-container">
         <span class="loading-spinner" role="status" aria-label="加载中"></span>
         <p>加载中...</p>
       </div>
 
-      <div v-else-if="error && songs.length === 0" class="error" role="alert">
-        <svg viewBox="0 0 1024 1024" width="64" height="64" fill="currentColor" opacity="0.3">
-          <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64zm0 820c-205.4 0-372-166.6-372-372s166.6-372 372-372 372 166.6 372 372-166.6 372-372 372z"/>
-          <path d="M464 688a48 48 0 1096 0 48 48 0 10-96 0zm8-336h48c4.4 0 8 3.6 8 8v272c0 4.4-3.6 8-8 8h-48c-4.4 0-8-3.6-8-8V360c0-4.4 3.6-8 8-8z"/>
-        </svg>
-        <p>{{ error }}</p>
-        <button type="button" class="retry-btn" @click="loadData">重试</button>
+      <div v-else-if="error && songs.length === 0" class="empty-state">
+        <button type="button" class="retry-btn" @click="loadData">重新加载</button>
       </div>
 
       <div v-else-if="songs.length === 0" class="empty">

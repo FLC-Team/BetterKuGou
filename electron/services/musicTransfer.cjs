@@ -32,15 +32,16 @@ function isPreview(value) {
 }
 
 /** Requests expose no credentials to media hosts; DNS and every redirect are checked. */
-function requestStream(raw, {signal, localApi=false, artwork=false, allowLocalTestUrls=false, headers={}, redirects=0}={}) {
+function requestStream(raw, {signal, localApi=false, artwork=false, allowLocalTestUrls=false, headers={}, redirects=0, method='GET'}={}) {
   return new Promise((resolve,reject) => {
     let u; try { u=new URL(raw) } catch { reject(transferError('INVALID_URL','下载来源无效')); return }
     const test=allowLocalTestUrls && ['127.0.0.1','localhost','[::1]'].includes(u.hostname)
     if (!['http:','https:'].includes(u.protocol) || u.username || u.password || redirects>5 || (artwork && !test && !allowedArtworkUrl(raw)) || (!localApi && !test && (net.isIP(u.hostname) || (u.port && !['80','443'].includes(u.port))))) { reject(transferError('INVALID_URL','下载来源无效')); return }
-    const opts={signal,headers:{'User-Agent':'BetterKuGou/Download','Accept-Encoding':'identity',...headers}}
+    if (!['GET', 'HEAD'].includes(method)) { reject(transferError('INVALID_METHOD','媒体请求方式无效')); return }
+    const opts={signal,method,headers:{'User-Agent':'BetterKuGou/Download','Accept-Encoding':'identity',...headers}}
     if (!localApi && !test) opts.lookup=(host,options,cb) => dns.lookup(host,{...options,all:true},(e,a) => { if(e) return cb(e); if(!a.length || a.some(x=>privateAddress(x.address))) return cb(transferError('INVALID_URL','下载来源地址无效')); return options?.all ? cb(null,a) : cb(null,a[0].address,a[0].family) })
     const req=(u.protocol==='https:'?https:http).get(u,opts,res=>{
-      if ([301,302,303,307,308].includes(res.statusCode)) { res.resume(); if(localApi || !res.headers.location) return reject(transferError('INVALID_REDIRECT','下载来源重定向无效')); requestStream(new URL(res.headers.location,u).href,{signal,artwork,allowLocalTestUrls,headers,redirects:redirects+1}).then(resolve,reject); return }
+      if ([301,302,303,307,308].includes(res.statusCode)) { res.resume(); if(localApi || !res.headers.location) return reject(transferError('INVALID_REDIRECT','下载来源重定向无效')); requestStream(new URL(res.headers.location,u).href,{signal,artwork,allowLocalTestUrls,headers,redirects:redirects+1,method}).then(resolve,reject); return }
       res.on('error',()=>{}) // Consumers attach their own stream error handler; prevent an early unhandled event.
       resolve(res)
     })

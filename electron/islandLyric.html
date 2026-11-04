@@ -62,8 +62,6 @@
     .playing .play-button .pause-symbol { display: block; }
     .close-button { justify-self: end; color: #8f8f99; }
     .translation-button { justify-self: start; font-size: 13px; }
-    .feedback { position: absolute; inset: auto 23px 47px; height: 27px; line-height: 24px; font-size: 12px; color: #ffbeb5; background: var(--panel-background); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .feedback:empty { display: none; }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { animation: none !important; transition: none !important; }
       .control:active:not(:disabled) { scale: 1; }
@@ -91,7 +89,6 @@
         </div>
         <button type="button" class="control close-button" id="closeBtn" title="关闭灵动岛歌词" aria-label="关闭灵动岛歌词"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 3 4 4 4-4 1 1-4 4 4 4-1 1-4-4-4 4-1-1 4-4-4-4z"/></svg></button>
       </div>
-      <div class="feedback" id="feedback" role="status" aria-live="polite"></div>
     </div>
   </section>
   <script>
@@ -115,7 +112,6 @@
     const nextBtn = document.getElementById('nextBtn')
     const translationBtn = document.getElementById('translationBtn')
     const closeBtn = document.getElementById('closeBtn')
-    const feedback = document.getElementById('feedback')
     const motionPreference = window.matchMedia?.('(prefers-reduced-motion: reduce)')
     const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null
     const subscriptions = []
@@ -125,6 +121,10 @@
     let song = null
     let lyrics = []
     let time = 0
+    let anchor = 0
+    let anchorAt = 0
+    let advancing = false
+    let playbackRate = 1
     let duration = 0
     let playing = false
     let available = false
@@ -151,7 +151,6 @@
     let interactive = false
     let pointer = null
     let closeTimer = null
-    let feedbackTimer = null
     let frame = null
     let resizeObserver = null
     let disposed = false
@@ -186,6 +185,12 @@
       animations.forEach(animation => animation.cancel())
       animations.clear()
       invalidateLayout()
+    }
+
+    /** Only a fresh audio sample authorizes up to 300 ms of visual interpolation. */
+    function visualTime(now = performance.now()) {
+      const value = anchor + (advancing ? Math.min(300, Math.max(0, now - anchorAt)) * playbackRate : 0)
+      return duration > 0 ? Math.min(value, duration) : value
     }
 
     function setText(element, text) {
@@ -267,7 +272,7 @@
       clearTimeout(closeTimer)
       closeTimer = setTimeout(() => {
         closeTimer = null
-        if (!hovered && !details.contains(document.activeElement) && pending.size === 0 && !feedback.textContent) setExpanded(false)
+        if (!hovered && !details.contains(document.activeElement) && pending.size === 0) setExpanded(false)
       }, 220)
     }
 
@@ -377,7 +382,9 @@
       if (disposed || frame !== null) return
       frame = requestAnimationFrame(() => {
         frame = null
-        if (!disposed) render()
+        if (disposed) return
+        render()
+        if (advancing && performance.now() - anchorAt < 300 && !songInfoOnly) scheduleRender()
       })
     }
 
@@ -422,14 +429,15 @@
       if (songKey(song) !== songKey(next) || !next) {
         lyrics = []
         time = 0
+        anchor = 0
+        anchorAt = performance.now()
+        advancing = false
+        playbackRate = 1
         duration = 0
         lineIndex = -2
         entries = []
         playing = false
         available = false
-        feedback.textContent = ''
-        clearTimeout(feedbackTimer)
-        feedbackTimer = null
       }
       song = next
       if (!lyrics.length || songInfoOnly) lineIndex = -2
@@ -454,7 +462,20 @@
 
     function updateTime(value, meta = {}) {
       if (!Number.isFinite(value) || value < 0) return
-      time = value
+      const now = performance.now()
+      const nextAdvancing = meta.advancing === true && playing && available
+      const nextRate = Number.isFinite(meta.playbackRate) && meta.playbackRate > 0 ? meta.playbackRate : 1
+      const repeated = !meta.discontinuity && nextAdvancing && advancing && value === anchor && nextRate === playbackRate
+      const difference = value - visualTime(now)
+      const correction = !meta.discontinuity && nextAdvancing && advancing && value > anchor && difference < 0 && difference >= -50 ? -difference / nextRate : 0
+      if (meta.discontinuity || !nextAdvancing || difference < -100 || difference > 500) {
+        animations.forEach(animation => animation.cancel())
+        animations.clear()
+      }
+      anchor = value
+      if (!repeated) anchorAt = now - correction
+      advancing = nextAdvancing
+      playbackRate = nextRate
       if (Number.isFinite(meta.duration) && meta.duration >= 0) duration = meta.duration
       scheduleRender()
     }
@@ -462,8 +483,14 @@
     function updatePlayback(value = {}) {
       if (typeof value.playing === 'boolean') playing = value.playing
       if (typeof value.available === 'boolean') available = value.available
-      if (Number.isFinite(value.time) && value.time >= 0) time = value.time
       if (Number.isFinite(value.duration) && value.duration >= 0) duration = value.duration
+      if (!playing || !available || value.discontinuity || (Number.isFinite(value.time) && value.time >= 0)) {
+        anchor = Number.isFinite(value.time) && value.time >= 0 ? value.time : visualTime()
+        anchorAt = performance.now()
+        advancing = false
+        animations.forEach(animation => animation.cancel())
+        animations.clear()
+      }
       refreshControls()
       scheduleRender()
     }
@@ -622,6 +649,7 @@
 
     /** Absolute player time drives glyph fill, horizontal overflow and progress; paused windows never advance. */
     function render() {
+      time = visualTime()
       let low = 0
       let high = lyrics.length
       while (low < high) {
@@ -675,10 +703,7 @@
 
     function showError(message) {
       if (disposed) return
-      expand()
-      setText(feedback, typeof message === 'string' && message ? message : '操作失败，请重试')
-      clearTimeout(feedbackTimer)
-      feedbackTimer = setTimeout(() => { feedbackTimer = null; feedback.textContent = ''; scheduleCollapse() }, 5000)
+      api?.reportNotice?.({ title: '灵动岛歌词', message: typeof message === 'string' && message ? message : '操作失败，请重试', type: 'error' })
     }
 
     /** Playback and preference buttons wait for real acknowledgements; failed operations remain retryable. */
@@ -691,7 +716,6 @@
         if (disposed) return
         if (!result?.success) throw new Error(result?.error || '操作失败，请重试')
         success?.()
-        feedback.textContent = ''
       } catch (error) {
         if (!disposed) {
           console.warn('island-lyric', '操作未完成', error)
@@ -720,7 +744,6 @@
       subscriptions.splice(0).forEach(unsubscribe => unsubscribe())
       listeners.splice(0).forEach(unlisten => unlisten())
       clearTimeout(closeTimer)
-      clearTimeout(feedbackTimer)
       if (frame !== null) cancelAnimationFrame(frame)
       frame = null
       animations.forEach(animation => animation.cancel())

@@ -14,10 +14,19 @@ function islandFixture(t, platform = 'linux') {
   const handlers = new Map()
   ipc.handle = (channel, handler) => handlers.set(channel, handler)
   let quitCalls = 0
+  let completedQuitCalls = 0
   let backendStops = 0
   const app = Object.assign(new EventEmitter(), {
     isPackaged: true, whenReady: () => new Promise(() => {}), commandLine: { appendSwitch() {} },
-    quit() { quitCalls++ }, getPath: () => '/controlled-user-data', getVersion: () => '0.1.9'
+    quit() {
+      quitCalls++
+      let prevented = false
+      app.emit('before-quit', { preventDefault() { prevented = true } })
+      if (!prevented) {
+        completedQuitCalls++
+        Window.getAllWindows().forEach(win => win.close())
+      }
+    }, getPath: () => '/controlled-user-data', getVersion: () => '0.1.9'
   })
   const windows = []
   const timers = new Map()
@@ -32,7 +41,7 @@ function islandFixture(t, platform = 'linux') {
   let fullscreenCallback = null
   let fullscreenActive = false
   let snapshot = { islandLyrics: { enabled: false }, playback: { showTranslation: true },
-    desktopLyrics: {}, software: { updates: {}, minimizeToTray: false } }
+    desktopLyrics: {}, software: { updates: {}, minimizeToTray: false, promptBeforeClose: false } }
   const writes = []
   const errors = []
   const dialogs = []
@@ -161,6 +170,7 @@ function islandFixture(t, platform = 'linux') {
   return { ...api, ipc, handlers, main, event, invoke, latest, windows, timers, screen, writes, errors, dialogs,
     get settings() { return snapshot },
     get quitCalls() { return quitCalls },
+    get completedQuitCalls() { return completedQuitCalls },
     get backendStops() { return backendStops },
     get fullscreenActive() { return fullscreenActive },
     fullscreen(value) { fullscreenCallback?.(value) },
@@ -328,7 +338,8 @@ test('load failures and renderer crashes fail visibly and a repeated show can re
   assert.ok(failed.error)
   assert.equal(fixture.windows.length, 2, 'one failed action creates exactly one island window')
   assert.equal(fixture.errors.length, 1, 'one failed load is reported once')
-  assert.equal(fixture.dialogs.length, 1, 'the tray does not show a duplicate failure dialog')
+  assert.equal(fixture.dialogs.length, 0, 'errors use the unified notification instead of a native dialog')
+  assert.equal(fixture.main.messages.filter(([channel]) => channel === 'app:notice').length, 1, 'the tray does not send a duplicate failure notice')
   assert.equal(fixture.latest().isDestroyed(), true)
   fixture.update({ playback: { showTranslation: false } })
   await settle()
@@ -443,7 +454,7 @@ test('playback availability tracks main reload, install preparation and crash; s
   assert.equal((await fixture.invoke('island-lyric:show')).success, false)
 })
 
-for (const platform of ['win32', 'linux']) {
+for (const platform of ['win32', 'linux', 'darwin']) {
   test(`${platform}: closing the main window with an enabled island cleans up and quits while preserving the preference`, async t => {
     const fixture = islandFixture(t, platform)
     const island = await fixture.open()
@@ -453,7 +464,9 @@ for (const platform of ['win32', 'linux']) {
     assert.equal(fixture.main.isDestroyed(), true)
     assert.equal(island.isDestroyed(), true)
     assert.equal(fixture.backendStops, 1)
-    assert.equal(fixture.quitCalls, 1)
+    assert.equal(fixture.quitCalls, 2, 'the initial quit is intercepted; cleanup then retries Electron quit')
+    assert.equal(fixture.completedQuitCalls, 1)
+    assert.equal(fixture.dialogs.length, 0, 'a remembered close action does not show a prompt')
     assert.equal(fixture.settings.islandLyrics.enabled, true)
     assert.equal(fixture.writes.length, writesBefore, 'closing the application does not disable startup restoration')
     assert.equal(fixture.timers.size, 0)
@@ -479,10 +492,10 @@ for (const platform of ['win32', 'linux']) {
   })
 }
 
-test('macOS retains its background lifecycle when the main window closes with an enabled island', async t => {
+test('macOS retains its background lifecycle after unexpected main destruction with an enabled island', async t => {
   const fixture = islandFixture(t, 'darwin')
   const island = await fixture.open()
-  fixture.main.close()
+  fixture.main.destroy()
   await settle()
   assert.equal(fixture.main.isDestroyed(), true)
   assert.equal(island.isDestroyed(), false)
@@ -734,10 +747,10 @@ test('screen enumeration is main-frame-only, updates on hotplug and releases not
   assert.equal(fixture.screen.listenerCount('display-added'), 0)
 })
 
-test('macOS Dock activation recreates the main window while an auxiliary island still exists', async t => {
+test('macOS Dock activation recreates an unexpectedly destroyed main window while an auxiliary island still exists', async t => {
   const fixture = islandFixture(t, 'darwin')
   const island = await fixture.open()
-  fixture.main.close()
+  fixture.main.destroy()
   assert.equal(fixture.main.isDestroyed(), true)
   assert.equal(island.isDestroyed(), false)
   fixture.restoreMainWindowOnActivate()

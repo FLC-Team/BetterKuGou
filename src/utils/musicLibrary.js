@@ -230,32 +230,6 @@ export function createMusicLibrary({ api, getDirectory, getIdentity, isOnline = 
     },
     addSongs: (resource, songs) => editSongs(resource, songs),
     removeSongs: (resource, songs) => editSongs(resource, songs, true),
-    /** 清空只提交明确的云端条目；由调用方先展示数量并取得确认。 */
-    clearFavorites: () => singleFlight('favorite:clear', scope => serializeFavorites(async () => {
-      requireCurrent(scope)
-      await readFavorites(scope, { retryDirectory: true })
-      requireCurrent(scope)
-      const songs = [...state.favorites]
-      if (!songs.length) return
-      if (songs.some(song => song.fileid == null || String(song.fileid) === '')) throw new Error('部分歌曲缺少云端条目标识，无法安全清空')
-      const resource = state.resource
-      let writeError = null
-      try {
-        for (let start = 0; start < songs.length; start += 1000) {
-          requireCurrent(scope)
-          await api.removePlaylistSongs(resource.listId, songs.slice(start, start + 1000).map(song => song.fileid), { signal: scope.signal })
-        }
-      } catch (error) { writeError = error }
-      requireCurrent(scope)
-      changed(resource)
-      let remaining
-      try { remaining = await readFavorites(scope) } catch (error) {
-        requireCurrent(scope)
-        state.loaded = false
-        throw writeError || new Error('云端清空已成功，最新列表读取失败，请刷新后继续操作')
-      }
-      if (writeError && remaining.length) throw writeError
-    })),
     reset() {
       generation++
       controller.abort()

@@ -40,7 +40,9 @@ const isDev = !app.isPackaged
 
 // 音频协议在 ready 前注册，开发页面和打包页面共用受限的流式资源入口。
 protocol?.registerSchemesAsPrivileged([{
-  scheme: 'bk-cache', privileges: { standard: true, secure: true, stream: true, corsEnabled: true }
+  scheme: 'bk-cache', privileges: { standard: true, secure: true, stream: true, corsEnabled: true, supportFetchAPI: true }
+}, {
+  scheme: 'bk-audio', privileges: { standard: true, secure: true, stream: true, corsEnabled: true, supportFetchAPI: true }
 }])
 
 // 禁用 GPU 缓存以避免权限错误
@@ -59,10 +61,13 @@ let isQuitting = false
 let cleanupPromise = null
 let cleanupComplete = false
 let mainWindowReady = false
+let startupFailure = null
+let startupFailureTimer = null
 let unsubscribeSettings = null
 let updateService = null
 let playlistCacheService = null
 let musicDownloadService = null
+let audioEffectsIntegration = null
 let downloadDirectorySelection = false
 let lyricLibraryService = null
 let cacheDirectorySelection = false
@@ -111,6 +116,74 @@ let taskbarClosing = Promise.resolve()
 let releaseTaskbarTheme = null
 // 若窗口尚未准备好, 暂存需要发送的播放器控制指令
 const pendingPlayerControls = []
+const pendingAppNotices = []
+
+/** 通知只携带有界纯文本，独立歌词窗口不能指定 HTML、动作或任意频道。 */
+function normalizeAppNotice(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
+  const allowed = new Set(['id', 'title', 'message', 'type'])
+  if (Object.keys(payload).some(key => !allowed.has(key))) return null
+  if (typeof payload.message !== 'string' || !payload.message.trim() || payload.message.length > 2000) return null
+  if (payload.title !== undefined && (typeof payload.title !== 'string' || payload.title.length > 120)) return null
+  if (payload.id !== undefined && (typeof payload.id !== 'string' || !payload.id || payload.id.length > 80)) return null
+  if (payload.type !== undefined && !['info', 'success', 'warning', 'error'].includes(payload.type)) return null
+  return { ...(payload.id === undefined ? {} : { id: payload.id }), title: payload.title || '提示',
+    message: payload.message, type: payload.type || 'info' }
+}
+
+/** 将系统操作结果交给主窗口的 Fue 通知；启动期间有限缓存，错误时找回隐藏主窗。 */
+function showAppNotice(payload, { reveal = false } = {}) {
+  const notice = normalizeAppNotice(payload)
+  if (!notice || isQuitting) return false
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow()
+  if (!mainWindow || mainWindow.isDestroyed()) return false
+  if (mainWindowReady) {
+    if (reveal) {
+      if (mainWindow.isMinimized?.()) mainWindow.restore()
+      if (mainWindow.isVisible?.() === false) {
+        if (mainWindow.showInactive) mainWindow.showInactive()
+        else mainWindow.show()
+      }
+    }
+    mainWindow.webContents.send('app:notice', notice)
+  } else {
+    if (notice.id) {
+      const previous = pendingAppNotices.findIndex(item => item.id === notice.id)
+      if (previous >= 0) pendingAppNotices.splice(previous, 1)
+    }
+    pendingAppNotices.push(notice)
+    if (pendingAppNotices.length > 20) pendingAppNotices.shift()
+  }
+  return true
+}
+
+/** 配置无法初始化时只显示 Fue 错误界面，停止正常启动，关闭后仍走统一清理。 */
+function showStartupFailure() {
+  startupFailure = { title: '启动失败', message: '无法读取或保存设置，请检查目录权限后重新启动。' }
+  createWindow()
+  startupFailureTimer = setTimeout(() => {
+    startupFailureTimer = null
+    if (mainWindowReady || isQuitting) return
+    logger.error('main', '启动错误界面未能就绪，退出应用')
+    userRequestedQuit = true
+    app.quit()
+  }, 15000)
+}
+
+ipcMain.handle('app:get-startup-failure', event => isMainWindowSender(event) ? startupFailure : null)
+ipcMain.handle('app:quit-after-startup-failure', event => {
+  if (!startupFailure || !isMainWindowSender(event) || isQuitting) return false
+  userRequestedQuit = true
+  app.quit()
+  return true
+})
+
+/** 只接受当前独立歌词窗口的顶层文档，旧窗口和嵌入 frame 不得发送提醒。 */
+ipcMain.on('app:report-notice', (event, payload) => {
+  if (isQuitting || !(isDesktopLyricSender(event) || islandLyricService?.isSender(event) || taskbarLyricService?.isSender(event))) return
+  const notice = normalizeAppNotice(payload)
+  if (notice) showAppNotice(notice, { reveal: notice.type === 'error' || notice.type === 'warning' })
+})
 
 const backendService = createBackendService({
   isDev,
@@ -447,8 +520,8 @@ async function resetTaskbarLyricPosition() {
 async function runTaskbarTrayAction(action) {
   try {
     const result = await action()
-    if (!result.success && !isQuitting) await dialog.showMessageBox({ type: 'error', title: '任务栏歌词',
-      message: result.error || '任务栏歌词操作失败，请重试。', buttons: ['知道了'] })
+    if (!result.success && !isQuitting) showAppNotice({ type: 'error', title: '任务栏歌词',
+      message: result.error || '任务栏歌词操作失败，请重试。' }, { reveal: true })
   } catch (error) { logger.error('taskbar-lyrics', '任务栏歌词托盘操作失败', error) }
 }
 
@@ -470,9 +543,9 @@ function getIslandLyricService() {
 
 function reportIslandWindowFailure() {
   if (isQuitting) return
-  void dialog.showMessageBox({ type: 'error', title: '灵动岛歌词',
+  showAppNotice({ type: 'error', title: '灵动岛歌词',
     message: '灵动岛窗口无法显示，请在设置 → 播放与歌词中点击“重新显示 / 找回”重试。',
-    buttons: ['知道了'] }).catch(error => logger.error('island-lyrics', '显示窗口错误提示失败', error))
+    id: 'island-window-failure' }, { reveal: true })
 }
 
 function openIslandLyricWindow() {
@@ -607,9 +680,9 @@ async function saveIslandEnabled(enabled, preview = false) {
 async function runIslandTrayAction(action) {
   try {
     const result = await action()
-    if (!result.success && !result.notified && !isQuitting) await dialog.showMessageBox({
-      type: 'error', title: '灵动岛歌词', message: result.error || '操作失败，请重试。', buttons: ['知道了']
-    })
+    if (!result.success && !result.notified && !isQuitting) showAppNotice({
+      type: 'error', title: '灵动岛歌词', message: result.error || '操作失败，请重试。'
+    }, { reveal: true })
   } catch (error) { logger.error('island-lyrics', '灵动岛操作失败', error) }
 }
 
@@ -812,12 +885,12 @@ async function resetDesktopLyricPosition() {
   return flushDesktopLyricBounds()
 }
 
-/** 锁定时歌词窗口不能接收点击，托盘操作失败通过原生对话框提供反馈。 */
+/** 锁定时歌词窗口不能接收点击，托盘操作失败显示主窗口统一通知。 */
 async function runDesktopTrayAction(action, message) {
   try {
     const result = await action()
     if (result === true || result?.success === true) return
-    await dialog.showMessageBox({ type: 'error', title: '桌面歌词', message: result?.error || message, buttons: ['知道了'] })
+    showAppNotice({ type: 'error', title: '桌面歌词', message: result?.error || message }, { reveal: true })
   } catch (error) {
     logger.error('main', message, error)
   }
@@ -912,7 +985,18 @@ function subscribeToSettingsUpdates() {
     playlistCacheService?.configure(nextSettings)
     lyricLibraryService?.configure(nextSettings)
     musicDownloadService?.configure(nextSettings).catch(error => logger.error('music-download', '应用下载设置失败', error))
+    audioEffectsIntegration?.configure(nextSettings).catch(error => logger.error('audio-effects', '应用音效设置失败', error))
   })
+}
+
+/** The isolated native host owns plugin code; this integration only exposes fixed main-window capabilities. */
+function initializeAudioEffects() {
+  const { utilityProcess, MessageChannelMain } = require('electron')
+  const { createAudioEffectsIntegration } = require('./services/audioEffectsIntegration')
+  audioEffectsIntegration = createAudioEffectsIntegration({ app, ipcMain, protocol, utilityProcess, MessageChannelMain,
+    dialog, getMainWindow: () => mainWindow, isMainWindowSender, isQuitting: () => isQuitting,
+    getSettings, setSettings, logger })
+  void audioEffectsIntegration.initialize().catch(error => logger.error('audio-effects', '初始化音频效果失败', error))
 }
 
 /** 更新网络、文件和校验在 Worker 中执行，窗口启动无需等待。 */
@@ -948,6 +1032,9 @@ function initializePlaylistCacheService() {
     },
     onAuthExpired: (identity) => {
       if (!isQuitting && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('playlist-cache:auth-expired', identity)
+    },
+    onSourceReady: (source) => {
+      if (!isQuitting && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('playlist-cache:source-ready', source)
     }
   })
   playlistCacheService.configure(getSettings())
@@ -1159,6 +1246,7 @@ let memoryReportTimer = null
 // 创建加载窗口
 function createLoadingWindow() {
   loadingWindow = new BrowserWindow({
+    icon: getAppTrayIcon(),
     width: 400,
     height: 300,
     frame: false,
@@ -1304,6 +1392,9 @@ function stopMemoryCleanup() {
 function performApplicationCleanup() {
   if (cleanupPromise) return cleanupPromise
   isQuitting = true
+  pendingAppNotices.length = 0
+  if (startupFailureTimer) clearTimeout(startupFailureTimer)
+  startupFailureTimer = null
   updateTaskbarButtons()
   sendDesktopLyric('desktop-lyric:playback-update', desktopPlaybackSnapshot())
   islandLyricService?.close()
@@ -1338,6 +1429,12 @@ async function cleanupApplicationResources() {
       logger.error('installer', '关闭安装退出协作管道失败', error)
     }
     releaseInstallPreparation()
+
+    try {
+      await audioEffectsIntegration?.stop()
+    } catch (error) {
+      logger.error('audio-effects', '结束音频效果失败', error)
+    }
 
     try {
       if (musicDownloadService) await musicDownloadService.stop()
@@ -1434,6 +1531,54 @@ async function cleanupApplicationResources() {
   }
 }
 
+/** 关闭选择只对发起窗口生效；记忆偏好先落盘，退出统一走应用清理。 */
+async function requestMainWindowClose(window) {
+  const canClose = () => mainWindow === window && !window.isDestroyed() && !isQuitting && !userRequestedQuit && !installPreparation
+  if (!canClose()) return
+  try {
+    const software = getSettings().software || {}
+    let minimizeToTray = software.minimizeToTray === true
+    if (software.promptBeforeClose !== false) {
+      const { response, checkboxChecked } = await dialog.showMessageBox(window, {
+        type: 'question',
+        title: '关闭 BetterKuGou',
+        message: '关闭窗口时，你希望如何处理？',
+        detail: '最小化到托盘后，音乐会继续在后台播放。可随时在“设置 → 启动与应用”中更改。',
+        buttons: ['最小化到托盘', '退出程序', '取消'],
+        defaultId: minimizeToTray ? 0 : 1,
+        cancelId: 2,
+        noLink: true,
+        checkboxLabel: '不再提示',
+        checkboxChecked: false
+      })
+      if (!canClose() || ![0, 1].includes(response)) return
+      minimizeToTray = response === 0
+      if (checkboxChecked) {
+        await setSettings({ software: { minimizeToTray, promptBeforeClose: false } })
+        if (!canClose()) return
+      }
+    }
+    if (minimizeToTray) {
+      window.hide()
+      logger.trace('main', '应用已最小化到系统托盘')
+    } else {
+      userRequestedQuit = true
+      app.quit()
+    }
+  } catch (error) {
+    logger.error('main', '处理主窗口关闭或保存关闭偏好失败', error)
+    if (!canClose()) return
+    try {
+      showAppNotice({
+        type: 'error', title: '关闭窗口失败',
+        message: '未能完成关闭操作，窗口已保留。关闭偏好可能未保存，请再次点击关闭按钮重试，或在“设置 → 启动与应用”中修改。'
+      }, { reveal: true })
+    } catch (dialogError) {
+      logger.error('main', '显示关闭失败提示失败', dialogError)
+    }
+  }
+}
+
 // 创建浏览器窗口
 function createWindow() {
   if (isQuitting || (mainWindow && !mainWindow.isDestroyed())) return
@@ -1442,6 +1587,7 @@ function createWindow() {
   updateLoadingProgress(75, '正在加载前端界面...', 'frontend')
 
   mainWindow = new BrowserWindow({
+    icon: getAppTrayIcon(),
     width: 1280,
     height: 720,
     minWidth: 1024,
@@ -1464,8 +1610,10 @@ function createWindow() {
   for (const event of ['show', 'hide', 'minimize', 'restore', 'move', 'resize']) mainWindow.on(event, syncLyricPolicy)
   const resetTaskbarPlayback = () => {
     if (mainWindow !== window) return
+    audioEffectsIntegration?.reset()
     mainWindowReady = false
     isPlaying = false
+    syncPlaybackScheduling()
     mainLyricViewVisible = false
     syncIslandLyricView()
     updateTaskbarButtons()
@@ -1492,6 +1640,7 @@ function createWindow() {
 
   mainWindow.loadURL(urlLocation).catch(error => {
     if (!isQuitting) logger.error('main', '加载主窗口失败', error)
+    if (startupFailure && !isQuitting) { userRequestedQuit = true; app.quit() }
   })
 
   // 页面加载完成后的处理
@@ -1506,22 +1655,18 @@ function createWindow() {
   }
 
   // 窗口关闭时的处理
+  let closeRequest = null
   mainWindow.on('close', (event) => {
     if (isQuitting || userRequestedQuit) return
-    // 检查设置，决定是隐藏到托盘还是真正关闭
-    const settings = getSettings()
-    if (settings.software?.minimizeToTray) {
-      // 阻止默认关闭行为
-      event.preventDefault()
-      // 隐藏窗口到托盘
-      mainWindow.hide()
-      logger.trace('main', '🔽 应用已最小化到系统托盘')
-    }
-    // 如果设置为false，则允许正常关闭
+    event.preventDefault()
+    if (startupFailure) { userRequestedQuit = true; app.quit(); return }
+    if (closeRequest) return
+    closeRequest = requestMainWindowClose(window).finally(() => { closeRequest = null })
   })
 
   mainWindow.on('closed', () => {
     if (mainWindow !== window) return
+    audioEffectsIntegration?.reset()
     mainWindow = null
     syncIslandLyricView()
     mainWindowReady = false
@@ -1530,7 +1675,7 @@ function createWindow() {
     sendDesktopLyric('desktop-lyric:playback-update', desktopPlaybackSnapshot())
     updateDesktopLyricPolicy()
     // 辅助歌词窗口不能阻止“关闭即退出”；macOS 保留关闭主窗口后驻留的行为。
-    if (!isQuitting && process.platform !== 'darwin' && !getSettings().software?.minimizeToTray) {
+    if (!isQuitting && (startupFailure || (process.platform !== 'darwin' && !getSettings().software?.minimizeToTray))) {
       void performApplicationCleanup().then(() => app.quit()).catch(error => {
         logger.error('main', '主窗口关闭后清理应用失败', error)
       })
@@ -1551,6 +1696,8 @@ function restoreMainWindowOnActivate() {
 
 // 应用准备就绪时创建窗口
 app.whenReady().then(async () => {
+  // 与安装快捷方式使用同一身份，避免任务栏将窗口归入默认 Electron 分组。
+  if (process.platform === 'win32') app.setAppUserModelId('com.betterkugou.app')
   // 首先创建加载窗口
   createLoadingWindow()
   updateLoadingProgress(5, '正在初始化...', 'backend')
@@ -1563,13 +1710,16 @@ app.whenReady().then(async () => {
     updateLoadingProgress(15, '配置加载完成', 'backend')
   } catch (err) {
     logger.error('main', '❌ 初始化设置存储失败:', err)
-    dialog.showErrorBox('启动失败', '无法读取或保存设置，请检查目录权限后重新启动。')
-    userRequestedQuit = true
-    app.quit()
+    showStartupFailure()
     return
   }
 
   subscribeToSettingsUpdates()
+  try {
+    initializeAudioEffects()
+  } catch (error) {
+    logger.error('audio-effects', '初始化音频效果服务失败', error)
+  }
   syncDesktopLyricSettings(getSettings())
   syncIslandLyricSettings(getSettings())
   syncTaskbarLyricSettings(getSettings())
@@ -1613,11 +1763,15 @@ app.whenReady().then(async () => {
 ipcMain.on('renderer:ready', (event) => {
   if (isQuitting || mainWindowReady || !isMainWindowSender(event)) return
   mainWindowReady = true
+  if (startupFailureTimer) clearTimeout(startupFailureTimer)
+  startupFailureTimer = null
   mainWindow.show()
+  pendingAppNotices.splice(0).forEach(notice => mainWindow.webContents.send('app:notice', notice))
   updateTaskbarButtons()
   sendDesktopLyric('desktop-lyric:playback-update', desktopPlaybackSnapshot())
   mainWindow.focus()
   closeLoadingWindow()
+  if (startupFailure) { pendingPlayerControls.length = 0; return }
   pendingPlayerControls.splice(0).forEach(action => mainWindow.webContents.send('player:control', action))
   startMemoryCleanup()
 })
@@ -1733,20 +1887,8 @@ ipcMain.on('window-unmaximize', () => {
   const win = BrowserWindow.getFocusedWindow()
   if (win && win.isMaximized()) win.unmaximize()
 })
-ipcMain.on('window-close', () => {
-  const win = BrowserWindow.getFocusedWindow()
-  if (win) {
-    // 检查设置，决定是隐藏到托盘还是真正关闭
-    const settings = getSettings()
-    if (settings.software?.minimizeToTray) {
-      // 隐藏窗口到托盘
-      win.hide()
-      logger.trace('main', '🔽 应用已最小化到系统托盘')
-    } else {
-      // 正常关闭
-      win.close()
-    }
-  }
+ipcMain.on('window-close', (event) => {
+  if (isMainWindowSender(event)) mainWindow.close()
 })
 
 // 设置相关 IPC 事件
@@ -1767,6 +1909,15 @@ ipcMain.handle('settings:set', async (_event, payload) => {
     throw new Error('Invalid settings payload')
   }
   const updated = await setSettings(payload, { merge: false })
+  await ensureCacheDirectory()
+  return updated
+})
+
+// 局部编辑在主进程事务执行时合并，不能用渲染端的旧整份快照替换其他窗口修改。
+ipcMain.handle('settings:patch', async (event, payload, removedPaths = []) => {
+  if (!isMainWindowSender(event) || isQuitting) throw new Error('Settings editor is unavailable')
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Invalid settings patch')
+  const updated = await setSettings(payload, { removedPaths })
   await ensureCacheDirectory()
   return updated
 })
@@ -2128,7 +2279,10 @@ ipcMain.on('player:track-update', (event, payload) => {
     ? next.trackId !== currentTrack.trackId
     : next.title !== currentTrack.title || next.artist !== currentTrack.artist)
   if (trackChanged) { currentDesktopLyrics = []; currentDesktopTime = 0; currentDesktopDuration = 0; currentDesktopPlaybackRate = 1 }
-  if (payload === null) isPlaying = false
+  if (payload === null) {
+    isPlaying = false
+    syncPlaybackScheduling()
+  }
   currentTrack = next
   updateTrayMenu()
   updateTaskbarButtons()
@@ -2141,10 +2295,22 @@ ipcMain.on('player:track-update', (event, payload) => {
   updateDesktopLyricPolicy()
 })
 
+/** 播放中的音量包络和续播定时器不随窗口隐藏降频；暂停后恢复后台节流。 */
+function syncPlaybackScheduling() {
+  const contents = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null
+  if (!contents || contents.isDestroyed?.()) return
+  try {
+    contents.setBackgroundThrottling?.(!isPlaying)
+  } catch (error) {
+    logger.warn('main', '同步播放器后台定时器策略失败', error)
+  }
+}
+
 // 更新播放状态: playing | paused
 ipcMain.on('player:playback-state', (event, state) => {
   if (isQuitting || !isMainWindowSender(event) || !['playing', 'paused'].includes(state)) return
   isPlaying = state === 'playing'
+  syncPlaybackScheduling()
   updateTrayMenu()
   updateTaskbarButtons()
   sendDesktopLyric('desktop-lyric:playback-update', desktopPlaybackSnapshot())

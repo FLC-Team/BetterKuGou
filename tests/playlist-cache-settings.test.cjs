@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const vue = require('vue')
+const { registerAppNotice } = require('./helpers/noticeHarness.cjs')
 // CSS transitions are exercised in Electron; this host tests the actual state/action ordering.
 const motionVue = { ...vue, Transition: { setup(_props, { slots }) { return () => slots.default?.()[0] } } }
 const { parse, compileScript } = require('@vue/compiler-sfc')
@@ -65,6 +66,7 @@ function mount(t, options = {}) {
     modelValue: preferences.value, 'onUpdate:modelValue': value => { preferences.value = value },
     beforeAction: options.beforeAction || (async () => true)
   }) })
+  registerAppNotice(app)
   app.mount(root)
   let mounted = true
   const unmount = () => { if (mounted) { mounted = false; app.unmount() } }

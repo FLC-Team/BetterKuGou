@@ -57,6 +57,9 @@ const baseDefaultSettings = Object.freeze({
     fullscreenLyrics: true,
     enqueueFullPlaylist: true,
     restartOnPreviousNearEnd: false,
+    smoothTrackSwitch: true,
+    preloadNextTrack: true,
+    skipTrailingSilence: true,
     syncPlayHistory: true,
     showTranslation: true, // 默认显示翻译
     lyricLibrary: { enabled: true, autoSave: true, minMatch: 'high', autoUpdate: true },
@@ -69,6 +72,8 @@ const baseDefaultSettings = Object.freeze({
   desktopLyrics: { ...desktopLyricDefaults },
   islandLyrics: normalizeIslandLyrics(),
   taskbarLyrics: normalizeTaskbarLyrics(),
+  // Native effect commands consume the main process's canonical configuration, not a page draft.
+  audioEffects: { enabled: false, searchPaths: [], chain: [] },
   download: {
     offlinePlaylistCacheEnabled: true,
     offlineCachePath: '',
@@ -105,6 +110,7 @@ const baseDefaultSettings = Object.freeze({
     autoLaunch: false,
     updates: { autoCheck: true, autoDownload: false, channel: 'stable' },
     minimizeToTray: false,
+    promptBeforeClose: true,
     restorePlaylist: true,
     restorePlaybackState: true,
     defaultPage: 'home'
@@ -226,19 +232,40 @@ function applyCommittedSettings(snapshot) {
   applySettings(next)
 }
 
-/** 串行持久化并在执行时取最新快照；较早的自身广播不能回退乐观状态。 */
+/** 合并本轮实际编辑；显式整份替换仍保留 reset/import 的替换语义。 */
+function collectPendingWrite() {
+  if (!pendingMutations.length || pendingMutations.some(mutation => !mutation.merge)) return null
+  const patch = {}
+  const removedPaths = []
+  const collectRemovals = (value, prefix = []) => {
+    for (const [key, item] of Object.entries(value)) {
+      if (item === undefined) removedPaths.push([...prefix, key])
+      else if (item && Object.prototype.toString.call(item) === '[object Object]') collectRemovals(item, [...prefix, key])
+    }
+  }
+  for (const mutation of pendingMutations) {
+    collectRemovals(mutation.patch)
+    mergeDeep(patch, mutation.patch)
+  }
+  return { patch, removedPaths }
+}
+
+/** 只提交实际编辑字段，避免旧快照覆盖窗口位置、锁定及其他主进程并发写入。 */
 function persistSettings() {
   const requestedVersion = mutationVersion
   const task = persistQueue.then(async () => {
     if (requestedVersion <= persistedVersion) return
     const sentVersion = mutationVersion
     const payload = cloneDeep(state.settings)
+    const patch = collectPendingWrite()
     writeInFlight = true
     bufferedExternalSettings = null
     state.error = null
     try {
       let result
-      if (bridge?.set) {
+      if (patch && bridge?.patch) {
+        result = await bridge.patch(patch.patch, patch.removedPaths)
+      } else if (bridge?.set) {
         result = await bridge.set(payload)
       } else {
         localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload))
@@ -362,6 +389,9 @@ function migrateSettings(rawSettings, defaults) {
   if (!normalized.playback || typeof normalized.playback !== 'object' || Array.isArray(normalized.playback)) normalized.playback = cloneDeep(defaults.playback)
   normalized.playback.showTranslation = typeof normalized.playback.showTranslation === 'boolean' ? normalized.playback.showTranslation : true
   normalized.playback.restartOnPreviousNearEnd = normalized.playback.restartOnPreviousNearEnd === true
+  for (const key of ['smoothTrackSwitch', 'preloadNextTrack', 'skipTrailingSilence']) {
+    normalized.playback[key] = typeof normalized.playback[key] === 'boolean' ? normalized.playback[key] : true
+  }
   normalized.playback.syncPlayHistory = typeof normalized.playback.syncPlayHistory === 'boolean' ? normalized.playback.syncPlayHistory : true
   const library = normalized.playback.lyricLibrary && typeof normalized.playback.lyricLibrary === 'object' && !Array.isArray(normalized.playback.lyricLibrary) ? normalized.playback.lyricLibrary : {}
   normalized.playback.lyricLibrary = {
@@ -386,6 +416,8 @@ function migrateSettings(rawSettings, defaults) {
   normalized.islandLyrics = normalizeIslandLyrics(normalized.islandLyrics)
   normalized.taskbarLyrics = normalizeTaskbarLyrics(normalized.taskbarLyrics)
   if (!normalized.software || typeof normalized.software !== 'object' || Array.isArray(normalized.software)) normalized.software = cloneDeep(defaults.software)
+  normalized.software.minimizeToTray = normalized.software.minimizeToTray === true
+  normalized.software.promptBeforeClose = typeof normalized.software.promptBeforeClose === 'boolean' ? normalized.software.promptBeforeClose : true
   const updates = normalized.software.updates && typeof normalized.software.updates === 'object' && !Array.isArray(normalized.software.updates) ? normalized.software.updates : {}
   normalized.software.updates = {
     autoCheck: typeof updates.autoCheck === 'boolean' ? updates.autoCheck : true,

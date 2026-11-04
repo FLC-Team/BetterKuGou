@@ -47,6 +47,11 @@
               <div :key="song?.hash || 'empty'" class="song-artist track-piece track-artist"><ArtistLinks :song="song" @select="$emit('artist', $event)" /></div>
             </Transition>
           </div>
+          <div class="track-switch-status-stage" role="status" aria-live="polite" aria-atomic="true">
+            <Transition name="track-switch-status" @before-leave="retireTrackLayer">
+              <p v-if="switchingTrackName" :key="switchingTrackName" class="track-switch-status" :title="`正在切换到 ${switchingTrackName}…`">正在切换到 {{ switchingTrackName }}…</p>
+            </Transition>
+          </div>
         </div>
 
         <div class="playback-panel">
@@ -57,7 +62,7 @@
             :max="duration > 0 ? duration : 0"
             step="0.1"
             :value="displayPlayTime"
-            :disabled="!Number.isFinite(duration) || duration <= 0"
+            :disabled="!seekEnabled || !Number.isFinite(duration) || duration <= 0"
             :style="{ '--progress': progressPercentage + '%' }"
             aria-label="歌曲进度"
             :aria-valuetext="`${formatTime(displayPlayTime)} / ${formatTime(duration)}`"
@@ -158,14 +163,10 @@
               <span class="translation-indicator" aria-hidden="true"></span>
             </button>
           </div>
-          <Transition name="lyric-feedback" @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')"><div v-if="qualityMessage" class="lyric-tool-feedback" role="status" :aria-busy="qualitySwitching">
-            <span>{{ qualityMessage }}</span>
-            <button type="button" :disabled="qualitySwitching" @click="$emit('retry-quality')">{{ qualitySwitching ? '切换中…' : '重试' }}</button>
-          </div></Transition>
-          <Transition name="lyric-feedback" @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')"><div v-if="translationMessage" class="lyric-tool-feedback" role="status">
-            <span>{{ translationMessage }}</span>
-            <button type="button" @click="saveTranslationPreference">重试</button>
-          </div></Transition>
+          <AppNotice :message="qualityMessage" type="error" title="音质切换" :busy="qualitySwitching"
+            :actions="[{ label: qualitySwitching ? '切换中…' : '重试', run: () => $emit('retry-quality') }]" />
+          <AppNotice :message="translationMessage" type="error" title="歌词翻译偏好"
+            :actions="[{ label: '重试', run: saveTranslationPreference }]" />
         </div>
       </div>
 
@@ -256,7 +257,9 @@
         </div>
         </Transition>
         <Transition name="lyric-feedback" @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')"><button v-if="browsePosition != null" type="button" class="return-current-lyric" @click="returnToCurrentLyric">回到当前歌词</button></Transition>
-        <Transition name="lyric-feedback" @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')"><p v-if="copyFeedback" :key="copyFeedback" class="lyric-copy-feedback" role="status">{{ copyFeedback }}</p></Transition>
+        <AppNotice :message="copyFeedback" :revision="copyRequestId" title="复制歌词"
+          :type="copyFeedback.includes('失败') ? 'error' : copyFeedback.includes('正在') ? 'info' : 'success'"
+          :duration="copyFeedback.includes('正在') || copyFeedback.includes('失败') ? 0 : 4500" />
       </div>
 
       <!-- 关闭按钮 -->

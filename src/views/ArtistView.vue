@@ -1,9 +1,12 @@
 <template>
   <div class="artist-view list-page">
     <div class="list-content">
+      <AppNotice :message="errorMessage" title="歌手资料" type="error" :actions="[{ label: '重试', run: loadInitial, disabled: initialLoading }]" />
+      <AppNotice :message="followMessage" :type="followError ? 'error' : 'success'" title="关注歌手" @close="followMessage = ''" />
+      <AppNotice :message="activeTab === 'songs' ? songsError : ''" title="歌手单曲" type="error" :actions="[{ label: '重试', run: loadMore, disabled: loadingMore }]" />
+      <AppNotice :message="activeTab === 'albums' ? albumsError : ''" title="歌手专辑" type="error" :actions="[{ label: '重试', run: loadAlbums, disabled: albumsLoading }]" />
       <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
       <div v-if="artist" key="artist-content">
-        <div v-if="errorMessage" class="refresh-error" role="alert"><span>{{ errorMessage }}</span><button type="button" :disabled="initialLoading" @click="loadInitial">重试</button></div>
         <header class="collection-hero">
           <ArtworkCover :src="getAvatar(artist)" class="collection-art" mark="♪" />
           <div class="collection-copy">
@@ -12,7 +15,6 @@
             <p class="collection-description">从熟悉的代表作，到值得珍藏的每一首。</p>
             <div class="collection-meta"><span>歌手</span><span v-if="artist.fans_cnt">{{ formatNumber(artist.fans_cnt) }} 位粉丝</span></div>
             <div class="collection-actions"><button type="button" class="action-btn" :aria-pressed="followed" :disabled="followPending" :aria-busy="followPending" @click="toggleFollow"><span v-if="followPending" class="loading-spinner inline-spinner" aria-hidden="true"></span>{{ followPending ? '正在更新…' : followed ? '已关注' : '＋ 关注歌手' }}</button></div>
-            <Transition name="ui-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><p v-if="followMessage" class="follow-message" :class="{ 'is-error': followError }" :role="followError ? 'alert' : 'status'">{{ followMessage }}</p></Transition>
           </div>
         </header>
 
@@ -120,7 +122,7 @@
           <div ref="sentinel" class="sentinel" />
           <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
             <div v-if="loadingMore" class="artist-loading" role="status"><span class="loading-spinner inline-spinner" aria-hidden="true"></span>加载中…</div>
-            <div v-else-if="songsError" class="refresh-error" role="alert"><span>{{ songsError }}</span><button type="button" class="retry-btn" @click="loadMore">重试</button></div>
+            <div v-else-if="songsError" class="empty"><button type="button" class="retry-btn" @click="loadMore">重新加载</button></div>
             <div v-else-if="songs.length === 0" class="empty"><p>暂无单曲</p></div>
           </Transition>
         </div>
@@ -136,7 +138,7 @@
           </button>
           <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
             <div v-if="albumsLoading" class="artist-loading" role="status"><span class="loading-spinner inline-spinner" aria-hidden="true"></span>加载中…</div>
-            <div v-else-if="albumsError" class="refresh-error" role="alert"><span>{{ albumsError }}</span><button type="button" class="retry-btn" @click="loadAlbums">重试</button></div>
+            <div v-else-if="albumsError" class="empty"><button type="button" class="retry-btn" @click="loadAlbums">重新加载</button></div>
             <div v-else-if="albums.length === 0" class="empty"><p>暂无专辑</p></div>
           </Transition>
         </div>
@@ -148,9 +150,7 @@
         </div>
         </Transition>
       </div>
-      <div v-else-if="initialLoadComplete" class="error" role="alert">
-      <p class="empty-text">暂时无法打开歌手资料</p>
-      <p>{{ errorMessage }}</p>
+      <div v-else-if="initialLoadComplete" class="empty-state">
       <button type="button" class="retry-btn" :disabled="initialLoading" @click="loadInitial">{{ initialLoading ? '正在重试…' : '重试' }}</button>
     </div>
       <div v-else class="loading-container">

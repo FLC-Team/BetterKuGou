@@ -3,7 +3,7 @@
     <p v-if="detail?.intro" class="introduction">{{ detail.intro }}</p>
     <div class="overview-actions"><button type="button" @click="actions?.['show-details']?.({ name: detail?.name || resource?.name }, { type: 'playlist', id: globalId })">歌单评论</button>
       <button v-if="error" type="button" :disabled="loading" @click="load">重新加载歌单介绍</button></div>
-    <p v-if="error" role="status">{{ error }}</p>
+    <AppNotice :message="error" type="error" title="歌单介绍" :actions="[{ label: '重新加载', run: load, disabled: loading }]" />
     <details v-if="similar.length"><summary>相似歌单 · {{ similar.length }}</summary>
       <div class="related-playlists"><button v-for="item in similar" :key="item.globalCollectionId" type="button" @click="$emit('navigate', 'playlist', item)">
         <ArtworkCover :src="item.cover" class="related-cover" /><span>{{ item.name }}</span></button></div>

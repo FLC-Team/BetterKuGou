@@ -7,6 +7,7 @@ const vm = require('node:vm')
 /** Run the actual isolated-window script with bridge callbacks and animation lifetimes controlled. */
 function windowFixture(name, reduced = false) {
   const elements = new Map(), callbacks = new Map(), windowListeners = new Map(), motionListeners = new Map(), timers = new Map(), animations = [], subscriptions = []
+  const notices = []
   let nextTimer = 0, unsubscribed = 0
   const media = { matches: reduced, addEventListener: (name, callback) => motionListeners.set(name, callback), removeEventListener: name => motionListeners.delete(name) }
   function element(id) {
@@ -19,6 +20,7 @@ function windowFixture(name, reduced = false) {
     return elements.get(id)
   }
   const bridge = new Proxy({}, { get(_target, key) {
+    if (key === 'reportNotice') return notice => notices.push(JSON.parse(JSON.stringify(notice)))
     return key.startsWith('on') ? callback => {
       callbacks.set(key, callback)
       const subscription = { event: key, releases: 0 }
@@ -35,7 +37,7 @@ function windowFixture(name, reduced = false) {
   const source = fs.readFileSync(path.join(__dirname, '../electron', name), 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1]
   vm.runInContext(source, sandbox)
   callbacks.get('DOMContentLoaded')?.()
-  return { element, callbacks, animations, timers, media, motionListeners, windowListeners, subscriptions, get unsubscribed() { return unsubscribed } }
+  return { element, callbacks, notices, animations, timers, media, motionListeners, windowListeners, subscriptions, get unsubscribed() { return unsubscribed } }
 }
 
 /** Each acquired bridge subscription must be released exactly once, including future channels. */
@@ -67,7 +69,7 @@ test('startup phase updates keep real progress and cancel obsolete phase motion'
   assert.equal(fixture.motionListeners.size, 0)
 })
 
-test('desktop metadata and control result motion preserve the latest update and release all resources', async () => {
+test('desktop metadata motion and forwarded control results preserve updates and release all resources', async () => {
   const fixture = windowFixture('desktopLyric.html')
   const update = fixture.callbacks.get('onSongUpdate')
   update({ title: '歌曲 A', artist: '歌手 A' })
@@ -79,10 +81,10 @@ test('desktop metadata and control result motion preserve the latest update and 
   update({ title: '歌曲 B', artist: '歌手 B' })
   assert.equal(metadataAnimations().length, 2, 'same metadata does not restart the entrance')
   await fixture.element('sizeBtn').click()
-  assert.match(fixture.element('controlFeedback').textContent, /字号/)
+  assert.match(fixture.notices.at(-1).message, /字号/)
   await fixture.element('themeBtn').click()
-  assert.match(fixture.element('controlFeedback').textContent, /样式/)
-  assert.equal(fixture.timers.size, 1, 'rapid controls replace the previous dismiss timer')
+  assert.match(fixture.notices.at(-1).message, /样式/)
+  assert.equal(fixture.timers.size, 0, 'notification lifetimes belong to the unified provider')
   const beforeReduced = fixture.animations.length
   fixture.media.matches = true
   fixture.motionListeners.get('change')()
@@ -103,20 +105,18 @@ for (const name of ['loading.html', 'desktopLyric.html']) test(name + ' respects
   assert.equal(fixture.animations.length, 0)
 })
 
-test('reducing motion during desktop result dismissal settles the empty status immediately', async () => {
+test('desktop results use the same notification bridge with reduced motion and stop after unload', async () => {
   const fixture = windowFixture('desktopLyric.html')
   await fixture.element('sizeBtn').click()
-  assert.match(fixture.element('controlFeedback').textContent, /字号/)
-  const [timerId, dismiss] = fixture.timers.entries().next().value
-  fixture.timers.delete(timerId)
-  dismiss()
-  const leaving = fixture.animations.at(-1)
-  assert.equal(leaving.elementId, 'controlFeedback')
-  assert.equal(leaving.cancelled, false)
+  assert.match(fixture.notices.at(-1).message, /字号/)
   fixture.media.matches = true
   fixture.motionListeners.get('change')()
-  assert.equal(leaving.cancelled, true)
-  assert.equal(fixture.element('controlFeedback').textContent, '')
+  await fixture.element('themeBtn').click()
+  assert.match(fixture.notices.at(-1).message, /样式/)
+  assert.equal(fixture.notices.at(-1).type, 'success')
   assert.equal(fixture.timers.size, 0)
   fixture.windowListeners.get('beforeunload')()
+  const count = fixture.notices.length
+  await fixture.element('sizeBtn').click()
+  assert.equal(fixture.notices.length, count)
 })

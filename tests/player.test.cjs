@@ -64,7 +64,7 @@ function loadComponent(filename, overrides = {}) {
     getPlaylistCacheSessionVersion: () => 0,
     PlaylistDrawer: {}, ContextMenu: {}, AnimatedSelect: {}, LyricView: {}, VolumeControl: {}, ArtworkCover: {}, TransitionGroup: {}, SongBadges: {}, ArtistLinks: {}, LibraryActions: {},
     contextMenuManager: menuManager,
-    useSettingsStore: () => ({ settings: { playback: { quality: '128' }, custom: {} }, async updateSettings() {} }),
+    useSettingsStore: () => ({ settings: { playback: { quality: '128', preloadNextTrack: false, smoothTrackSwitch: false, skipTrailingSilence: false }, custom: {} }, async updateSettings() {} }),
     ...Object.fromEntries(['playlistIcon', 'repeatAllIcon', 'repeatOneIcon', 'shuffleIcon',
       'sound0Icon', 'sound1Icon', 'sound2Icon', 'sound3Icon'].map(name => [name, ''])),
     ...overrides
@@ -79,10 +79,10 @@ function loadComponent(filename, overrides = {}) {
   const qualitySource = fs.readFileSync(path.join(playerDirectory, '..', '..', 'utils', 'playbackQuality.js'), 'utf8')
     .replace(/\bexport (?=(?:function|const))/g, '')
   vm.runInContext(qualitySource, sandbox)
-  for (const filename of ['songMetadata.js', 'desktopLyrics.js', 'lyricProcessing.js', 'listeningHistory.js']) {
+  for (const filename of ['songMetadata.js', 'desktopLyrics.js', 'lyricProcessing.js', 'listeningHistory.js', 'playbackTransition.js', 'trailingSilence.js']) {
     const utility = fs.readFileSync(path.join(playerDirectory, '..', '..', 'utils', filename), 'utf8')
       .replace(/^import[^\n]*\n/gm, '')
-      .replace(/\bexport (?=(?:function|const))/g, '')
+      .replace(/\bexport (?=(?:async |function|const))/g, '')
     vm.runInContext(utility, sandbox)
   }
   const metadataSource = fs.readFileSync(path.join(playerDirectory, '..', '..', 'utils', 'libraryMetadata.js'), 'utf8')
@@ -92,22 +92,82 @@ function loadComponent(filename, overrides = {}) {
   return { component: sandbox.component, sandbox, actions, listeners, menuManager }
 }
 
+/** Two physical media elements, with a control facade for the currently prepared/active media in legacy scenarios.
+ * New transition assertions inspect decks directly, so candidate events cannot masquerade as active events.
+ */
+function createAudioDecks(getPlayer, hostNodes = null) {
+  let invoking = null
+  let playOverride = null
+  const decks = hostNodes || [{}, {}]
+  const pick = () => invoking || (() => {
+    const player = getPlayer()
+    const candidate = player?.candidateAudioSlot === null ? null : decks[player?.candidateAudioSlot]
+    return candidate?.src ? candidate : decks[player?.activeAudioSlot || 0]
+  })()
+  const listeners = decks.map(() => new Map())
+  const basePlay = async function () {
+    const deck = invoking || pick()
+    if (!deck.src) return
+    deck.playCount++
+    deck.paused = false
+    deck.ended = false
+    deck.emit('play')
+    deck.emit('playing')
+  }
+  decks.forEach((deck, slot) => {
+    let source = ''
+    Object.assign(deck, { __listeners: listeners[slot], paused: true, ended: false, currentTime: 0, duration: 180, readyState: 4,
+      muted: false, volume: 0.8, playCount: 0, pauseCount: 0, manualReady: false,
+      getAttribute(name) { return name === 'src' ? this.src || null : null },
+      removeAttribute(name) { if (name === 'src') this.src = '' },
+      addEventListener(name, callback) { if (!listeners[slot].has(name)) listeners[slot].set(name, new Set()); listeners[slot].get(name).add(callback) },
+      removeEventListener(name, callback) { listeners[slot].get(name)?.delete(callback) },
+      emit(name) {
+        const event = { type: name, target: this }
+        for (const listener of [...(listeners[slot].get(name) || [])]) listener(event)
+        getPlayer()?.handleDeckEvent(event)
+      },
+      load() {
+        const player = getPlayer()
+        const waitForTest = this.manualReady && (player.currentSong || player.loadingSongOptions?.restoreState)
+        if (this.src && !waitForTest) queueMicrotask(() => { this.readyState = 4; this.emit('canplay') })
+      },
+      pause() { if (!this.paused) this.pauseCount++; this.paused = true; this.emit('pause') },
+      play() {
+        const previous = invoking
+        invoking = this
+        try { return Promise.resolve(playOverride ? playOverride.call(this) : basePlay.call(this)) }
+        finally { invoking = previous }
+      }
+    })
+    Object.defineProperty(deck, 'src', { configurable: true, get: () => source, set(value) {
+      source = value; deck.currentTime = 0; deck.readyState = 0; deck.paused = true; deck.ended = false
+    } })
+  })
+  const audio = new Proxy({}, {
+    get(_, name) {
+      if (name === 'decks') return decks
+      if (name === 'play') return playOverride || basePlay
+      if (name === 'playCount' || name === 'pauseCount') return decks.reduce((sum, deck) => sum + deck[name], 0)
+      const value = pick()[name]
+      return typeof value === 'function' ? value.bind(pick()) : value
+    },
+    set(_, name, value) { if (name === 'play') playOverride = value; else pick()[name] = value; return true },
+    defineProperty(_, name, descriptor) { Object.defineProperty(pick(), name, descriptor); return true }
+  })
+  const combinedListeners = { get: name => new Set(listeners.flatMap(map => [...(map.get(name) || [])])) }
+  return { audio, decks, listeners: combinedListeners }
+}
+
 function createPlayer(t, overrides = {}) {
   const loaded = loadComponent('MusicPlayer.js', overrides)
   const { component } = loaded
   const emitted = []
-  const audio = {
-    src: '', paused: true, ended: false, currentTime: 0, duration: 180,
-    muted: false, volume: 0.8, playCount: 0, pauseCount: 0,
-    getAttribute(name) { return name === 'src' ? this.src || null : null },
-    removeAttribute(name) { if (name === 'src') this.src = '' },
-    load() {},
-    pause() { this.pauseCount++; this.paused = true; player.handlePause() },
-    async play() { this.playCount++; this.paused = false; this.ended = false; player.handlePlay() }
-  }
-  const player = {
+  let player
+  const media = createAudioDecks(() => player)
+  player = {
     ...component.data(), playlist: [], isComponentReady: true, settingsStore: loaded.sandbox.useSettingsStore(),
-    $refs: { audioPlayer: audio },
+    $refs: { audioPlayer: media.decks[0], audioStandby: media.decks[1] },
     $nextTick: callback => Promise.resolve().then(() => callback?.()),
     $emit(name, value) {
       emitted.push({ name, value })
@@ -115,40 +175,62 @@ function createPlayer(t, overrides = {}) {
     }
   }
   for (const [name, method] of Object.entries(component.methods)) player[name] = method.bind(player)
-  for (const [name, getter] of Object.entries(component.computed)) {
-    Object.defineProperty(player, name, { get: () => getter.call(player) })
-  }
+  for (const [name, getter] of Object.entries(component.computed)) Object.defineProperty(player, name, { get: () => getter.call(player) })
   player.updateMediaSession = () => {}
   player.sendLyricsToDesktop = () => {}
   t.after(() => component.beforeUnmount.call(player))
-  return { ...loaded, player, audio, emitted }
+  return { ...loaded, player, audio: media.audio, decks: media.decks, emitted, media }
 }
 
 function qualityStore() {
   return {
-    settings: { playback: { quality: '128' }, custom: {} },
+    settings: { playback: { quality: '128', preloadNextTrack: false, smoothTrackSwitch: false, skipTrailingSilence: false }, custom: {} },
     async updateSettings(patch) { Object.assign(this.settings.playback, patch.playback) }
   }
 }
 
+/** Native graph/IPC boundaries are controlled while the actual player transactions and media decks run. */
+function effectsBoundary(options = {}) {
+  const calls = [], leases = [], released = [], attached = new Set()
+  let listener, activeAudio, enabled = false, nextLease = 0, disposed = 0, unsubscribed = 0
+  let state = { revision: 1, supported: true, enabled: true, running: true, chain: [{ instanceId: 'effect-a', bypassed: false }], ...options.state }
+  const engine = {
+    graphReady: false,
+    async init() { calls.push(['init']); if (options.init) await options.init(); this.graphReady = true; return this },
+    async attach(audio) { calls.push(['attach', audio]); assert.equal(audio.crossOrigin, 'anonymous'); attached.add(audio); audio.volume = 1; audio.muted = false },
+    hasDeck: audio => attached.has(audio),
+    setDeckGain(audio, gain) { if (!attached.has(audio)) return false; calls.push(['gain', audio, gain]); audio.volume = 1; audio.muted = false; return true },
+    setMaster: (volume, muted) => calls.push(['master', volume, muted]),
+    setEnabled(value) { enabled = value; calls.push(['enabled', value]) },
+    setTempo: value => calls.push(['tempo', value]),
+    setActiveTrack(value) { activeAudio = value.audio; calls.push(['track', value]); return true },
+    clearActiveTrack() { activeAudio = null; calls.push(['clear']) },
+    transport: value => calls.push(['transport', value]),
+    getPresentationTime: (audio, raw) => audio === activeAudio && enabled ? Math.max(0, raw - 0.25) : raw,
+    async dispose() { disposed++; this.graphReady = false; calls.push(['dispose']) }
+  }
+  const api = {
+    async getStatus() { return state },
+    connectAudio() {},
+    onStatus(callback) { listener = callback; return () => { unsubscribed++ } },
+    async acquireMedia(request) {
+      leases.push(request)
+      if (options.acquireMedia) return options.acquireMedia(request)
+      const leaseId = `media-${++nextLease}`
+      return { leaseId, url: `bk-audio://media/${leaseId}` }
+    },
+    async releaseMedia(leaseId) { released.push(leaseId) }
+  }
+  return { calls, leases, released, engine, api, disposed: () => disposed, unsubscribed: () => unsubscribed,
+    overrides: { window: { addEventListener() {}, removeEventListener() {}, electronAPI: { audioEffects: api } },
+      createAudioEffectsEngine: () => { calls.push(['create']); return engine } },
+    publish(value) { state = value; listener?.(value) } }
+}
+
 /** Model the media load reset and readiness events used when replacing a paused source. */
 function qualityAudio(audio, player, { manualReady = false } = {}) {
-  const listeners = new Map()
-  let source = audio.src
-  Object.defineProperty(audio, 'src', {
-    get: () => source,
-    set(value) { source = value; audio.currentTime = 0; audio.readyState = 0; audio.paused = true; player.handlePause() }
-  })
-  audio.addEventListener = (event, callback) => {
-    if (!listeners.has(event)) listeners.set(event, new Set())
-    listeners.get(event).add(callback)
-  }
-  audio.removeEventListener = (event, callback) => listeners.get(event)?.delete(callback)
-  audio.emit = event => [...(listeners.get(event) || [])].forEach(callback => callback())
-  audio.load = () => {
-    if (!manualReady) queueMicrotask(() => { audio.readyState = 4; audio.emit('canplay') })
-  }
-  return listeners
+  for (const deck of audio.decks) deck.manualReady = manualReady
+  return { get(name) { return new Set(audio.decks.flatMap(deck => [...(deck.__listeners.get(name) || [])])) } }
 }
 
 function createFrameClock() {
@@ -165,6 +247,374 @@ function createFrameClock() {
     }
   }
 }
+
+test('desktop playback waits for one shared graph and acquires a CORS-safe online media lease before play', async t => {
+  const initialization = deferred()
+  const boundary = effectsBoundary({ init: () => initialization.promise })
+  const { player, decks } = createPlayer(t, boundary.overrides)
+  const loading = player.loadSong(song('A'))
+  await flush()
+  assert.equal(decks[0].playCount, 0)
+  assert.equal(boundary.leases.length, 0)
+  initialization.resolve()
+  assert.equal(await loading, true)
+  assert.equal(boundary.calls.filter(call => call[0] === 'init').length, 1)
+  assert.equal(boundary.calls.filter(call => call[0] === 'attach').length, 2)
+  assert.match(player.getActiveAudio().src, /^bk-audio:\/\/media\//)
+  assert.equal(player.getActiveAudio().crossOrigin, 'anonymous')
+  assert.equal(boundary.leases[0].url, 'https://example.test/A.mp3')
+  assert.match(boundary.leases[0].identity, /^guest:/)
+  assert.equal(boundary.calls.filter(call => call[0] === 'track').length, 1)
+  await player.loadSong(song('B'))
+  await flush()
+  assert.equal(boundary.calls.filter(call => call[0] === 'init').length, 1)
+  assert.equal(boundary.calls.filter(call => call[0] === 'attach').length, 2)
+  assert.deepEqual(boundary.released, ['media-1'])
+})
+
+test('deleting a stalled candidate aborts its wait immediately and retains a paused confirmed source', async t => {
+  const held = deferred()
+  const { player, audio } = createPlayer(t, { getSongUrl: hash => hash === 'B' ? held.promise : Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` }) })
+  player.playlist = [song('A'), song('B'), song('C')]
+  await player.requestSong(player.playlist[0])
+  const loading = player.requestSong(player.playlist[1])
+  await flush()
+  player.togglePlay()
+  const controller = player.songAbortController
+  await player.handleRemoveSong(1)
+  await loading; await flush()
+  assert.equal(controller.signal.aborted, true)
+  assert.equal(player.isLoadingSong, false)
+  assert.equal(player.currentSong.hash, 'A')
+  assert.equal(audio.paused, true)
+  assert.equal(player.pendingSong, null)
+  assert.deepEqual(player.playlist.map(value => value.hash), ['A', 'C'])
+  held.resolve({ status: 1, url: 'https://example.test/B.mp3' })
+  await flush()
+  assert.equal(player.currentSong.hash, 'A')
+  assert.equal(audio.paused, true)
+})
+
+test('display titles preserve real hyphens and remove only the identified artist prefix', t => {
+  const { player } = createPlayer(t)
+  const lyric = loadComponent('LyricView.js').component
+  const drawer = loadComponent('PlaylistDrawer.vue').component
+  for (const item of [
+    { name: 'Title - Live', singername: 'Singer' },
+    { name: 'Singer - Title - Live.flac', singername: 'Singer' },
+    { songname: 'Title - Live', singername: 'Singer' }
+  ]) {
+    assert.equal(player.getSongName(item), 'Title - Live')
+    assert.equal(lyric.methods.getSongName(item), 'Title - Live')
+    assert.equal(drawer.methods.getSongName(item), 'Title - Live')
+  }
+})
+
+test('delayed output keeps lyrics, desktop identity and checkpoints with the audible source across rapid changes', async t => {
+  const boundary = effectsBoundary()
+  let token = 0, inputAudio = null, inputTrack = '', presented = null
+  const original = boundary.engine.setActiveTrack.bind(boundary.engine)
+  boundary.engine.setActiveTrack = value => {
+    if (value.audio !== inputAudio || value.trackId !== inputTrack || value.continuous) token++
+    inputAudio = value.audio; inputTrack = value.trackId
+    original(value)
+    if (!presented) presented = { token, trackId: value.trackId, position: 0, advancing: true }
+    return true
+  }
+  Object.defineProperty(boundary.engine, 'activePresentationToken', { get: () => token })
+  boundary.engine.getPresentedPlayback = () => presented
+  const tracks = [], lyrics = [], times = []
+  boundary.api.updateTrack = () => {}
+  boundary.overrides.window.electronAPI.updateTrack = value => tracks.push(value)
+  boundary.overrides.window.electronAPI.updateLyrics = (value, trackId) => lyrics.push({ value, trackId })
+  boundary.overrides.window.electronAPI.updatePlaybackTime = (time, details) => times.push({ time, ...details })
+  const fixture = createPlayer(t, boundary.overrides)
+  const { player, component } = fixture
+  player.sendLyricsToDesktop = component.methods.sendLyricsToDesktop.bind(player)
+  player.playlist = [song('A'), song('B'), song('C')]
+  await player.requestSong(player.playlist[0]); await flush()
+  const aToken = token
+  presented = { token: aToken, trackId: inputTrack, position: 39.25, advancing: true }
+  await player.requestSong(player.playlist[1]); await flush()
+  const bToken = token
+  assert.equal(player.currentSong.hash, 'B', 'the audio transaction commits without waiting for visual presentation')
+  assert.equal(player.presentedSong.hash, 'A')
+  assert.match(player.displayLyric.content, /A/)
+  assert.equal(player.getAnimationPlaybackTime(), 39.25)
+  assert.equal(player.getPlaybackSnapshot().currentSong.hash, 'A')
+  assert.equal(player.getPlaybackSnapshot().playbackState.currentTime, 39.25)
+  assert.equal(tracks.at(-1).trackId, 'A')
+  assert.equal(lyrics.at(-1).trackId, 'A')
+  assert.equal(times.at(-1).trackId, 'A')
+  const historyStarts = []
+  player.listeningHistory = { begin: item => historyStarts.push(item.hash), sample() {}, discontinuity() {}, reset() {}, dispose() {} }
+  await player.requestSong(player.playlist[2]); await flush()
+  presented = { token: bToken, trackId: 'guest:catalog:b', position: 0.1, advancing: true }
+  player.refreshPresentedPlayback()
+  assert.equal(player.presentedSong.hash, 'B')
+  assert.match(player.displayLyric.content, /B/)
+  assert.equal(player.getPlaybackSnapshot().currentSong.hash, 'B')
+  presented = { token, trackId: inputTrack, position: 0.2, advancing: true }
+  player.refreshPresentedPlayback()
+  assert.equal(player.presentedSong.hash, 'C')
+  assert.equal(player.presentedPlaybackSnapshots.size, 0)
+  assert.equal(tracks.at(-1).trackId, 'C')
+  assert.equal(lyrics.at(-1).trackId, 'C')
+  assert.deepEqual(historyStarts, ['B', 'C'], 'history instances switch with audible identities, not speculative decoded input')
+  presented = { token: bToken, trackId: 'guest:catalog:b', position: 0.3, advancing: true }
+  player.presentedPlaybackSnapshot = { token: bToken, song: song('B'), lyrics: '[00:00.00]B', duration: 180, playbackInstanceId: 2 }
+  player.handleSeek(20)
+  assert.equal(player.presentedPlaybackSnapshot, null)
+  assert.equal(tracks.at(-1).trackId, 'C')
+  assert.equal(lyrics.at(-1).trackId, 'C')
+  assert.equal(player.getActiveAudio().currentTime, 20)
+})
+
+test('natural repeats preserve the effects queue while a subsequent explicit seek still flushes it', async t => {
+  const boundary = effectsBoundary()
+  const { player, audio, decks } = createPlayer(t, boundary.overrides)
+  player.playlist = [song('A')]
+  await player.requestSong(player.playlist[0])
+  player.playMode = 'single'
+  const active = player.getActiveAudio()
+  active.currentTime = active.duration; active.ended = true; active.paused = true
+  player.handleEnded({ type: 'ended', target: active })
+  await flush()
+  assert.equal(boundary.calls.filter(value => value[0] === 'track').at(-1)[1].continuous, true)
+  const count = boundary.calls.filter(value => value[0] === 'transport' && value[1].seeking).length
+  active.emit('seeking')
+  assert.equal(boundary.calls.filter(value => value[0] === 'transport' && value[1].seeking).length, count)
+  player.handleSeek(25)
+  active.emit('seeking'); active.emit('seeked')
+  assert.equal(player.naturalLoopSeek, null)
+  assert.ok(boundary.calls.filter(value => value[0] === 'transport' && value[1].seeking).length > count)
+  assert.equal(active.currentTime, 25)
+  assert.equal(decks.length, 2)
+  assert.equal(audio.paused, false)
+})
+
+test('plugin volume is applied after the chain and bypass status does not reset the bridge on every snapshot', async t => {
+  const boundary = effectsBoundary()
+  const { player, decks } = createPlayer(t, boundary.overrides)
+  await player.loadSong(song('A'))
+  player.handleVolumeChange(25)
+  player.toggleMute()
+  assert.equal(decks[0].volume, 1)
+  assert.equal(decks[0].muted, false)
+  assert.deepEqual(boundary.calls.filter(call => call[0] === 'master').at(-1), ['master', 0.25, true])
+  const enabledCalls = () => boundary.calls.filter(call => call[0] === 'enabled')
+  assert.deepEqual(enabledCalls(), [['enabled', true]])
+  boundary.publish({ revision: 2, supported: true, enabled: true, running: true, chain: [{ bypassed: false }], tempo: { trackId: player.audioEffectsTrack, bpm: 120, manualBpm: 120 } })
+  assert.equal(enabledCalls().length, 1)
+  assert.equal(boundary.calls.filter(call => call[0] === 'tempo').at(-1)[1].bpm, 120)
+  boundary.publish({ revision: 3, supported: true, enabled: false, running: true, chain: [{ bypassed: false }] })
+  assert.deepEqual(enabledCalls().at(-1), ['enabled', false])
+  assert.equal(player.getActiveAudio().paused, false)
+})
+
+test('unapplied effect drafts preserve the last successful wet chain until the service confirms application', async t => {
+  const boundary = effectsBoundary()
+  const { player } = createPlayer(t, boundary.overrides)
+  await player.loadSong(song('A'))
+  const enabledCalls = () => boundary.calls.filter(call => call[0] === 'enabled')
+  boundary.publish({ revision: 2, supported: true, running: true, enabled: false, chain: [],
+    appliedEnabled: true, appliedChain: [{ bypassed: false }], pendingChanges: true, saveError: 'disk unavailable' })
+  assert.deepEqual(enabledCalls(), [['enabled', true]])
+  boundary.publish({ revision: 3, supported: true, running: true, enabled: false, chain: [],
+    appliedEnabled: false, appliedChain: [], pendingChanges: false })
+  assert.deepEqual(enabledCalls(), [['enabled', true], ['enabled', false]])
+})
+
+test('partial deck attachment failure restores the bound deck gain and keeps playback audible', async t => {
+  const boundary = effectsBoundary()
+  const attach = boundary.engine.attach.bind(boundary.engine)
+  let count = 0
+  boundary.engine.attach = async audio => {
+    if (++count === 2) throw new Error('second deck unavailable')
+    return attach(audio)
+  }
+  const { player } = createPlayer(t, boundary.overrides)
+  assert.equal(await player.loadSong(song('A')), true)
+  assert.equal(player.getActiveAudio().paused, false)
+  assert.match(player.audioEffectsError, /second deck unavailable/)
+  assert.ok(boundary.calls.some(call => call[0] === 'gain' && call[1] === player.getActiveAudio() && call[2] === 1))
+  assert.equal(boundary.disposed(), 0)
+})
+
+test('natural media end is distinguished from user pause when synchronizing the effects transport', async t => {
+  const boundary = effectsBoundary()
+  const { player } = createPlayer(t, boundary.overrides)
+  await player.loadSong(song('A'))
+  const audio = player.getActiveAudio()
+  audio.paused = true; audio.ended = false
+  player.handlePause()
+  assert.equal(boundary.calls.filter(call => call[0] === 'transport').at(-1)[1].ended, false)
+  audio.ended = true
+  player.handleEnded({ target: audio })
+  const transport = boundary.calls.filter(call => call[0] === 'transport').at(-1)[1]
+  assert.equal(transport.playing, false); assert.equal(transport.ended, true)
+})
+
+test('presentation clocks drive lyrics, desktop and checkpoints while seeking retains the raw source position', async t => {
+  const boundary = effectsBoundary()
+  const times = []
+  boundary.overrides.window.electronAPI.updatePlaybackTime = value => times.push(value)
+  const { player } = createPlayer(t, boundary.overrides)
+  await player.loadSong(song('A'))
+  const audio = player.getActiveAudio()
+  audio.currentTime = 25
+  player.handleTimeUpdate()
+  player.syncDesktopTime(true)
+  assert.equal(player.currentTime, 24.75)
+  assert.equal(player.getAnimationPlaybackTime(), 24.75)
+  assert.equal(player.getPlaybackSnapshot().playbackState.currentTime, 24.75)
+  assert.equal(times.at(-1), 24750)
+  player.handleSeek(40)
+  assert.equal(audio.currentTime, 40)
+  assert.equal(boundary.calls.filter(call => call[0] === 'transport').at(-1)[1].seeking, true)
+  player.togglePlay()
+  assert.equal(boundary.calls.filter(call => call[0] === 'transport').at(-1)[1].playing, false)
+})
+
+test('paused startup and speculative next audio never become the plugin tempo source', async t => {
+  const boundary = effectsBoundary()
+  const { player } = createPlayer(t, boundary.overrides)
+  player.playlist = [song('A'), song('B')]
+  player.settingsStore.settings.playback.preloadNextTrack = true
+  await player.loadSong(song('A'), 'select', { restoreState: { songHash: 'A', currentTime: 10, isPlaying: false } })
+  assert.equal(boundary.calls.filter(call => call[0] === 'track').length, 0)
+  player.togglePlay()
+  await flush()
+  assert.equal(boundary.calls.filter(call => call[0] === 'track').length, 1)
+  assert.equal(player.preparedNext?.song.hash, 'B')
+  assert.equal(boundary.calls.filter(call => call[0] === 'track').length, 1)
+  player.stopPlayback()
+  assert.ok(boundary.calls.some(call => call[0] === 'clear'))
+  await flush()
+  assert.equal(new Set(boundary.released).size, boundary.leases.length)
+})
+
+test('native init failure and unsupported platforms keep the selected media playable', async t => {
+  for (const options of [{ init: async () => { throw new Error('宿主暂不可用') } }, { state: { supported: false } }]) {
+    const boundary = effectsBoundary(options)
+    const { player } = createPlayer(t, boundary.overrides)
+    assert.equal(await player.loadSong(song('A')), true)
+    assert.equal(player.getActiveAudio().paused, false)
+    assert.equal(player.getActiveAudio().volume, 0.8)
+    if (options.state) assert.equal(boundary.calls.filter(call => call[0] === 'create').length, 0)
+    else assert.match(player.audioEffectsError, /宿主暂不可用/)
+  }
+})
+
+test('a late media grant is released after cancellation without installing or leaking its source', async t => {
+  const grant = deferred()
+  const boundary = effectsBoundary({ acquireMedia: () => grant.promise })
+  const { player, decks } = createPlayer(t, boundary.overrides)
+  const loading = player.loadSong(song('A'))
+  await flush()
+  player.stopPlayback()
+  await loading
+  grant.resolve({ leaseId: 'late-media', url: 'bk-audio://media/late-media' })
+  await flush()
+  assert.deepEqual(boundary.released, ['late-media'])
+  assert.equal(player.currentSong, null)
+  assert.ok(decks.every(audio => !audio.src && audio.paused))
+})
+
+test('cancellation after a media grant settles cannot overwrite a newly reused deck', async t => {
+  const boundary = effectsBoundary()
+  const { player, sandbox, decks } = createPlayer(t, boundary.overrides)
+  const controller = new AbortController()
+  const wait = sandbox.waitForPlaybackOperation
+  sandbox.waitForPlaybackOperation = (operation, options) => wait(operation, options).then(value => {
+    if (value?.leaseId === 'media-1') {
+      controller.abort()
+      player.deckVersions[0]++
+      decks[0].src = 'newer-source'
+    }
+    return value
+  })
+  const preparation = player.createSongPreparation(song('A'), '128', 0, {}, controller)
+  await assert.rejects(preparation.promise, /取消/)
+  player.releasePreparation(preparation)
+  await flush()
+  assert.equal(decks[0].src, 'newer-source')
+  assert.deepEqual(boundary.released, ['media-1'])
+})
+
+test('native media leases remain alive across overlap and the injected envelope never changes plugin input master volume', async t => {
+  const boundary = effectsBoundary()
+  const store = qualityStore()
+  store.settings.playback.smoothTrackSwitch = true
+  const { player, decks, sandbox } = createPlayer(t, { ...boundary.overrides, useSettingsStore: () => store })
+  let clock = 0
+  player.audioTransition = sandbox.createPlaybackTransition({ getVolume: () => player.volume / 100,
+    getMuted: () => player.isMuted, setGain: (audio, amount) => player.setDeckGain(audio, amount),
+    release: audio => player.releaseAudioDeck(audio), now: () => clock, schedule: () => 1, cancelSchedule() {} })
+  await player.loadSong(song('A'))
+  await player.loadSong(song('B'))
+  await flush()
+  assert.deepEqual(boundary.released, [])
+  assert.equal(boundary.calls.filter(call => call[0] === 'clear').length, 0)
+  clock = 75
+  player.audioTransition.refresh()
+  assert.ok(boundary.calls.filter(call => call[0] === 'gain').slice(-2).every(call => call[2] === 0.5))
+  assert.ok(decks.every(audio => audio.volume === 1 && !audio.muted))
+  player.audioTransition.settle()
+  await flush()
+  assert.deepEqual(boundary.released, ['media-1'])
+  player.stopPlayback()
+  await flush()
+  assert.deepEqual(boundary.released, ['media-1', 'media-2'])
+})
+
+test('offline media keeps its cache lease and paused quality replacement clears the former analysis deck', async t => {
+  const boundary = effectsBoundary()
+  boundary.overrides.window.electronAPI.playlistCache = {
+    getSource: async request => cachedSource(request.hash, request.quality), releaseSource: async () => {}
+  }
+  const { player } = createPlayer(t, boundary.overrides)
+  await player.loadSong(song('A'))
+  assert.match(player.getActiveAudio().src, /^bk-cache:/)
+  assert.equal(boundary.leases.length, 0)
+  player.togglePlay()
+  await player.changeQuality('flac')
+  assert.equal(player.getActiveAudio().paused, true)
+  assert.equal(player.audioEffectsDeck, null)
+  assert.ok(boundary.calls.some(call => call[0] === 'clear'))
+  player.togglePlay()
+  await flush()
+  assert.equal(player.audioEffectsDeck, player.getActiveAudio())
+})
+
+test('unmount during native initialization closes the eventual engine and cannot start playback', async t => {
+  const initialization = deferred()
+  const boundary = effectsBoundary({ init: () => initialization.promise })
+  const { player, component, decks } = createPlayer(t, boundary.overrides)
+  const loading = player.loadSong(song('A'))
+  await flush()
+  component.beforeUnmount.call(player)
+  await loading
+  assert.equal(boundary.disposed(), 1, 'closing the player must abort an in-flight graph handshake immediately')
+  initialization.resolve()
+  await flush()
+  assert.equal(boundary.disposed(), 1)
+  assert.equal(boundary.unsubscribed(), 1)
+  assert.equal(boundary.calls.filter(call => call[0] === 'attach').length, 0)
+  assert.ok(decks.every(audio => audio.playCount === 0 && !audio.src))
+})
+
+test('a recovered ready engine clears its former playback warning', async t => {
+  const boundary = effectsBoundary()
+  let notify
+  boundary.overrides.createAudioEffectsEngine = options => { notify = options.onStatus; return boundary.engine }
+  const { player } = createPlayer(t, boundary.overrides)
+  await player.loadSong(song('A'))
+  notify({ ready: true, error: 'host disconnected' })
+  assert.equal(player.audioEffectsError, 'host disconnected')
+  notify({ ready: true, running: true, error: '' })
+  assert.equal(player.audioEffectsError, '')
+})
 
 test('history sync preference toggles keep the current play deduplicated through pause and quality replacement', async t => {
   let clock = 0
@@ -439,7 +889,7 @@ test('checkpoints retain the confirmed song and position through pending selecti
   assert.equal(player.getPlaybackSnapshot().playbackState.currentTime, 0)
 })
 
-test('native seek completion publishes a checkpoint for media controls and ignores source replacement', async t => {
+test('native seek completion publishes a checkpoint for media controls and keeps confirmed-deck checkpoints during candidate loading', async t => {
   const { player, audio, emitted } = createPlayer(t)
   await player.requestSong(song('A'))
   audio.currentTime = 57
@@ -449,7 +899,7 @@ test('native seek completion publishes a checkpoint for media controls and ignor
   player.isLoadingSong = true
   audio.currentTime = 0
   player.handleSeeked()
-  assert.equal(emitted.filter(event => event.name === 'playback-state-changed').length, 1)
+  assert.equal(emitted.filter(event => event.name === 'playback-state-changed').length, 2)
 })
 
 /** Exercise lyric state against controllable animation frames and measurable text nodes. */
@@ -508,18 +958,13 @@ function createLyric(t) {
 function mountPlayer(t, initialSongs, overrides = {}) {
   const loaded = loadComponent('MusicPlayer.js', overrides)
   const audioElements = []
+  let player
+  let media
   const makeNode = type => {
     const node = { type, children: [], parent: null }
     if (type === 'audio') {
-      Object.assign(node, {
-        src: '', paused: true, ended: false, currentTime: 0, duration: 180, volume: 1,
-        getAttribute(name) { return name === 'src' ? this.src || null : null },
-        removeAttribute(name) { if (name === 'src') this.src = '' },
-        load() {},
-        pause() { this.paused = true; this.onPause?.() },
-        async play() { this.paused = false; this.ended = false; this.onPlay?.() }
-      })
       audioElements.push(node)
+      if (audioElements.length === 2) media = createAudioDecks(() => player, audioElements)
     }
     return node
   }
@@ -531,12 +976,11 @@ function mountPlayer(t, initialSongs, overrides = {}) {
     setText() {}, setElementText() {}, parentNode: node => node.parent, nextSibling: () => null
   })
   loaded.component.render = function () {
-    return h('audio', { ref: 'audioPlayer', onPlay: this.handlePlay, onPause: this.handlePause })
+    return h('div', [h('audio', { ref: 'audioPlayer' }), h('audio', { ref: 'audioStandby' })])
   }
   loaded.component.methods.updateMediaSession = () => {}
   loaded.component.methods.sendLyricsToDesktop = () => {}
   const state = reactive({ song: initialSongs[0], playlist: initialSongs })
-  let player
   const app = renderer.createApp({
     render: () => h(loaded.component, {
       ref: value => { player = value }, song: state.song, playlist: state.playlist,
@@ -547,8 +991,42 @@ function mountPlayer(t, initialSongs, overrides = {}) {
   })
   app.mount(makeNode('root'))
   t.after(() => app.unmount())
-  return { ...loaded, app, state, getPlayer: () => player, audioElements }
+  return { ...loaded, app, state, getPlayer: () => player, audioElements: [media.audio, ...media.decks] }
 }
+
+test('same-tick priority additions survive real Vue parent prop batching with source identity intact', async t => {
+  const { state, getPlayer } = mountPlayer(t, [song('A')])
+  await flush()
+  const b = song('B'), c = song('C'), cloud = { ...song('B'), source: 'cloud', sourceUserId: 'fixture' }
+  getPlayer().addToPlayNextQueue(b)
+  getPlayer().addToPlayNextQueue(c)
+  getPlayer().addToPlayNextQueue(b)
+  getPlayer().addToPlayNextQueue(cloud)
+  await nextTick()
+  assert.deepEqual(Array.from(state.playlist, item => [item.hash, item.source || 'catalog']), [
+    ['A', 'catalog'], ['B', 'catalog'], ['C', 'catalog'], ['B', 'cloud']
+  ])
+  assert.deepEqual(Array.from(getPlayer().playNextQueue, item => item.hash), ['B', 'C', 'B'])
+  assert.equal(getPlayer().currentSong.hash, 'A')
+})
+
+test('audible animation sampling bypasses Vue computed caching while raw media time is stationary', async t => {
+  const { getPlayer } = mountPlayer(t, [song('A')])
+  await flush()
+  const player = getPlayer()
+  let position = 39.2
+  player.audioEffectsEngine = { ...effectsBoundary().engine, getPresentedPlayback: () => ({ token: 1, position }),
+    getPresentationTime: (_audio, raw) => raw }
+  player.presentedPlaybackSnapshot = { token: 1, song: song('A'), duration: 180 }
+  const raw = player.currentTime
+  assert.equal(player.presentedTime, 39.2)
+  assert.equal(player.getAnimationPlaybackTime(), 39.2)
+  position = 39.6
+  assert.equal(player.currentTime, raw)
+  assert.equal(player.presentedTime, 39.2, 'UI values may remain at their existing throttled cadence')
+  assert.equal(player.getAnimationPlaybackTime(), 39.6, 'RAF samples the live output clock without a reactive progress write')
+  assert.equal(player.getPlaybackSnapshot().playbackState.currentTime, 39.6)
+})
 
 test('initial selection waits for mount and retains only the latest song without polling', async t => {
   const { component, player, audio } = createPlayer(t)
@@ -999,7 +1477,7 @@ test('a parent selection supersedes loading navigation together with its transit
   await flush()
   const player = getPlayer()
   const navigation = player.playNext()
-  assert.equal(player.isSwitchingSong, true)
+  assert.equal(player.isLoadingSong, true)
   assert.equal(player.currentSong.hash, 'A')
   state.song = state.playlist[2]
   await nextTick()
@@ -1008,7 +1486,7 @@ test('a parent selection supersedes loading navigation together with its transit
   await flush()
   assert.equal(player.currentSong.hash, 'C')
   assert.equal(state.song.hash, 'C')
-  assert.equal(player.$refs.audioPlayer.src, 'https://example.test/C.mp3')
+  assert.equal(player.getActiveAudio().src, 'https://example.test/C.mp3')
   assert.equal(player.trackTransition, 'select')
 })
 
@@ -1117,7 +1595,7 @@ test('a failed successor cannot use a superseded uncommitted source as its rollb
   assert.deepEqual(emitted.filter(event => event.name === 'song-changed').map(event => event.value.hash), ['A'])
 })
 
-test('selection during source restoration keeps the latest request and its transition', async t => {
+test('selection after a candidate failure keeps the latest request and its transition', async t => {
   const restoration = deferred()
   const urls = []
   const { state, getPlayer, audioElements } = mountPlayer(t, ['A', 'B', 'C', 'D'].map(song), {
@@ -1139,14 +1617,14 @@ test('selection during source restoration keeps the latest request and its trans
   player.requestSong(state.playlist[3], 'next')
   restoration.resolve()
   await flush()
-  assert.deepEqual(urls, ['A', 'B', 'D'])
+  assert.deepEqual(urls, ['A', 'B', 'C', 'D'])
   assert.equal(player.currentSong.hash, 'D')
   assert.equal(state.song.hash, 'D')
   assert.equal(audio.src, 'https://example.test/D.mp3')
   assert.equal(player.trackTransition, 'next')
 })
 
-test('rollback preserves the position and paused state immediately before source replacement', async t => {
+test('candidate decode failure preserves the position and paused state immediately before source replacement', async t => {
   const url = deferred()
   const { player, audio } = createPlayer(t, {
     getSongUrl: hash => hash === 'B' ? url.promise : Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` })
@@ -1157,9 +1635,10 @@ test('rollback preserves the position and paused state immediately before source
   const loading = player.requestSong(player.playlist[1])
   audio.currentTime = player.currentTime = 37
   audio.pause()
-  const play = audio.play.bind(audio)
-  audio.play = () => audio.src.endsWith('/B.mp3') ? Promise.reject(new Error('Playback failed')) : play()
+  qualityAudio(audio, player, { manualReady: true })
   url.resolve({ status: 1, url: 'https://example.test/B.mp3' })
+  await flush()
+  audio.emit('error')
   assert.equal(await loading, false)
   assert.equal(audio.src, 'https://example.test/A.mp3')
   assert.equal(audio.currentTime, 37)
@@ -1205,8 +1684,7 @@ test('rapid next presses reach the latest song without waiting for candidate or 
   assert.equal(player.currentSong.hash, 'D')
 })
 
-test('a selection interrupts an already waiting rollback without reporting a restoration failure', async t => {
-  const restoration = deferred()
+test('a failed candidate needs no rollback wait before the next selection', async t => {
   const errors = []
   const { player, audio } = createPlayer(t, { logger: { ...quietLogger, error: (...args) => errors.push(args) } })
   player.playlist = ['A', 'B', 'C', 'D'].map(song)
@@ -1214,12 +1692,12 @@ test('a selection interrupts an already waiting rollback without reporting a res
   const play = audio.play.bind(audio)
   audio.play = () => {
     if (audio.src.endsWith('/B.mp3')) return Promise.reject(new Error('Candidate failed'))
-    if (audio.src.endsWith('/A.mp3')) return restoration.promise.then(play)
+    if (audio.src.endsWith('/A.mp3')) throw new Error('Unexpected replay of the uninterrupted source')
     return play()
   }
   const first = player.requestSong(player.playlist[1])
   await flush()
-  assert.equal(player.isLoadingSong, true)
+  assert.equal(player.isLoadingSong, false)
   assert.equal(audio.src, 'https://example.test/A.mp3')
   player.requestSong(player.playlist[2])
   player.requestSong(player.playlist[3], 'next')
@@ -1229,7 +1707,6 @@ test('a selection interrupts an already waiting rollback without reporting a res
   assert.equal(player.pendingTimers.size, 0)
   assert.equal(errors.some(args => args.includes('恢复上一首歌曲失败:')), false)
   await first
-  restoration.reject(new Error('Obsolete restoration failed'))
   await flush()
   assert.equal(audio.src, 'https://example.test/D.mp3')
   assert.equal(audio.paused, false)
@@ -1278,7 +1755,7 @@ test('an interrupted rollback retains confirmed time and play intent when the la
   }
 })
 
-test('a restored source uses its latest position and user pause while a successor URL is pending', async t => {
+test('the untouched confirmed source keeps its latest position and user pause while a successor URL is pending', async t => {
   for (const failure of ['url', 'media']) {
     const stale = deferred()
     const restoration = deferred()
@@ -1310,8 +1787,10 @@ test('a restored source uses its latest position and user pause while a successo
     assert.equal(audio.paused, true)
     assert.equal(player.getPlaybackSnapshot().playbackState.currentTime, 50)
     assert.equal(player.getPlaybackSnapshot().playbackState.isPlaying, false)
+    if (failure === 'media') qualityAudio(audio, player, { manualReady: true })
     successor.resolve(failure === 'url' ? { status: 0 } : { status: 1, url: 'https://example.test/C.mp3' })
     await flush()
+    if (failure === 'media') { audio.emit('error'); await flush() }
     assert.equal(player.currentSong.hash, 'A')
     assert.equal(audio.currentTime, 50)
     assert.equal(audio.paused, true)
@@ -1321,7 +1800,7 @@ test('a restored source uses its latest position and user pause while a successo
   }
 })
 
-test('stopping between rollback and draining the next song discards the inherited source snapshot', async t => {
+test('stopping between candidate cancellation and draining releases both decks', async t => {
   const stale = deferred()
   const { player, audio } = createPlayer(t, {
     getSongUrl: async hash => hash === 'C' ? { status: 0 } : { status: 1, url: `https://example.test/${hash}.mp3` }
@@ -1336,7 +1815,8 @@ test('stopping between rollback and draining the next song discards the inherite
   player.$nextTick = callback => { callbacks.push(callback); return Promise.resolve() }
   player.requestSong(player.playlist[2])
   await flush()
-  assert.equal(player.replacingPlaybackSnapshot.hash, 'A')
+  assert.equal(player.replacingPlaybackSnapshot, null)
+  assert.equal(player.getPlaybackSnapshot().currentSong.hash, 'A')
   player.stopPlayback()
   assert.equal(player.replacingPlaybackSnapshot, null)
   await player.requestSong(player.playlist[2])
@@ -1452,7 +1932,7 @@ test('a superseded first playback clears its source if the next selection also f
   assert.equal(player.isPlaying, false)
 })
 
-test('retaining a song after failure or replay reloads lyrics invalidated by the selection', async t => {
+test('retaining a song after failure or replay keeps its valid in-flight lyrics', async t => {
   for (const selection of ['A', 'B']) {
     const lyrics = deferred()
     const lyricRequests = []
@@ -1468,11 +1948,11 @@ test('retaining a song after failure or replay reloads lyrics invalidated by the
     assert.equal(player.currentLyrics, '')
     await player.requestSong(player.playlist.find(item => item.hash === selection))
     await flush()
-    lyrics.resolve({ status: 1, decodeContent: 'discarded old lyrics' })
+    lyrics.resolve({ status: 1, decodeContent: 'lyrics A' })
     await flush()
     assert.equal(player.currentSong.hash, 'A', selection)
     assert.equal(player.currentLyrics, 'lyrics A', selection)
-    assert.deepEqual(lyricRequests, ['A', 'A'])
+    assert.deepEqual(lyricRequests, ['A'])
     assert.equal(player.pendingTimers.size, 0, selection)
   }
 })
@@ -2632,12 +3112,16 @@ test('bridge animation reads live audio between public progress updates without 
   assert.equal(player.currentTime, 20)
   audio.paused = true
   assert.equal(player.getAnimationPlaybackTime(), 20.035)
-  for (const key of ['isLoadingSong', 'isReplacingQualitySource', 'replacingPlaybackSnapshot', 'isDisposed']) {
+  for (const key of ['isReplacingQualitySource', 'replacingPlaybackSnapshot', 'isDisposed']) {
     player[key] = key === 'replacingPlaybackSnapshot' ? { time: 20 } : true
     audio.currentTime = 0
     assert.equal(player.getAnimationPlaybackTime(), 20, key)
     player[key] = false
   }
+  player.isLoadingSong = true
+  audio.currentTime = 23
+  assert.equal(player.getAnimationPlaybackTime(), 23, 'candidate loading must not freeze confirmed lyrics')
+  player.isLoadingSong = false
   audio.currentTime = NaN
   assert.equal(player.getAnimationPlaybackTime(), 20)
 })
@@ -2993,6 +3477,7 @@ test('main player drag previews drive lyrics while actual time and RAF advance, 
     set: value => { actualTime = value; audioSeeks++ }
   })
   audio.src = 'https://example.test/A.mp3'
+  audioSeeks = 0
   player.$el = {}
   player.duration = audio.duration = 120
   player.currentTime = 1
@@ -3053,6 +3538,7 @@ test('cancelling a main player preview restores the latest audio time and ignore
     set: value => { actualTime = value; audioSeeks++ }
   })
   audio.src = 'https://example.test/A.mp3'
+  audioSeeks = 0
   player.duration = audio.duration = 120
   player.currentSong = song('A')
   player.currentTime = 1
@@ -3245,6 +3731,7 @@ test('the main progress bar releases dragging even if its audio source has disap
   player.currentTime = 13
   audio.currentTime = 13
   audio.src = ''
+  audio.currentTime = 13
   player.handleProgressChange({ target: { value: '42' } })
   assert.equal(player.isDragging, false)
   assert.equal(player.currentTime, 13)
@@ -3515,7 +4002,7 @@ test('stop and unmount cancel quality readiness and cannot resurrect the previou
   }
 })
 
-test('quality replacement ignores seeks until ready and save-failure retry remembers the attempted quality', async t => {
+test('quality replacement preserves a seek and pause made during preparation and save-failure retry remembers the attempted quality', async t => {
   const store = qualityStore()
   let saves = 0
   const saved = store.updateSettings.bind(store)
@@ -3535,7 +4022,8 @@ test('quality replacement ignores seeks until ready and save-failure retry remem
   player.togglePlay()
   audio.emit('canplay')
   await changing
-  assert.equal(audio.currentTime, 38)
+  assert.equal(audio.currentTime, 90)
+  assert.equal(audio.paused, true)
   assert.equal(player.seekPreviewTime, null)
   assert.match(player.qualitySaveMessage, /保存失败/)
   assert.equal(player.qualityPreference, '128')
@@ -3579,8 +4067,8 @@ test('temporary quality sources cannot reset displayed, desktop lyric or system 
   player.handleLoadedMetadata()
   player.updatePositionState()
   assert.equal(player.currentTime, 64)
-  assert.equal(desktopTimes.length, desktopBefore)
-  assert.equal(mediaTimes.length, mediaBefore)
+  assert.ok(desktopTimes.slice(desktopBefore).every(time => time === 64000))
+  assert.ok(mediaTimes.slice(mediaBefore).every(time => time === 64))
   audio.emit('canplay')
   await changing
   assert.equal(player.currentTime, 64)
@@ -3699,7 +4187,8 @@ test('reselecting quality while an interrupted online song moves to cache preser
   audio.error = { code: 2 }
   player.handleAudioError()
   await flush()
-  assert.equal(player.cacheSourceLeaseId, 'A-128')
+  assert.equal(player.cacheSourceLeaseId, null, 'candidate lease must not replace the active lease before commit')
+  assert.equal(player.deckLeases[player.candidateAudioSlot], 'A-128')
   player.changeQuality('128')
   await flush()
   audio.readyState = 4
@@ -4468,4 +4957,343 @@ test('fullscreen text, translation and romanization share offsets and repeated t
   assert.deepEqual(Array.from(lyric.parsedLyrics, line => [line.time, line.translation]), [[.5, '你'], [1.5, '与你一起'], [3.5, '与你一起']])
   assert.equal(lyric.romanizationLines.get(.5), 'anata')
   assert.equal(lyric.romanizationLines.get(3.5), 'kimi to iru')
+})
+
+test('pending candidates never replace the confirmed physical deck, clock or playback events', async t => {
+  const next = deferred()
+  const { player, decks } = createPlayer(t, { getSongUrl: hash => hash === 'B' ? next.promise
+    : Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` }) })
+  await player.requestSong(song('A'))
+  const active = player.getActiveAudio()
+  active.currentTime = 42
+  const request = player.requestSong(song('B'))
+  active.currentTime = 43
+  decks[1].emit('timeupdate')
+  decks[1].emit('pause')
+  assert.equal(player.getPlaybackSnapshot().playbackState.currentTime, 43)
+  assert.equal(player.getAnimationPlaybackTime(), 43)
+  assert.equal(player.isPlaying, true)
+  next.resolve({ status: 0 })
+  assert.equal(await request, false)
+  assert.equal(player.getActiveAudio(), active)
+  assert.equal(active.src, 'https://example.test/A.mp3')
+  assert.equal(active.currentTime, 43)
+  assert.equal(active.playCount, 1)
+  assert.equal(decks[1].src, '')
+})
+
+test('manual overlap has a bounded 150ms envelope and mute/pause controls both physical decks', async t => {
+  const store = qualityStore()
+  store.settings.playback.smoothTrackSwitch = true
+  const { player, decks, sandbox } = createPlayer(t, { useSettingsStore: () => store })
+  let clock = 0
+  const frames = new Map()
+  let id = 0
+  player.audioTransition = sandbox.createPlaybackTransition({ getVolume: () => player.volume / 100,
+    getMuted: () => player.isMuted, release: audio => player.releaseAudioDeck(audio), now: () => clock,
+    schedule: callback => { frames.set(++id, callback); return id }, cancelSchedule: timer => frames.delete(timer) })
+  await player.requestSong(song('A'))
+  const old = player.getActiveAudio()
+  await player.requestSong(song('B'))
+  const current = player.getActiveAudio()
+  assert.notEqual(old, current)
+  assert.equal(current.volume, 0)
+  assert.equal(old.volume, 0.8)
+  clock = 75
+  player.audioTransition.refresh()
+  assert.equal(current.volume, 0.4)
+  assert.equal(old.volume, 0.4)
+  player.handleVolumeChange(60)
+  assert.ok(current.volume + old.volume <= 0.600001)
+  player.toggleMute()
+  assert.ok(decks.every(deck => deck.muted))
+  player.togglePlay()
+  assert.ok(decks.every(deck => deck.paused))
+  assert.equal(old.src, '')
+  assert.equal(frames.size, 0)
+  assert.equal(current.volume, 0.6)
+  player.togglePlay()
+  await flush()
+  assert.equal(current.paused, false)
+  assert.equal(old.paused, true)
+})
+
+test('preparing one next song leaves priority, history and persistent cache untouched and is adopted once', async t => {
+  const store = qualityStore()
+  store.settings.playback.preloadNextTrack = true
+  const urls = []
+  const cached = []
+  const { player } = createPlayer(t, { useSettingsStore: () => store,
+    getSongUrl: async hash => { urls.push(hash); return { status: 1, url: `https://example.test/${hash}.mp3` } } })
+  player.cachePlayedSong = () => cached.push(player.currentSong.hash)
+  player.playlist = ['A', 'B', 'C'].map(song)
+  player.playNextQueue = [player.playlist[2]]
+  await player.requestSong(player.playlist[0])
+  await flush()
+  assert.equal(player.preparedNext.song.hash, 'C')
+  assert.equal(player.preparedNext.ready, true)
+  assert.deepEqual(urls, ['A', 'C'])
+  assert.deepEqual(cached, ['A'])
+  assert.equal(player.playNextQueue.length, 1)
+  assert.equal(player.currentIndex, 0)
+  await player.playNext()
+  assert.equal(player.currentSong.hash, 'C')
+  assert.equal(player.playNextQueue.length, 0)
+  assert.equal(urls.filter(hash => hash === 'C').length, 1)
+  assert.deepEqual(cached, ['A', 'C'])
+})
+
+test('next preparation retargets priority changes and rejects different quality or cloud identity', async t => {
+  const store = qualityStore()
+  store.settings.playback.preloadNextTrack = true
+  const calls = []
+  const { player } = createPlayer(t, { useSettingsStore: () => store,
+    getSongUrl: async (hash, album, id, quality) => { calls.push(`${hash}:${quality}`); return { status: 1, url: `https://example.test/${hash}-${quality}.mp3` } },
+    getCloudSongUrl: async track => { calls.push(`cloud:${track.hash}`); return { status: 1, url: `https://example.test/cloud-${track.hash}.mp3` } }
+  })
+  player.playlist = ['A', 'B', 'C'].map(song)
+  await player.requestSong(player.playlist[0])
+  await flush()
+  const old = player.preparedNext
+  player.playNextQueue = [player.playlist[2]]
+  player.refreshNextPreparation()
+  await flush()
+  assert.equal(old.controller.signal.aborted, true)
+  assert.equal(player.preparedNext.song.hash, 'C')
+  await player.requestSong(player.playlist[1], 'select', { quality: '320' })
+  assert.ok(calls.includes('B:320'))
+  await player.requestSong({ ...song('B'), source: 'cloud', sourceUserId: 'owner' })
+  assert.ok(calls.includes('cloud:B'))
+  assert.equal(player.currentSong.source, 'cloud')
+})
+
+test('latest queued selection followed by pause stays paused when a superseded request drains', async t => {
+  const stalled = deferred()
+  const { player, decks } = createPlayer(t, { getSongUrl: hash => hash === 'B' ? stalled.promise
+    : Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` }) })
+  await player.requestSong(song('A'))
+  const first = player.requestSong(song('B'))
+  player.requestSong(song('C'))
+  player.togglePlay()
+  await first
+  await flush()
+  assert.equal(player.currentSong.hash, 'C')
+  assert.equal(player.isPlaying, false)
+  assert.ok(decks.every(deck => deck.paused))
+  assert.equal(player.getActiveAudio().playCount, 0)
+  stalled.resolve({ status: 1, url: 'https://example.test/B.mp3' })
+  await flush()
+  assert.equal(player.currentSong.hash, 'C')
+})
+
+test('ready-next automatic overlap and the outgoing ended event advance only once', async t => {
+  const store = qualityStore()
+  Object.assign(store.settings.playback, { preloadNextTrack: true, smoothTrackSwitch: true })
+  const { player } = createPlayer(t, { useSettingsStore: () => store })
+  player.playlist = ['A', 'B', 'C'].map(song)
+  await player.requestSong(player.playlist[0])
+  await flush()
+  const old = player.getActiveAudio()
+  old.currentTime = 179.5
+  player.maybeAdvanceAutomatically()
+  old.ended = true
+  player.handleEnded({ target: old })
+  await flush()
+  assert.equal(player.currentSong.hash, 'B')
+  assert.equal(player.trackTransition, 'auto')
+  player.handleEnded({ target: old })
+  assert.equal(player.currentSong.hash, 'B')
+})
+
+test('confirmed trailing silence repeats a single song without another audio source', async t => {
+  const store = qualityStore()
+  store.settings.playback.skipTrailingSilence = true
+  const { player, decks } = createPlayer(t, { useSettingsStore: () => store })
+  player.playlist = ['A', 'B'].map(song)
+  await player.requestSong(player.playlist[0])
+  player.playMode = 'single'
+  player.tailAnalysis = { skipAt: 170.25 }
+  const active = player.getActiveAudio()
+  active.currentTime = 170
+  player.maybeAdvanceAutomatically()
+  active.currentTime = 170.3
+  player.maybeAdvanceAutomatically()
+  await flush()
+  assert.equal(player.currentSong.hash, 'A')
+  assert.equal(player.getActiveAudio(), active)
+  assert.equal(active.currentTime, 0)
+  assert.equal(active.playCount, 2)
+  assert.equal(decks[1].playCount, 0)
+  player.handleEnded({ target: active })
+  assert.equal(active.playCount, 2)
+})
+
+test('seek retires outgoing audio and drag or buffering prevents automatic silence skip', async t => {
+  const store = qualityStore()
+  Object.assign(store.settings.playback, { smoothTrackSwitch: true, skipTrailingSilence: true })
+  const { player } = createPlayer(t, { useSettingsStore: () => store })
+  player.playlist = ['A', 'B'].map(song)
+  await player.requestSong(player.playlist[0])
+  const old = player.getActiveAudio()
+  await player.requestSong(player.playlist[1])
+  player.handleSeek(90)
+  assert.equal(old.src, '')
+  assert.equal(player.getActiveAudio().currentTime, 90)
+  assert.equal(player.getActiveAudio().volume, 0.8)
+  player.tailAnalysis = { skipAt: 91 }
+  player.naturalAdvanceSinceSeek = 1
+  player.getActiveAudio().currentTime = 92
+  player.isDragging = true
+  player.maybeAdvanceAutomatically()
+  assert.equal(player.currentSong.hash, 'B')
+  player.isDragging = false
+  player.desktopAudioWaiting = true
+  player.maybeAdvanceAutomatically()
+  assert.equal(player.currentSong.hash, 'B')
+})
+
+test('reactive mounted preparation failure releases its lease immediately and leaves active audio untouched', async t => {
+  const store = qualityStore()
+  const releases = []
+  const { getPlayer, sandbox } = mountPlayer(t, ['A', 'B'].map(song), { useSettingsStore: () => store })
+  await flush()
+  const player = getPlayer()
+  const active = player.getActiveAudio()
+  sandbox.window.electronAPI = { playlistCache: { getSource: async () => cachedSource('B'),
+    releaseSource: async lease => releases.push(lease) } }
+  const spare = player.getAudioDeck(1 - player.activeAudioSlot)
+  spare.load = () => { if (spare.src) queueMicrotask(() => spare.emit('error')) }
+  store.settings.playback.preloadNextTrack = true
+  player.refreshNextPreparation()
+  await flush()
+  assert.deepEqual(releases, ['B-128'])
+  assert.equal(player.preparedNext.failed, true)
+  assert.equal(spare.src, '')
+  assert.equal(active.src, 'https://example.test/A.mp3')
+  assert.equal(active.paused, false)
+})
+
+test('outgoing cache lease survives overlap and clear releases both decks', async t => {
+  const store = qualityStore()
+  store.settings.playback.smoothTrackSwitch = true
+  const released = []
+  const { player, decks, sandbox } = createPlayer(t, { useSettingsStore: () => store })
+  sandbox.window.electronAPI = { playlistCache: { getSource: async request => cachedSource(request.hash),
+    releaseSource: async lease => released.push(lease) } }
+  await player.requestSong(song('A'))
+  await player.requestSong(song('B'))
+  assert.deepEqual(released, [])
+  assert.equal(player.audioTransition.active, true)
+  player.audioTransition.settle()
+  assert.deepEqual(released, ['A-128'])
+  player.stopPlayback()
+  assert.deepEqual(released, ['A-128', 'B-128'])
+  assert.ok(decks.every(deck => !deck.src && deck.paused))
+})
+
+test('a timed-out optional cache lookup continues online and releases a late lease', async t => {
+  const lookup = deferred()
+  const releases = []
+  let expireCache
+  let urls = 0
+  const { player, sandbox } = createPlayer(t, {
+    setTimeout(callback, delay) {
+      if (delay === 15000 && !expireCache) { expireCache = callback; return { cacheWait: true } }
+      return setTimeout(callback, delay)
+    },
+    getSongUrl: async () => { urls++; return { status: 1, url: 'https://example.test/A.mp3' } }
+  })
+  sandbox.window.electronAPI = { playlistCache: { getSource: () => lookup.promise,
+    releaseSource: async lease => releases.push(lease) } }
+  const loading = player.requestSong(song('A'))
+  await flush()
+  expireCache()
+  assert.equal(await loading, true)
+  assert.equal(urls, 1)
+  lookup.resolve(cachedSource('A'))
+  await flush()
+  assert.deepEqual(releases, ['A-128'])
+  assert.equal(player.getActiveAudio().src, 'https://example.test/A.mp3')
+})
+
+test('tail analysis rejects unknown or mismatching actual quality and releases cross-account late leases', async t => {
+  let session = 1
+  const pending = deferred()
+  const released = []
+  let reads = 0
+  const { player, sandbox } = createPlayer(t, { getPlaylistCacheSessionVersion: () => session })
+  sandbox.window.electronAPI = { playlistCache: {
+    getSource: async () => { reads++; return reads === 1 ? cachedSource('A', '320') : pending.promise },
+    releaseSource: async lease => released.push(lease)
+  } }
+  assert.equal(await player.readTailAnalysisSource({ hash: 'A' }), null)
+  assert.equal(reads, 0)
+  player.currentQuality = { format: 'mp3', bitrate: 128, confirmed: true }
+  assert.equal(await player.readTailAnalysisSource({ hash: 'A' }), null)
+  assert.deepEqual(released, ['A-320'])
+  const analysis = player.readTailAnalysisSource({ hash: 'A' })
+  await flush()
+  session++
+  pending.resolve(cachedSource('A'))
+  assert.equal(await analysis, null)
+  assert.deepEqual(released, ['A-320', 'A-128'])
+})
+
+test('natural overlap lasts 600ms and a new manual selection immediately reuses only the retired deck', async t => {
+  const store = qualityStore()
+  Object.assign(store.settings.playback, { preloadNextTrack: true, smoothTrackSwitch: true })
+  const { player, decks, sandbox } = createPlayer(t, { useSettingsStore: () => store })
+  let clock = 0
+  const frames = new Map()
+  let id = 0
+  player.audioTransition = sandbox.createPlaybackTransition({ getVolume: () => 0.8, getMuted: () => false,
+    release: audio => player.releaseAudioDeck(audio), now: () => clock,
+    schedule: callback => { frames.set(++id, callback); return id }, cancelSchedule: timer => frames.delete(timer) })
+  player.playlist = ['A', 'B', 'C'].map(song)
+  await player.requestSong(player.playlist[0])
+  await flush()
+  const first = player.getActiveAudio()
+  first.currentTime = 179.5
+  player.maybeAdvanceAutomatically()
+  await flush()
+  const second = player.getActiveAudio()
+  clock = 300
+  player.audioTransition.refresh()
+  assert.equal(first.volume, 0.4)
+  assert.equal(second.volume, 0.4)
+  await player.requestSong(player.playlist[2])
+  assert.equal(player.getActiveAudio(), first)
+  assert.equal(player.currentSong.hash, 'C')
+  assert.equal(decks.length, 2)
+  assert.equal(second.src, 'https://example.test/B.mp3')
+  clock = 450
+  player.audioTransition.refresh()
+  assert.equal(second.src, '')
+  assert.equal(first.volume, 0.8)
+  assert.equal(frames.size, 0)
+})
+
+test('automatic unavailable-track retries retain a pause made after the original next request', async t => {
+  for (const failure of ['url', 'play']) {
+    const unavailable = deferred()
+    const { player, audio, decks } = createPlayer(t, {
+      getSongUrl: hash => hash === 'B' && failure === 'url' ? unavailable.promise
+        : Promise.resolve({ status: 1, url: `https://example.test/${hash}.mp3` })
+    })
+    player.playlist = ['A', 'B', 'C'].map(song)
+    await player.requestSong(player.playlist[0])
+    const basePlay = audio.play.bind(audio)
+    if (failure === 'play') audio.play = () => audio.src.endsWith('/B.mp3') ? unavailable.promise : basePlay()
+    const next = player.playNext()
+    await flush()
+    player.togglePlay()
+    if (failure === 'url') unavailable.resolve({ status: 0, error_msg: 'Unavailable song' })
+    else unavailable.reject(new Error('Unsupported candidate media'))
+    await next
+    await flush()
+    assert.equal(player.currentSong.hash, 'C', failure)
+    assert.equal(player.isPlaying, false, failure)
+    assert.ok(decks.every(deck => deck.paused), failure)
+    assert.equal(player.getActiveAudio().playCount, 0, `${failure}: succeeding candidate must never autoplay`)
+  }
 })

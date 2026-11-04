@@ -36,6 +36,7 @@ function createStore() {
       if (name === 'fs') return { promises: fileSystem }
       if (name === './logger') return { warn() {}, error() {} }
       if (name === './autoLaunch') return { isAutoLaunchSupported: () => false }
+      if (name === './audioEffectsConfig.cjs') return require('../electron/audioEffectsConfig.cjs')
       return require(name)
     }
   }
@@ -48,6 +49,43 @@ function createStore() {
     app: { getPath: (key) => key === 'userData' ? '/user-data' : '/downloads' }
   }
 }
+
+test('window close preferences prompt for old settings and preserve remembered choices across saves and restarts', async () => {
+  for (const legacyAction of [undefined, false, true]) {
+    const fixture = createStore()
+    fixture.files.set(fixture.settingsPath, JSON.stringify({ software: { minimizeToTray: legacyAction } }))
+    await fixture.store.initSettingsStore(fixture.app)
+    assert.equal(fixture.store.getDefaultSettings().software.promptBeforeClose, true)
+    assert.equal(fixture.store.getDefaultSettings().software.minimizeToTray, false)
+    assert.equal(fixture.store.getSettings().software.promptBeforeClose, true)
+    assert.equal(fixture.store.getSettings().software.minimizeToTray, legacyAction === true)
+
+    for (const minimizeToTray of [true, false]) {
+      await fixture.store.setSettings({ software: { minimizeToTray, promptBeforeClose: false } })
+      await fixture.store.setSettings({ software: { defaultPage: 'favorites' }, playback: { quality: '320' } })
+      const reopened = createStore()
+      reopened.files.set(reopened.settingsPath, fixture.files.get(fixture.settingsPath))
+      await reopened.store.initSettingsStore(reopened.app)
+      assert.equal(reopened.store.getSettings().software.minimizeToTray, minimizeToTray)
+      assert.equal(reopened.store.getSettings().software.promptBeforeClose, false)
+      assert.equal(reopened.store.getSettings().software.defaultPage, 'favorites')
+    }
+    await fixture.store.setSettings({ software: { promptBeforeClose: true } })
+    assert.equal(JSON.parse(fixture.files.get(fixture.settingsPath)).software.promptBeforeClose, true)
+    assert.equal(fixture.store.getSettings().software.minimizeToTray, false)
+  }
+})
+
+test('imported close preferences accept only boolean values and keep prompting on malformed input', async () => {
+  const { store, app, files } = createStore()
+  await store.initSettingsStore(app)
+  for (const invalid of ['true', 'false', 1, 0, null, {}, []]) {
+    files.set('/close-import.json', JSON.stringify({ software: { minimizeToTray: invalid, promptBeforeClose: invalid } }))
+    await store.importSettings('/close-import.json')
+    assert.equal(store.getSettings().software.minimizeToTray, false)
+    assert.equal(store.getSettings().software.promptBeforeClose, true)
+  }
+})
 
 test('download enrichment and account history preferences normalize and survive unrelated saves', async () => {
   const { store, app, files, settingsPath } = createStore()
@@ -63,6 +101,31 @@ test('download enrichment and account history preferences normalize and survive 
   await store.setSettings({ playback: { syncPlayHistory: 'false' }, download: { quality: 'invalid', embedMetadata: 'false', embedCover: null, saveLyrics: 0 } })
   assert.equal(store.getSettings().playback.syncPlayHistory, true); assert.equal(store.getSettings().download.quality, 'follow')
   for (const key of ['embedMetadata', 'embedCover', 'saveLyrics']) assert.equal(store.getSettings().download[key], true)
+})
+
+test('track transition preferences default on, persist independently and reject malformed imports', async () => {
+  const keys = ['smoothTrackSwitch', 'preloadNextTrack', 'skipTrailingSilence']
+  const { store, app, files, settingsPath } = createStore()
+  await store.initSettingsStore(app)
+  for (const key of keys) {
+    assert.equal(store.getDefaultSettings().playback[key], true)
+    assert.equal(store.getSettings().playback[key], true)
+  }
+  await store.setSettings({ playback: Object.fromEntries(keys.map(key => [key, false])) })
+  await store.setSettings({ playback: { preloadNextTrack: true, quality: '320' } })
+  const reopened = createStore()
+  reopened.files.set(reopened.settingsPath, files.get(settingsPath))
+  await reopened.store.initSettingsStore(reopened.app)
+  for (const key of keys) {
+    assert.equal(reopened.store.getSettings().playback[key], key === 'preloadNextTrack')
+    assert.equal(JSON.parse(files.get(settingsPath)).playback[key], key === 'preloadNextTrack')
+  }
+  for (const invalid of ['true', 'false', 1, 0, null, {}, []]) {
+    files.set('/transition-import.json', JSON.stringify({ playback: Object.fromEntries(keys.map(key => [key, invalid])) }))
+    await store.importSettings('/transition-import.json')
+    for (const key of keys) assert.equal(store.getSettings().playback[key], true)
+  }
+  assert.equal(store.getSettings().schemaVersion, 1)
 })
 
 test('previous near-end restart defaults off and persists only explicit boolean preferences', async () => {

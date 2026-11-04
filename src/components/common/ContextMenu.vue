@@ -10,7 +10,7 @@
       :style="menuStyle"
       @click.stop
       @contextmenu.prevent
-      @keydown="handleKey"
+      @keydown.stop="handleKey"
     >
       <div 
         v-for="(item, index) in items" 
@@ -63,7 +63,8 @@ export default {
   data() {
     return {
       adjustedPosition: { ...this.position },
-      closing: false
+      closing: false,
+      returnFocus: null
     }
   },
   computed: {
@@ -77,15 +78,20 @@ export default {
   watch: {
     visible(newVal) {
       if (newVal) {
+        this.captureFocus()
         this.closing = false
         this.$nextTick(() => {
           this.adjustMenuPosition()
         })
-      } else this.lockMenu()
+      } else {
+        if (this.$refs.menu?.contains(document.activeElement)) this.restoreFocus()
+        this.lockMenu()
+      }
     },
     position: {
       handler() {
         if (this.visible) {
+          this.captureFocus()
           this.closing = false
           this.$nextTick(() => {
             this.adjustMenuPosition()
@@ -99,9 +105,10 @@ export default {
     document.addEventListener('click', this.handleClickOutside)
     window.addEventListener('resize', this.handleClickOutside)
     window.addEventListener('scroll', this.handleClickOutside, true)
-    if (this.visible) this.$nextTick(() => this.adjustMenuPosition())
+    if (this.visible) { this.captureFocus(); this.$nextTick(() => this.adjustMenuPosition()) }
   },
   beforeUnmount() {
+    if (this.$refs.menu?.contains(document.activeElement)) this.restoreFocus()
     document.removeEventListener('click', this.handleClickOutside)
     window.removeEventListener('resize', this.handleClickOutside)
     window.removeEventListener('scroll', this.handleClickOutside, true)
@@ -110,6 +117,7 @@ export default {
     handleItemClick(item) {
       if (this.closing || !this.visible) return
       if (!item.divider && !item.disabled && item.action) {
+        this.restoreFocus()
         this.lockMenu()
         try { item.action() } finally { this.$emit('close') }
       }
@@ -119,10 +127,21 @@ export default {
       this.closing = true
       if (this.$refs.menu) this.$refs.menu.inert = true
     },
+    /** Keep the originating control available after keyboard dismissal or before an action opens another surface. */
+    captureFocus() {
+      const active = document.activeElement
+      if (active && !this.$refs.menu?.contains(active)) this.returnFocus = active
+    },
+    restoreFocus() {
+      const target = this.returnFocus
+      this.returnFocus = null
+      if (target?.isConnected && !target.closest?.('[inert], [hidden]')) target.focus({ preventScroll: true })
+    },
     handleKey(event) {
       if (this.closing) return
       if (event.key === 'Escape' || event.key === 'Tab') {
         if (event.key === 'Escape') event.preventDefault()
+        this.restoreFocus()
         this.lockMenu()
         this.$emit('close')
         return

@@ -55,9 +55,6 @@ test('only explicit favorite actions authorize retrying a failed directory read'
   await f.library.toggleFavorite({ hash: 'b', name: 'New' })
   assert.deepEqual(reads, [true, false], 'only the user-triggered preflight can retry, never its automatic readback')
   reads.length = 0
-  await f.library.clearFavorites()
-  assert.deepEqual(reads, [true, false])
-  reads.length = 0
   await f.library.bindFavorites(resource)
   assert.deepEqual(reads, [true, false])
 })
@@ -138,11 +135,10 @@ test('account reset rejects late reads and never publishes old account data', as
   assert.equal(f.commits.length, 0)
 })
 
-test('public playlist cannot be edited and clearing requires every fileid', async () => {
+test('public playlist cannot be edited and selected removal requires every fileid', async () => {
   const f = fixture()
   await assert.rejects(f.library.addSongs({ listId: 8 }, [{ hash: 'a' }]), /不可编辑/)
-  f.setSongs([{ hash: 'a' }])
-  await assert.rejects(f.library.clearFavorites(), /条目标识/)
+  await assert.rejects(f.library.removeSongs(f.resource, [{ hash: 'a' }]), /条目标识/)
   assert.equal(f.writes.length, 0)
 })
 
@@ -235,36 +231,42 @@ test('successful batch edit with failed readback cannot leave stale fileids edit
   assert.equal(f.writes.length, 1)
 })
 
-test('clear reconciles a timeout after server success and invalidates an unreadable result', async () => {
+test('single favorite removal reconciles a timeout and invalidates an unreadable confirmed result', async () => {
   const f = fixture()
   const originalRemove = f.api.removePlaylistSongs
   f.api.removePlaylistSongs = async (...args) => { await originalRemove(...args); throw new Error('write timeout') }
-  await f.library.clearFavorites()
+  await f.library.refreshFavorites()
+  await f.library.toggleFavorite({ hash: 'a' })
   assert.equal(f.library.state.favorites.length, 0)
   assert.equal(f.writes.length, 1)
   f.setSongs([{ hash: 'a', fileid: 11 }])
-  const originalRead = f.api.getAllPlaylistTracks
-  let reads = 0
-  f.api.getAllPlaylistTracks = (...args) => ++reads === 1 ? originalRead(...args) : Promise.reject(new Error('read unavailable'))
+  await f.library.refreshFavorites()
+  f.api.getAllPlaylistTracks = async () => { throw new Error('read unavailable') }
   f.api.removePlaylistSongs = originalRemove
-  await assert.rejects(f.library.clearFavorites(), /清空已成功/)
+  await f.library.toggleFavorite({ hash: 'a' })
   assert.equal(f.library.state.loaded, false)
+  assert.match(f.library.state.error, /修改已成功/)
+  await assert.rejects(f.library.toggleFavorite({ hash: 'a' }), /read unavailable/)
+  assert.equal(f.writes.length, 2)
 })
 
-test('clear uses batches of at most 1000 and publishes confirmed partial results on failure', async () => {
+test('selected removal batches at most 1000 entries and retains unselected songs after a partial failure', async () => {
   const f = fixture()
-  f.setSongs(Array.from({ length: 1001 }, (_, i) => ({ hash: `song-${i}`, fileid: i + 1 })))
+  const selected = Array.from({ length: 1001 }, (_, i) => ({ hash: `song-${i}`, fileid: i + 1 }))
+  f.setSongs([...selected, { hash: 'unselected', fileid: 2001 }])
   const originalRemove = f.api.removePlaylistSongs
   let batches = 0
   f.api.removePlaylistSongs = async (...args) => {
     if (++batches === 2) throw new Error('second batch failed')
     return originalRemove(...args)
   }
-  await assert.rejects(f.library.clearFavorites(), /second batch failed/)
+  await assert.rejects(f.library.removeSongs(f.resource, selected), /已处理 1000 首/)
   assert.equal(f.writes[0][2].length, 1000)
+  assert.ok(!f.writes[0][2].includes(2001))
   assert.equal(f.library.state.loaded, true)
-  assert.equal(f.library.state.favorites.length, 1)
+  assert.equal(f.library.state.favorites.length, 2)
   assert.equal(f.library.state.favorites[0].fileid, 1001)
+  assert.equal(f.library.isFavorite({ hash: 'unselected' }), true)
 })
 
 test('binding changes share the read queue and cannot be overwritten by a pending old binding read', async () => {

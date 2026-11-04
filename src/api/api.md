@@ -17,6 +17,7 @@
 - `auth.js` 请求超时为 10 秒，认证信息从 LocalStorage 读取。
 - `music.js` 为需要登录的请求附加已保存的酷狗认证信息。
 - `libraryRequest` 在发出前捕获账号并附加 Cookie，发送拦截器和响应均核对账号；认证必需时拒绝访客，业务失败与未确认写入不会被当作成功。所有新接口支持 AbortSignal，错误消息不拼入上游正文或凭证。
+- `completeLibrarySongs` 为历史等列表补齐播放标识和展示资料：缺 hash、曲名或封面且存在曲库 ID 时，每批至多 50 条调用 `/krm/audio`，剩余有 hash 的缺图条目通过 `/privilege/lite` 补图；全程核对同一账号及 AbortSignal。仅填空字段，保留原权限、fileid、云盘账号和原文件名，不启动播放器取流或音频下载，也不保留权限响应中的音源地址。必要播放身份补全失败交给页面重试，纯展示资料失败记入脱敏日志并保留可播放列表。
 - `getAllUserPlaylists` 使用用户目录接口默认的 30 条页长，调用方可指定更小的正整数；无明确 `total/count` 时短页结束、满页继续，不把首批短页当成新的页长，也不将 `list_count/collect_count` 相加推断总数。有明确总数且尚未取完时仍适配服务端限页长；缺数组继续报错，不能作为空目录发布。
 - `getAllPlaylistTracks` 保留按首批真实页长适配服务端限页长的行为。两类分页均拒绝重复页、格式异常和不完整结果；格式错误 `INVALID_LIBRARY_PAGE` 的 `cause` 仅提供端点、页码、页长、已读数量及固定字段类型，不包含账号和歌单正文。
 - 账号目录资源标为 `source: owned`，与可编辑的 `isOwned` 分开；仅账号目录、本人或已确认收藏资源通过 `/playlist/track/all/new` 使用 `listId`。公共曲目通过 `/playlist/track/all` 使用 `globalCollectionId`，不能把创建者 listid 当本账号歌单；删除不能以 hash 替代 `fileid`。

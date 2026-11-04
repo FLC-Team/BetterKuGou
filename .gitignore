@@ -26,6 +26,8 @@ release
 
 # Electron cache and data
 .cache
+native/audio-effects/bin/
+native/audio-effects/package/
 GPUCache
 Cache
 Code Cache

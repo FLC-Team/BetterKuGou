@@ -57,7 +57,11 @@ export function normalizePlaylistResource(raw, { userId, source } = {}) {
 
 /** Normalize playable metadata without discarding raw rights, artists, cloud identity or playlist fileid. */
 export function normalizeLibrarySong(raw, options = {}) {
-  const item = raw && typeof raw === 'object' ? raw : {}
+  const record = raw && typeof raw === 'object' ? raw : {}
+  // History records and privilege metadata wrap the same song fields in song/info.
+  const nested = record.song && typeof record.song === 'object' && !Array.isArray(record.song) ? record.song : {}
+  const info = record.info && typeof record.info === 'object' && !Array.isArray(record.info) ? record.info : {}
+  const item = { ...info, ...nested, ...record }
   const base = item.base && typeof item.base === 'object' ? item.base : {}
   const source = options.source || item.source || 'catalog'
   const rights = item.copyright && typeof item.copyright === 'object' ? item.copyright : {}
@@ -69,16 +73,17 @@ export function normalizeLibrarySong(raw, options = {}) {
   const name = text(first(item.name, item.filename, item.FileName, item.songname, item.SongName, item.audio_name, base.audio_name, base.songname, base.name))
   const result = {
     ...merged,
-    hash: text(first(item.hash, item.Hash, item.FileHash, item.filehash, base.hash, item.audio_info?.hash, item.audio_info?.hash_128)).toLowerCase(),
+    hash: text(first(item.hash, item.Hash, item.FileHash, item.filehash, item.audio_hash, item.hash_128, base.hash, item.audio_info?.hash, item.audio_info?.hash_128)).trim().toLowerCase(),
     name,
     singername: text(first(item.singername, item.SingerName, item.singer_name, artists.map(artist => artist.name).join('、'))),
     singerinfo: artists,
     album_id: first(item.album_id, item.AlbumID, item.albumid, base.album_id, item.album_info?.album_id, 0),
-    album_audio_id: first(item.album_audio_id, item.MixSongID, item.mixsongid, item.mixsong_id, base.album_audio_id, 0),
+    album_audio_id: first(item.album_audio_id, item.MixSongID, item.mixsongid, item.mixsong_id, item.mxid, base.album_audio_id, 0),
     audio_id: first(item.audio_id, item.AudioID, base.audio_id, 0),
     fileid: first(item.fileid, item.file_id, item.FileID) ?? null,
     album_name: text(first(item.album_name, item.AlbumName, item.albumname, base.album_name, item.album_info?.album_name)),
-    cover: text(first(item.cover, item.sizable_cover, item.imgurl, item.Image, item.album_info?.sizable_cover, item.album_info?.cover)),
+    cover: text(first(item.cover, item.sizable_cover, item.imgurl, item.Image, item.image, item.img, item.album_img,
+      item.album_cover, item.album_sizable_cover, item.pic, item.album_info?.sizable_cover, item.album_info?.cover)),
     timelen: Number(first(item.timelen, item.timelength, item.duration_ms, item.audio_info?.timelength, item.audio_info?.duration_128,
       Number.isFinite(Number(item.Duration ?? item.duration ?? item.time_length ?? item.TimeLength))
         ? Number(item.Duration ?? item.duration ?? item.time_length ?? item.TimeLength) * 1000 : undefined, 0)) || 0,
@@ -89,4 +94,18 @@ export function normalizeLibrarySong(raw, options = {}) {
     result.originalName = text(first(item.originalName, item.filename, item.FileName, name))
   }
   return result
+}
+
+/** Follow lists include both people and singers; a user ID never becomes a singer ID. */
+export function normalizeLibraryArtist(raw) {
+  const item = raw && typeof raw === 'object' ? raw : {}
+  let extra = item.ext_params
+  if (typeof extra === 'string') {
+    try { extra = JSON.parse(extra) } catch { extra = null }
+  }
+  return { ...item,
+    singerid: first(item.singerid, item.singer_id, item.author_id, item.SingerId, item.AuthorId, extra?.singerid),
+    singername: text(first(item.singername, item.singer_name, item.author_name, item.name, item.nickname)),
+    avatar: text(first(item.sizable_avatar, extra?.k_pic, item.k_pic, item.avatar, item.pic, item.image)),
+  }
 }

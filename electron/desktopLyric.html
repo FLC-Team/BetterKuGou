@@ -65,15 +65,13 @@
     .pause-symbol { display: none; }
     .playing .play-symbol { display: none; }
     .playing .pause-symbol { display: block; }
-    .control-feedback { position: absolute; bottom: 5px; left: 10px; right: 10px; text-align: center; font-size: 11px; line-height: 14px; color: rgba(255,255,255,0.9); pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .control-feedback[data-error="true"] { color: #ffd2cc; }
     .resize-handle { position: absolute; right: 4px; bottom: 4px; width: 18px; height: 18px; border: 0; border-radius: 3px; background: transparent; color: rgba(255,255,255,0.8); cursor: nwse-resize; opacity: 0; pointer-events: none; touch-action: none; -webkit-app-region: no-drag; transition: opacity 180ms ease; }
     .resize-handle svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; pointer-events: none; }
     .lyric-container:hover:not(.locked) .resize-handle, .lyric-container:focus-within:not(.locked) .resize-handle { opacity: 1; pointer-events: auto; }
     .resize-handle:focus-visible { outline: 2px solid var(--desktop-accent); }
     body.locked, .lyric-container.locked { cursor: default; -webkit-app-region: no-drag; }
     .lyric-container.locked { background: transparent; border-color: transparent; }
-    .locked .control-menu, .locked .song-info, .locked .control-feedback, .locked .resize-handle { visibility: hidden; opacity: 0; pointer-events: none; }
+    .locked .control-menu, .locked .song-info, .locked .resize-handle { visibility: hidden; opacity: 0; pointer-events: none; }
     .locked.song-info-only .song-info { visibility: visible; opacity: 1; }
     body.locked .lyric-container { pointer-events: none; }
     .unlock-btn { position: fixed; top: 8px; right: 8px; width: 44px; height: 36px; z-index: 100; border: 1px solid rgba(255,255,255,0.35); border-radius: 8px; background: rgba(24,27,34,0.88); color: #fff; font: 12px 'Microsoft YaHei', sans-serif; cursor: pointer; pointer-events: auto; -webkit-app-region: no-drag; }
@@ -101,7 +99,6 @@
     <div class="song-info" id="songInfo">暂无播放</div>
     <div class="lyric-viewport" id="currentViewport"><div class="current-lyric" id="currentLyric">请播放音乐以显示歌词</div></div>
     <div class="lyric-viewport" id="nextViewport"><div class="next-lyric" id="nextLyric"></div></div>
-    <div class="control-feedback" id="controlFeedback" role="status" aria-live="polite"></div>
     <button type="button" class="resize-handle" id="resizeHandle" title="拖动调整窗口大小；方向键微调" aria-label="调整歌词窗口大小，使用方向键微调"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 13l9-9M9 13l4-4"/></svg></button>
   </div>
   <button type="button" class="unlock-btn" id="unlockBtn" style="position:fixed!important;top:8px!important;right:8px!important;left:auto!important;width:44px!important;height:36px!important;margin:0!important;transform:none!important;translate:none!important;scale:none!important;rotate:none!important" hidden title="解锁桌面歌词" aria-label="解锁桌面歌词">解锁</button>
@@ -125,14 +122,11 @@
     const lockBtn = document.getElementById('lockBtn')
     const unlockBtn = document.getElementById('unlockBtn')
     const controlMenu = document.getElementById('controlMenu')
-    const controlFeedback = document.getElementById('controlFeedback')
     const resizeHandle = document.getElementById('resizeHandle')
     const motionPreference = window.matchMedia?.('(prefers-reduced-motion: reduce)')
     const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null
     const feedbackAnimations = new Map()
     const pendingButtons = new Set()
-    let feedbackTimer = null
-    let feedbackLeaving = false
     let updateRAFId = null
     let resizeObserver = null
     let disposed = false
@@ -201,35 +195,15 @@
       animateReplacement(element)
     }
 
+    /** 独立歌词窗口只转发结果，提醒外观与生命周期由主窗口 Fue 统一管理。 */
     function showControlFeedback(text, error = false) {
-      clearTimeout(feedbackTimer)
-      feedbackLeaving = false
-      feedbackAnimations.get(controlFeedback)?.cancel()
-      feedbackAnimations.delete(controlFeedback)
-      controlFeedback.dataset.error = String(error)
-      animateText(controlFeedback, text)
-      feedbackTimer = setTimeout(hideControlFeedback, error ? 3600 : 1800)
-    }
-
-    /** Leave before clearing the status; a newer result cancels this obsolete dismissal. */
-    function hideControlFeedback() {
-      if (!hasDecorativeMotion() || !controlFeedback.animate) { feedbackLeaving = false; animateText(controlFeedback, ''); return }
-      feedbackLeaving = true
-      feedbackAnimations.get(controlFeedback)?.cancel()
-      const animation = controlFeedback.animate([{ opacity: 1, translate: '0 0' }, { opacity: 0, translate: '0 -4px' }], { duration: 160, easing: 'ease-in' })
-      feedbackAnimations.set(controlFeedback, animation)
-      animation.onfinish = () => {
-        if (feedbackAnimations.get(controlFeedback) !== animation) return
-        controlFeedback.textContent = ''
-        feedbackLeaving = false
-        feedbackAnimations.delete(controlFeedback)
-      }
+      if (disposed) return
+      lyricAPI?.reportNotice?.({ title: '桌面歌词', message: text, type: error ? 'error' : 'success' })
     }
 
     function stopFeedbackMotion() {
       feedbackAnimations.forEach(animation => animation.cancel())
       feedbackAnimations.clear()
-      if (feedbackLeaving) { controlFeedback.textContent = ''; feedbackLeaving = false }
     }
 
     /** Interpolate only a short distance from an authoritative audio sample, never the playback state itself. */
@@ -341,7 +315,6 @@
       subscriptions.splice(0).forEach(unsubscribe => unsubscribe())
       if (updateRAFId !== null) cancelAnimationFrame(updateRAFId)
       updateRAFId = null
-      clearTimeout(feedbackTimer)
       clearTimeout(renderTimer)
       renderTimer = null
       cancelCoverRequest()

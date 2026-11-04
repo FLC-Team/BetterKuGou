@@ -28,7 +28,7 @@
 
       <div class="sidebar-scrollable" @scroll="updateIndicator">
         <button v-for="entry in [{ id: 'discover', label: '发现' }, { id: 'my-music', label: '我的音乐' }]" :key="entry.id" type="button" class="sidebar-item" :class="{ active: activeItem === entry.id }" :data-sidebar-item="entry.id" :aria-label="entry.label" :aria-current="activeItem === entry.id ? 'page' : undefined" :title="entry.label" @click="handleItemClick(entry.id)">
-          <span class="sidebar-icon-wrapper"><span class="sidebar-icon" :style="iconStyle(entry.id === 'discover' ? icons.home : icons.list)" aria-hidden="true"></span></span>
+          <span class="sidebar-icon-wrapper"><span class="sidebar-icon" :style="iconStyle(entry.id === 'discover' ? icons.home : icons.library)" aria-hidden="true"></span></span>
           <Transition name="sidebar-label"><span v-show="isExpanded" class="sidebar-label">{{ entry.label }}</span></Transition>
         </button>
         <button type="button" class="sidebar-item" :class="{ active: activeItem === 'favorite', 'requires-login': !userLoggedIn }" data-sidebar-item="favorite" aria-label="我喜欢" :aria-current="activeItem === 'favorite' ? 'page' : undefined" :title="userLoggedIn ? '我喜欢' : '我喜欢（需要登录）'" @click="handleItemClick('favorite')">
@@ -84,6 +84,7 @@ import UserMenu from './UserMenu.vue'
 import hideIcon from '../../assets/icons/sidebar-hide.svg'
 import homeIcon from '../../assets/icons/sidebar-home.svg'
 import listIcon from '../../assets/icons/sidebar-list.svg'
+import libraryIcon from '../../assets/icons/sidebar-library.svg'
 import settingsIcon from '../../assets/icons/sidebar-settings.svg'
 import favoriteIcon from '../../assets/icons/sidebar-favorite.svg'
 import addIcon from '../../assets/icons/sidebar-add.svg'
@@ -101,7 +102,7 @@ export default {
   },
   data() {
     return {
-      icons: { hide: hideIcon, home: homeIcon, list: listIcon, settings: settingsIcon, favorite: favoriteIcon, add: addIcon },
+      icons: { hide: hideIcon, home: homeIcon, list: listIcon, library: libraryIcon, settings: settingsIcon, favorite: favoriteIcon, add: addIcon },
       isExpanded: false,
       isHidden: false,
       hoverTimer: null,

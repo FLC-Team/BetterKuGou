@@ -6,7 +6,7 @@
       <div class="setting-item"><label class="setting-label" for="music-download-quality">下载音质</label><AnimatedSelect id="music-download-quality" :model-value="modelValue.quality || 'follow'" :options="qualityOptions" label="下载音质" @update:model-value="set('quality', $event)" /></div>
       <div class="setting-item"><label for="music-download-count">同时下载数量</label><input id="music-download-count" type="number" min="1" max="10" :value="modelValue.concurrentDownloads || 3" @change="set('concurrentDownloads', Math.max(1, Math.min(10, Number($event.target.value) || 3)))"></div>
       <label v-for="option in flags" :key="option.key" class="download-option"><input type="checkbox" :checked="modelValue[option.key] !== false" @change="set(option.key, $event.target.checked)">{{ option.label }}</label>
-    </fieldset><p v-if="!available">文件下载仅在桌面客户端中可用。</p><p v-if="error" role="alert">{{ error }}</p>
+    </fieldset><p v-if="!available">文件下载仅在桌面客户端中可用。</p><AppNotice :message="error" type="error" title="下载设置" />
   </div>
 </template>
 <script setup>

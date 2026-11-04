@@ -146,7 +146,7 @@ function requestStream(rawUrl, { signal, localApi = false, artwork = false, allo
 }
 
 /** All disk state and downloads live in one Worker; the main process only holds opaque leases. */
-function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls = false, limitBytesOverride, protectedFiles = [], retryBaseDelayMs = 1000, onState = () => {}, onAuthExpired = () => {} }) {
+function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls = false, limitBytesOverride, protectedFiles = [], retryBaseDelayMs = 1000, taglibPath, onState = () => {}, onAuthExpired = () => {}, onSourceReady = () => {} }) {
   let root = path.resolve(cacheRoot)
   const accounts = new Map()
   const removedPlaylists = new Map()
@@ -474,6 +474,15 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
       if (!isCurrent(task)) return
       Object.assign(record, result, { status: 'complete', error: null, attempts: 0, lastUsed: Date.now() })
       await persist(index)
+      if (!task.artwork && isCurrent(task)) {
+        try {
+          onSourceReady({ generation, userId: session.userId,
+            hash: record.hash, quality: record.quality, source: isCloud(record.song) ? 'cloud' : 'catalog',
+            ...(isCloud(record.song) ? { sourceUserId: String(record.song.sourceUserId) } : {}) })
+        } catch {
+          // Analysis notification is optional; its failure must not remove a complete playable file.
+        }
+      }
     } catch (error) {
       if (!isCurrent(task) || task.controller.signal.aborted) return
       // Publication can succeed before an index write fails; do not leave unusable quota behind.
@@ -891,11 +900,35 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
     } catch { return false }
   }
 
-  async function acquire(record) {
+  /** Analysis metadata is read only on demand; ordinary playback never loads the tag reader. */
+  function readAnalysisMetadata(record, target) {
+    if (!Number.isSafeInteger(record.size) || record.size <= 0 || record.size > 64 * 1024 ** 2) return null
+    let file
+    try {
+      const library = require(taglibPath || 'node-taglib-sharp')
+      file = library.File.createFromPath(target)
+      const properties = file.properties
+      const audio = { duration: properties.durationMilliseconds / 1000,
+        channels: properties.audioChannels, sampleRate: properties.audioSampleRate }
+      if (!Number.isFinite(audio.duration) || audio.duration <= 0 || audio.duration > 600 ||
+          !Number.isInteger(audio.channels) || audio.channels < 1 || audio.channels > 8 ||
+          !Number.isInteger(audio.sampleRate) || audio.sampleRate < 8000 || audio.sampleRate > 96000 ||
+          Math.ceil(audio.duration * audio.sampleRate) * audio.channels * 4 > 128 * 1024 ** 2) return null
+      return audio
+    } catch {
+      // Unsupported or unreadable headers disable this optional analysis, never normal playback.
+      return null
+    } finally { file?.dispose() }
+  }
+
+  async function acquire(record, analysis = false) {
     const index = current
     if (!index || !record?.file || record.status !== 'complete') return null
+    const audioMetadata = analysis ? readAnalysisMetadata(record, filePath(index.account, record.file)) : null
+    if (analysis && !audioMetadata) return null
     const leaseId = crypto.randomBytes(24).toString('hex')
     const resource = { leaseId, account: index.account, file: record.file, path: filePath(index.account, record.file), size: record.size, mime: record.mime, extname: record.extname, bitrate: record.bitrate, requestedQuality: record.quality, detail: record.detail || record.song || null, status: 1 }
+    if (analysis) Object.assign(resource, { sha256: record.sha256, audioMetadata })
     leases.set(leaseId, resource)
     if (!(await verify(index, record))) {
       leases.delete(leaseId)
@@ -924,11 +957,13 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
     if (!hash || !current) return null
     const cloud = isCloud(payload)
     if (cloud && (!payload.sourceUserId || String(payload.sourceUserId) !== String(session?.userId))) return null
+    const analysis = payload.purpose === 'analysis'
+    if (analysis && !cloud && !QUALITY.has(payload.quality)) return null
     const quality = cloud ? 'original' : normalizeQuality(payload.quality)
     const key = songKey({ ...payload, hash }, quality)
     const preferred = current.songs[key]
-    const exact = await acquire(preferred)
-    if (exact || cloud || !payload.allowFallback) return exact
+    const exact = await acquire(preferred, analysis)
+    if (exact || analysis || cloud || !payload.allowFallback) return exact
     for (const record of Object.values(current.songs)) if (!isCloud(record.song) && record.hash === hash && record !== preferred) { const source = await acquire(record); if (source) return source }
     return null
   }
@@ -1088,7 +1123,9 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
 }
 
 if (!isMainThread && parentPort) {
-  const engine = createCacheEngine({ ...workerData, onState: state => parentPort.postMessage({ type: 'state', state }), onAuthExpired: identity => parentPort.postMessage({ type: 'authExpired', ...identity }) })
+  const engine = createCacheEngine({ ...workerData, onState: state => parentPort.postMessage({ type: 'state', state }),
+    onAuthExpired: identity => parentPort.postMessage({ type: 'authExpired', ...identity }),
+    onSourceReady: source => parentPort.postMessage({ type: 'sourceReady', ...source }) })
   let commands = Promise.resolve()
   parentPort.on('message', message => {
     commands = commands.then(async () => {

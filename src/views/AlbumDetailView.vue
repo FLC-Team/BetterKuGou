@@ -1,6 +1,7 @@
 <template>
   <div class="album-detail-view list-page" :aria-busy="loading">
     <div class="list-content">
+      <AppNotice :message="error" title="专辑加载失败" type="error" :actions="[{ label: '重试', run: load, disabled: loading }]" />
       <button type="button" class="back-btn" @click="$emit('navigate', 'home')">← 返回发现</button>
       <header class="collection-hero">
         <ArtworkCover :src="getCover(album)" class="collection-art" mark="♪" />
@@ -43,9 +44,7 @@
       </div>
 
       <div v-else-if="loading" class="loading-container"><span class="loading-spinner" role="status" aria-label="加载中"></span><p>正在打开专辑…</p></div>
-      <div v-else-if="error" class="error" role="alert">
-  <p class="empty-text">无法打开专辑</p><p>{{ error }}</p><button type="button" class="retry-btn" @click="load">重试</button>
-      </div>
+      <div v-else-if="error" class="empty-state"><button type="button" class="retry-btn" @click="load">重新加载</button></div>
       <div v-else class="empty"><p class="empty-text">暂无专辑曲目</p><p>稍后再来听听，或返回发现更多音乐。</p></div>
       </Transition>
     </div>

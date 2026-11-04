@@ -15,7 +15,7 @@
         </fieldset>
       </AnimatedDetails>
       <p v-if="!available" class="lyric-note">歌词保存与管理仅在桌面客户端中可用。</p>
-      <Transition name="ui-fade" mode="out-in"><p v-if="error" :key="error" class="lyric-error" role="alert">{{ error }}</p></Transition>
+      <AppNotice :message="error" type="error" title="歌词设置" />
       <Transition name="lyric-manager" @before-leave="$event.inert = true" @before-enter="$event.inert = false" @leave-cancelled="$event.inert = false">
         <LyricLibrary v-if="managerOpen && library.enabled !== false" id="saved-lyric-library" ref="libraryPanel" :before-action="beforeAction" @close="closeLibrary" @protected-state="managerProtected = $event" />
       </Transition>
@@ -112,7 +112,6 @@ defineExpose({ prepareLeave: () => libraryPanel.value?.prepareLeave?.() ?? true 
 .lyric-button:active:not(:disabled) { scale: .97; }
 .lyric-button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
 .lyric-button:disabled { opacity: .5; cursor: default; }
-.lyric-error { margin: 10px 0; color: var(--color-error); line-height: 1.8; }
 .lyric-manager-enter-active, .lyric-manager-leave-active { transition: opacity .2s ease, transform .2s ease; }
 .lyric-manager-enter-from, .lyric-manager-leave-to { opacity: 0; transform: translateY(-8px); }
 @container (max-width: 430px) { .lyric-row { gap: 16px; } .lyric-row label { font-size: 12px; } .lyric-row :deep(.animated-select-trigger) { max-width: 125px; } }

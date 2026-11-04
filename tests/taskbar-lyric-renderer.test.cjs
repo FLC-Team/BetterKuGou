@@ -67,7 +67,8 @@ function fixture({ reducedMotion = false, control } = {}) {
   }
   const subscriptions = new Map()
   const calls = []
-  const api = {}
+  const notices = []
+  const api = { reportNotice: notice => notices.push(JSON.parse(JSON.stringify(notice))) }
   for (const name of ['onSongUpdate', 'onLyricUpdate', 'onTimeUpdate', 'onPlaybackUpdate', 'onSettingsUpdate', 'onRuntimeState', 'onState', 'onError']) {
     api[name] = callback => { subscriptions.set(name, callback); return () => subscriptions.delete(name) }
   }
@@ -96,7 +97,7 @@ function fixture({ reducedMotion = false, control } = {}) {
   vm.runInContext(source, context, { filename: 'taskbarLyric.html' })
   document.listeners.get('DOMContentLoaded')()
   const view = {
-    images, animations, nodes, media, window, calls, frames, subscriptions, warnings,
+    images, animations, nodes, media, window, calls, notices, frames, subscriptions, warnings,
     node: id => nodes.get(id),
     emit(name, ...args) { subscriptions.get(name)?.(...args) },
     flush(at = now) { now = at; const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback(now)) },
@@ -340,10 +341,8 @@ test('controls use real playback acknowledgements, suppress duplicate clicks and
   assert.equal(view.node('playBtn').getAttribute('aria-busy'), 'true')
   finish({ success: false, error: 'Controlled failure' })
   await request
-  assert.equal(view.node('feedback').hidden, false)
-  assert.equal(view.node('feedback').textContent, 'Controlled failure')
-  view.node('feedback').click()
-  assert.equal(view.node('feedback').hidden, true)
+  assert.deepEqual(view.notices.at(-1), { title: '任务栏歌词', message: 'Controlled failure', type: 'error' })
+  assert.equal(view.node('feedback'), undefined, 'the taskbar has no independent reminder overlay')
   const retry = view.node('playBtn').click()
   finish({ success: true })
   await retry
@@ -381,5 +380,5 @@ test('motion changes and unload release frames, observers, listeners, image call
   assert.equal(view.media.listeners.size, 0)
   assert.equal(view.resizeDisconnected, true)
   assert.equal(view.images[0].onload, null)
-  assert.equal(view.node('feedback').textContent, '')
+  assert.equal(view.notices.length, 0, 'late errors after unload do not produce a notice')
 })

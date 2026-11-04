@@ -5,8 +5,11 @@
       <Transition name="ui-pop" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><button v-if="!isLyricViewVisible" type="button" class="navigation-back" aria-label="返回上一页" title="返回上一页" :disabled="!canGoBack" @click="$emit('back')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m14 6-6 6 6 6" /></svg>
       </button></Transition>
-      <img src="/logo.png" alt="Logo" class="logo-icon" />
-      <span class="app-name">BETTERKUGOU</span>
+      <img src="/logo.png" alt="" class="logo-icon" />
+      <div class="brand-copy">
+        <span class="app-name">BETTER<span>KUGOU</span></span>
+        <span class="brand-caption">音乐，随心而听</span>
+      </div>
     </div>
     
     <!-- 搜索框（居中） -->
@@ -44,11 +47,10 @@
         </button>
         <span v-else class="search-hint" aria-hidden="true">↵</span></Transition>
       </form>
-      <Transition name="ui-pop"><section v-if="showSearchHints" class="search-suggestions" aria-label="搜索提示">
+      <Transition name="ui-pop" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><section v-if="showSearchHints" ref="searchHints" class="search-suggestions" aria-label="搜索提示">
         <div class="suggestion-heading"><strong>{{ searchKeyword.trim() ? '搜索建议' : '大家都在搜' }}</strong><button type="button" aria-label="关闭搜索提示" @click="closeSearchHints">×</button></div>
         <p v-if="hintsLoading" role="status">正在查找…</p>
-        <p v-else-if="hintsError" role="alert">{{ hintsError }} <button type="button" @click="retrySearchHints">重试</button></p>
-        <p v-else-if="!suggestionOptions.length">{{ searchKeyword.trim() ? '暂无建议，按回车搜索当前关键词。' : '暂无热搜，输入关键词开始搜索。' }}</p>
+        <p v-else-if="!hintsError && !suggestionOptions.length">{{ searchKeyword.trim() ? '暂无建议，按回车搜索当前关键词。' : '暂无热搜，输入关键词开始搜索。' }}</p>
         <div id="search-suggestions" role="listbox" :aria-label="searchKeyword.trim() ? '搜索建议' : '热门搜索'">
           <button v-for="(keyword, index) in suggestionOptions" :id="`search-suggestion-${index}`" :key="keyword" type="button" role="option" :aria-selected="index === activeSuggestion" @mousedown.prevent @click="chooseSuggestion(keyword)"><span>{{ String(index + 1).padStart(2, '0') }}</span>{{ keyword }}</button>
         </div>
@@ -67,7 +69,7 @@
         </div>
         <span class="user-name">{{ userInfo.username || '用户' }}</span>
       </button>
-      <button v-else class="control-btn login-btn" @click="handleLogin" title="登录">
+      <button v-else type="button" class="control-btn login-btn" @click="handleLogin" title="登录" aria-label="登录">
         <svg class="icon" viewBox="0 0 1024 1024" width="18" height="18">
           <path d="M512 512m-512 0a512 512 0 1 0 1024 0 512 512 0 1 0-1024 0Z" fill="currentColor" opacity=".2"></path>
           <path d="M512 640c-70.692 0-128-57.308-128-128s57.308-128 128-128 128 57.308 128 128-57.308 128-128 128z m0-192c-35.346 0-64 28.654-64 64s28.654 64 64 64 64-28.654 64-64-28.654-64-64-64z m256 448H256c-17.673 0-32-14.327-32-32 0-123.514 100.486-224 224-224h96c123.514 0 224 100.486 224 224 0 17.673-14.327 32-32 32z m-479.967-64h447.935c-13.547-77.612-81.232-137.036-159.968-137.036h-96c-78.736 0-146.421 59.424-159.967 137.036z" fill="currentColor"></path>
@@ -77,18 +79,19 @@
 
       
       <!-- 窗口控制按钮 -->
-      <button class="control-btn minimize" @click="minimizeWindow" title="最小化">
+      <button type="button" class="control-btn minimize" @click="minimizeWindow" title="最小化">
         <img :src="icons.minimize" alt="最小化" class="icon" />
       </button>
-      <button class="control-btn maximize" @click="toggleMaximize" :title="isMaximized ? '还原' : '最大化'">
+      <button type="button" class="control-btn maximize" @click="toggleMaximize" :title="isMaximized ? '还原' : '最大化'">
         <Transition name="ui-pop" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><img :key="String(isMaximized)" :src="isMaximized ? icons.restore : icons.maximize" :alt="isMaximized ? '还原' : '最大化'" class="icon" /></Transition>
       </button>
-      <button class="control-btn close" @click="closeWindow" title="关闭">
+      <button type="button" class="control-btn close" @click="closeWindow" title="关闭">
         <img :src="icons.close" alt="关闭" class="icon" />
       </button>
     </div>
 
     <!-- 用户菜单 -->
+    <AppNotice :message="hintsError" title="搜索提示" type="error" :actions="[{ label: '重试', run: retrySearchHints }]" />
     <UserMenu
       :visible="showUserMenu"
       :userInfo="userInfo"
@@ -257,7 +260,7 @@ export default {
       else logger.warn('TitleBar', '读取默认搜索词失败', { name: defaults.reason?.name })
       this.hintsLoading = false
     },
-    retrySearchHints() { if (this.searchKeyword.trim()) this.scheduleSuggestions(this.searchKeyword); else this.loadSearchDiscovery(true) },
+    retrySearchHints() { this.showSearchHints = true; if (this.searchKeyword.trim()) this.scheduleSuggestions(this.searchKeyword); else this.loadSearchDiscovery(true) },
     chooseSuggestion(keyword) { this.searchKeyword = keyword; this.$emit('search', keyword); this.closeSearchHints(); this.$refs.searchInput?.blur() },
     handleSearchKey(event) {
       if (event.isComposing || event.target.composing || this.composing || event.keyCode === 229) return
@@ -266,7 +269,25 @@ export default {
         event.preventDefault(); if (!this.showSearchHints) this.openSearchHints()
         const count = this.suggestionOptions.length
         if (count) this.activeSuggestion = this.activeSuggestion < 0 ? (event.key === 'ArrowDown' ? 0 : count - 1) : (this.activeSuggestion + (event.key === 'ArrowDown' ? 1 : count - 1)) % count
+        this.revealActiveSuggestion()
       } else if (event.key === 'Enter' && this.showSearchHints && this.activeSuggestion >= 0) { event.preventDefault(); this.chooseSuggestion(this.suggestionOptions[this.activeSuggestion]) }
+    },
+    /** Scroll only the suggestions panel; keyboard selection must not move the surrounding page or input focus. */
+    revealActiveSuggestion() {
+      const index = this.activeSuggestion
+      this.$nextTick(() => {
+        if (!this.showSearchHints || this.activeSuggestion !== index) return
+        const panel = this.$refs.searchHints
+        const row = panel?.querySelector(`[id="search-suggestion-${index}"]`)
+        if (!panel || !row) return
+        const viewport = panel.getBoundingClientRect()
+        const bounds = row.getBoundingClientRect()
+        const scale = panel.offsetHeight > 0 && viewport.height > 0 ? viewport.height / panel.offsetHeight : 1
+        const top = viewport.top + panel.clientTop * scale
+        const bottom = top + panel.clientHeight * scale
+        if (bounds.top < top) panel.scrollTop -= (top - bounds.top) / scale
+        else if (bounds.bottom > bottom) panel.scrollTop += (bounds.bottom - bottom) / scale
+      })
     },
     handleLogin() {
       logger.trace('TitleBar', 'Login clicked')
@@ -345,7 +366,8 @@ export default {
 <style scoped>
 .title-bar {
   height: var(--titlebar-height);
-  background: var(--color-background);
+  background: linear-gradient(110deg, color-mix(in srgb, var(--color-primary) 5%, var(--color-background)), var(--color-background) 48%);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
   backdrop-filter: blur(10px);
   display: grid;
   grid-template-columns: minmax(max-content, 1fr) minmax(0, 360px) minmax(max-content, 1fr);
@@ -355,13 +377,14 @@ export default {
   user-select: none;
   position: relative;
   z-index: 9997;
-  transition: all 0.3s ease;
+  transition: background 0.3s ease, border-color 0.3s ease;
 }
 
 /* 歌词模式：完全透明 */
 .title-bar.lyric-mode {
   transition: none;
   background: transparent !important;
+  border-bottom-color: transparent;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
@@ -381,19 +404,19 @@ export default {
   justify-self: start;
   display: flex;
   align-items: center;
-  gap: var(--spacing-sm);
+  gap: 10px;
   padding: 0 var(--spacing-md);
-  -webkit-app-region: no-drag;
+  -webkit-app-region: drag;
   transition: opacity 0.3s ease, scale var(--ui-motion-fast) var(--ui-motion-ease);
   flex-shrink: 0;
   min-width: 200px;
 }
 
 .logo-icon {
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   object-fit: contain;
-  transition: transform 0.3s ease, scale var(--ui-motion-fast) var(--ui-motion-ease);
+  flex-shrink: 0;
 }
 
 .navigation-back {
@@ -402,28 +425,37 @@ export default {
   width: 28px;
   height: 28px;
   flex: 0 0 28px;
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-background);
   color: var(--color-text-secondary);
+  transition: color var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast), scale var(--ui-motion-fast) var(--ui-motion-ease);
   -webkit-app-region: no-drag;
 }
 
 .navigation-back svg { width: 20px; height: 20px; }
-.navigation-back:hover:not(:disabled) { color: var(--color-primary); background: var(--color-background-light); }
+.navigation-back:hover:not(:disabled) { color: var(--color-primary); background: var(--color-primary-light); border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border)); }
 .navigation-back:disabled { opacity: .3; cursor: default; }
 .navigation-back:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 
-.logo-icon:hover {
-  transform: scale(1.05);
+.brand-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  white-space: nowrap;
 }
 
 .app-name {
-  font-size: var(--font-size-sm);
-  font-weight: 700;
+  font-size: 12px;
+  line-height: 1.15;
+  font-weight: 800;
   color: var(--color-text);
-  letter-spacing: 0.5px;
+  letter-spacing: 1px;
   user-select: none;
-  transition: color 0.3s ease, scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
+
+.app-name > span { font-weight: 500; color: var(--color-primary); }
+.brand-caption { font-size: 9px; line-height: 1.2; color: var(--color-text-secondary); letter-spacing: 1.8px; }
 
 /* 搜索容器 */
 .search-container {
@@ -450,15 +482,16 @@ export default {
   gap: var(--spacing-xs);
   width: 100%;
   height: 34px;
-  padding: 0 5px;
-  background: var(--bg-hover-light);
-  border: 1px solid transparent;
+  padding: 0 6px;
+  background: color-mix(in srgb, var(--color-background-light) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
   border-radius: var(--radius-full);
   transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
 
 .search-box:hover {
   background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--color-primary) 24%, var(--color-border));
 }
 
 .search-box:focus-within {
@@ -509,6 +542,8 @@ export default {
   height: 16px;
 }
 
+.search-btn { background: var(--color-primary-light); color: var(--color-primary); }
+
 .search-btn:hover:not(:disabled),
 .search-clear:hover {
   color: var(--color-text);
@@ -527,10 +562,14 @@ export default {
 
 .search-hint {
   flex: 0 0 24px;
+  height: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: var(--color-background);
   text-align: center;
-  color: var(--color-text-tertiary);
+  color: var(--color-text-secondary);
   font-size: var(--font-size-sm);
-  line-height: 1;
+  line-height: 18px;
   pointer-events: none;
 }
 
@@ -538,6 +577,7 @@ export default {
   grid-column: 3;
   justify-self: end;
   display: flex;
+  align-items: center;
   height: 100%;
   -webkit-app-region: no-drag;
   flex-shrink: 0;
@@ -554,8 +594,11 @@ export default {
   justify-content: center;
   color: var(--titlebar-icon-color);
   cursor: pointer;
-  transition: all var(--transition-base);
+  transition: color var(--transition-fast), background var(--transition-fast), scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
+
+.control-btn:hover { background: var(--titlebar-btn-hover); }
+.control-btn:focus-visible, .user-info:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -3px; }
 
 .control-btn svg {
   transition: all var(--transition-base);
@@ -577,6 +620,7 @@ export default {
 
 .control-btn.close:hover {
   color: var(--color-on-primary);
+  background: var(--color-error);
 }
 
 .control-btn.close:hover .icon {
@@ -589,9 +633,14 @@ export default {
   display: flex;
   align-items: center;
   gap: var(--spacing-xs);
-  padding: 0 var(--spacing-md);
+  padding: 0;
+  width: 30px;
+  height: 30px;
+  margin: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 50%;
+  background: var(--color-background-light);
   min-width: auto;
-  width: auto;
 }
 
 .login-btn .icon {
@@ -619,11 +668,14 @@ export default {
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
-  padding: 0 var(--spacing-md);
+  height: 34px;
+  padding: 0 10px 0 4px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: var(--color-background-light);
   cursor: pointer;
   transition: all var(--transition-base);
-  border-radius: var(--radius-sm);
-  margin-right: var(--spacing-xs);
+  border-radius: var(--radius-full);
+  margin-right: 10px;
   -webkit-app-region: no-drag;
 }
 
@@ -632,15 +684,15 @@ export default {
 }
 
 .user-avatar {
-  width: 32px;
-  height: 32px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--color-background-lighter);
-  border: 2px solid var(--color-border);
+  border: 1px solid var(--color-border);
   transition: all var(--transition-base);
 }
 
@@ -685,18 +737,29 @@ export default {
 
 @media (max-width: 900px) {
   .user-name { display: none; }
+  .user-info { padding-right: 4px; }
 }
 
 @media (max-width: 700px) {
   .title-bar { column-gap: var(--spacing-sm); }
   .logo-container { min-width: 0; }
-  .app-name { display: none; }
+  .brand-copy { display: none; }
   .search-hint { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .title-bar,
+  .logo-container,
+  .navigation-back,
+  .control-btn,
+  .control-btn .icon,
+  .control-btn svg,
+  .user-info,
+  .user-avatar,
+  .user-name,
   .search-box,
   .search-btn,
   .search-clear { transition: none; }
+  .control-btn:hover .icon, .user-info:hover .user-avatar { transform: none; }
 }
 </style>

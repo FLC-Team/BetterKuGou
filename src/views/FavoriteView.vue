@@ -1,5 +1,5 @@
 <template>
-  <div class="favorite-view list-page" :aria-busy="loading">
+  <div class="favorite-view list-page" :aria-busy="loading" @keydown.esc="selectionMode && finishSelection(true)">
     <div class="list-content">
       <header class="collection-hero">
         <ArtworkCover :src="favoriteList.find(song => song.cover)?.cover || ''" class="collection-art" mark="♥" />
@@ -10,9 +10,7 @@
           <div class="collection-meta"><span>{{ favoriteList.length }} 首歌曲</span><span>{{ isPlaylistView ? (isPublicPlaylist ? '公开歌单' : '我的歌单') : '我喜欢' }}</span></div>
           <div class="collection-actions"><button type="button" class="play-all-btn" :disabled="favoriteList.length === 0" @click="playAll"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>播放全部</button>
             <button type="button" class="action-btn" :disabled="loading" @click="loadFavorites(true)">{{ loading ? '刷新中…' : '刷新歌单' }}</button>
-            <button type="button" class="action-btn" :disabled="!favoriteList.length" @click="$emit('download', favoriteList)">下载歌单</button>
             <button type="button" v-if="isPlaylistView" class="action-btn" @click="$emit('manage-playlist', playlistResource || { id: playlistId, globalCollectionId: playlistId, source: 'public', name: playlistName })">{{ playlistResource?.source === 'owned' ? '管理歌单' : '收藏歌单' }}</button>
-            <button type="button" v-else class="action-btn" :disabled="!favoriteList.length || !musicLibrary?.canWrite" @click="clearAll">清空收藏</button>
           </div>
           <div v-if="offlineCacheAvailable" class="playlist-cache" aria-live="polite">
             <span>{{ playlistCacheState?.enabled === false ? '离线缓存已关闭' : `已听缓存 ${offlineCacheEntry?.cached || 0} / ${favoriteList.length} 首` }}</span>
@@ -22,13 +20,13 @@
             <button v-if="cacheWriteFailed" type="button" class="cache-action" :disabled="cacheActionPending" @click="retryPlaylistSnapshot">重试保存</button>
             <button v-else-if="offlineCacheCanRetry" type="button" class="cache-action" :disabled="cacheActionPending" @click="controlPlaylistCache('retry')">重试缓存</button>
           </div>
-          <p v-if="offlineCacheError" class="playlist-cache-error" role="alert">{{ offlineCacheError }}</p>
+          <AppNotice :message="offlineCacheError" title="离线缓存" type="error" :actions="cacheWriteFailed ? [{ label: '重试保存', run: retryPlaylistSnapshot, disabled: cacheActionPending }] : offlineCacheCanRetry ? [{ label: '重试缓存', run: () => controlPlaylistCache('retry'), disabled: cacheActionPending }] : []" />
         </div>
       </header>
 
       <PlaylistOverview v-if="isPlaylistView" :resource="playlistResource || { id: playlistId, name: playlistName }" @navigate="(view, data) => $emit('navigate', view, data)" />
       <div class="section-heading"><h2>曲目</h2><span>每一首，都是喜欢的理由</span></div>
-      <div v-if="!isPlaylistView && !musicLibrary?.state.loaded && musicLibrary?.state.favoriteCandidates.length" class="refresh-error" role="status">
+      <div v-if="!isPlaylistView && !musicLibrary?.state.loaded && musicLibrary?.state.favoriteCandidates.length" class="favorite-binding">
         <span>请确认酷狗账号的收藏歌单。此选择只绑定目标，不会修改任何歌曲。</span>
         <button v-for="candidate in musicLibrary.state.favoriteCandidates" :key="candidate.listId" type="button" class="action-btn" @click="bindFavoritePlaylist(candidate)">{{ candidate.name }} · {{ candidate.listId }}</button>
       </div>
@@ -42,17 +40,18 @@
         <p class="playlist-search-count" role="status" aria-live="polite">{{ hasSearchQuery ? `找到 ${filteredFavoriteList.length} 首 / 共 ${favoriteList.length} 首` : `共 ${favoriteList.length} 首歌曲` }}</p>
       </div>
       <div v-if="favoriteList.length" class="collection-actions selection-actions">
-        <label><input type="checkbox" :checked="selectedSongs.length === filteredFavoriteList.length && selectedSongs.length > 0" @change="selectedIndices = $event.target.checked ? filteredFavoriteList.map(song => song.index) : []" />选择搜索结果</label>
-        <span v-if="selectedSongs.length">已选择 {{ selectedSongs.length }} 首</span>
+        <button v-if="!selectionMode" ref="selectionToggle" type="button" class="action-btn selection-toggle" :disabled="!filteredFavoriteList.length" @click="startSelection">批量操作</button>
+        <template v-else>
+        <button type="button" class="action-btn" @click="finishSelection(true)">完成</button>
+        <label><input type="checkbox" :checked="selectedSongs.length === filteredFavoriteList.length && selectedSongs.length > 0" :indeterminate="selectedSongs.length > 0 && selectedSongs.length < filteredFavoriteList.length" @change="selectAll($event.target.checked)" />{{ hasSearchQuery ? '选择搜索结果' : '全选' }}</label>
+        <span>已选择 {{ selectedSongs.length }} 首</span>
         <button v-if="selectedSongs.length" type="button" class="action-btn" @click="$emit('add-to-playlist', selectedSongs)">添加到歌单</button>
         <button v-if="selectedSongs.length" type="button" class="action-btn" @click="$emit('download', selectedSongs)">下载所选</button>
         <button v-if="selectedSongs.length && (!isPlaylistView || playlistResource?.isOwned)" type="button" class="action-btn" :disabled="!musicLibrary?.canWrite" @click="removeSelectedSongs()">从云端歌单移除</button>
+        </template>
       </div>
 
-      <div v-if="errorMessage && favoriteList.length > 0" class="refresh-error" role="alert">
-        <span>{{ errorMessage }}</span>
-        <button type="button" class="action-btn" :disabled="loading" @click="loadFavorites(true)">重试</button>
-      </div>
+      <AppNotice :message="errorMessage" :title="pageTitle" type="error" :actions="[{ label: '重试', run: () => loadFavorites(true), disabled: loading }]" />
 
       <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
       <!-- 加载状态 -->
@@ -62,10 +61,8 @@
       </div>
 
       <!-- 加载失败 -->
-      <div v-else-if="errorMessage && favoriteList.length === 0" class="empty-state" role="alert">
-        <p class="empty-text">无法打开{{ pageTitle }}</p>
-        <p class="empty-hint">{{ errorMessage }}</p>
-        <button type="button" class="primary-btn" @click="loadFavorites(true)">重试</button>
+      <div v-else-if="errorMessage && favoriteList.length === 0" class="empty-state">
+        <button type="button" class="primary-btn" @click="loadFavorites(true)">重新加载</button>
       </div>
 
       <!-- 空状态 -->
@@ -116,16 +113,16 @@
           @contextmenu.prevent.stop="showContextMenu($event, song)"
         >
           <div class="col-index">
-            <input type="checkbox" :aria-label="`选择 ${getSongName(song.name)}`" :checked="selectedIndices.includes(song.index)" @change="toggleSelected(song, $event.target.checked)" @click.stop @dblclick.stop />
-            <span class="index-number">{{ String(song.index).padStart(2, '0') }}</span>
+            <input v-if="selectionMode" type="checkbox" :aria-label="`选择 ${getSongName(song)}`" :checked="selectedIndices.includes(song.index)" @change="toggleSelected(song, $event.target.checked)" @click.stop @dblclick.stop />
+            <span v-else class="index-number">{{ String(song.index).padStart(2, '0') }}</span>
           </div>
 
           <div class="col-title">
             <ArtworkCover :src="song.cover || ''" class="song-cover" />
             <div class="song-info">
               <div class="song-title-line">
-                <button type="button" class="song-name" @click.stop="searchSong(song)" @dblclick.stop :title="getSongName(song.name)">
-                  {{ getSongName(song.name) }}
+                <button type="button" class="song-name" @click.stop="searchSong(song)" @dblclick.stop :title="getSongName(song)">
+                  {{ getSongName(song) }}
                   <span v-if="song.relate_goods && song.relate_goods.some(g => g.level >= 5)" class="quality-badge">SQ</span>
                 </button>
                 <SongBadges :song="song" />

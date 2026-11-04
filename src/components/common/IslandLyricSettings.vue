@@ -90,8 +90,8 @@
       </AnimatedDetails>
 
     </fieldset>
-    <Transition name="ui-fade"><p v-if="environmentError" class="island-feedback is-error" role="alert">{{ environmentError }} <button type="button" class="island-button" :disabled="loadingEnvironment" @click="loadEnvironment">重试读取</button></p></Transition>
-    <Transition name="ui-fade" mode="out-in"><p v-if="actionError || message" :key="actionError || message" class="island-feedback" :class="{ 'is-error': actionError }" :role="actionError ? 'alert' : 'status'">{{ actionError || message }}</p></Transition>
+    <AppNotice :message="environmentError" type="error" title="灵动岛歌词" :actions="[{ label: '重试读取', run: loadEnvironment, disabled: loadingEnvironment }]" />
+    <AppNotice :message="actionError || message" :type="actionError ? 'error' : 'success'" title="灵动岛歌词" />
   </div>
 </template>
 
@@ -289,8 +289,6 @@ input[type="text"], input[type="number"] { min-width: 0; max-width: 250px; paddi
 .color-control input { width: 32px; height: 32px; padding: 2px; border: 1px solid var(--color-border); border-radius: 6px; background: transparent; cursor: pointer; }
 .color-control span { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--color-text-secondary); }
 .color-control button { padding: 6px 8px; }
-.island-feedback { margin-top: 16px; }
-.is-error { color: var(--color-error); }
 @media (max-width: 1100px) {
   .island-option-grid { grid-template-columns: 1fr; }
   .island-row { flex-wrap: wrap; gap: 14px; }

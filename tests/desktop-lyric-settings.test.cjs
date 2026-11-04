@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const vue = require('vue')
+const { registerAppNotice } = require('./helpers/noticeHarness.cjs')
 const { parse, compileScript } = require('@vue/compiler-sfc')
 
 const filename = path.join(__dirname, '../src/components/common/DesktopLyricSettings.vue')
@@ -52,6 +53,7 @@ function mount(t, options = {}) {
     'onUpdate:modelValue': value => { emitted.push(value); preferences.value = value },
     beforeAction: options.beforeAction || (async () => true)
   }) })
+  registerAppNotice(app)
   app.mount(root)
   let mounted = true
   const unmount = () => { if (mounted) { mounted = false; app.unmount() } }

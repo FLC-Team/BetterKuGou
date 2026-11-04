@@ -56,11 +56,10 @@
 .list-page .icon-btn:hover { background: var(--color-background); color: var(--color-primary); }
 .list-page .favorite-btn.active { color: var(--color-primary); }
 .list-page .index-number.gold, .list-page .index-number.silver, .list-page .index-number.bronze { color: var(--color-primary); font-weight: 600; }
-.list-page .loading-container, .list-page .empty-state, .list-page .error, .list-page .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; min-height: 260px; padding: 35px 24px; border-block: 1px solid var(--color-border); color: var(--color-text-secondary); text-align: center; font-size: var(--font-size-xs); line-height: 1.8; }
-.list-page .empty-state > svg, .list-page .empty > svg, .list-page .error > svg { width: 42px; height: 42px; color: var(--color-primary); }
+.list-page .loading-container, .list-page .empty-state, .list-page .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; min-height: 260px; padding: 35px 24px; border-block: 1px solid var(--color-border); color: var(--color-text-secondary); text-align: center; font-size: var(--font-size-xs); line-height: 1.8; }
+.list-page .empty-state > svg, .list-page .empty > svg { width: 42px; height: 42px; color: var(--color-primary); }
 .list-page .empty-text { color: var(--color-text); font-size: var(--font-size-base); font-weight: 500; }
 .list-page .empty-hint { font-size: var(--font-size-xs); overflow-wrap: anywhere; }
-.list-page .refresh-error { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 14px 18px; margin-bottom: 20px; border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-error); font-size: var(--font-size-xs); }
 .list-page button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
 .list-page .artist-link:focus-visible, .list-page .album-link:focus-visible { outline-offset: -2px; }
 .list-page .search-header { padding: 3px 0 30px; }
@@ -112,7 +111,6 @@
   .album-detail-view .col-duration { align-self: center; }
   .list-page .song-name { font-size: var(--font-size-xs); }
   .list-page .icon-btn { width: 25px; flex-basis: 25px; height: 25px; }
-  .list-page .refresh-error { align-items: flex-start; flex-wrap: wrap; }
 }
 @media (hover: none) { .list-page .action-buttons { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .list-page *, .list-page *::before, .list-page *::after { transition: none !important; } }

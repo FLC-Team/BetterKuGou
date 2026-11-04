@@ -1,5 +1,9 @@
 <template>
   <div class="login-container">
+    <AppNotice :message="loginFeedback.text" :type="loginFeedback.kind" :revision="loginFeedbackRevision" title="登录" />
+    <AppNotice :message="currentTab === 'qrcode' && qrcodeStatus === 'error' ? qrcodeError : ''" title="扫码登录" type="error" :actions="[{ label: '重新生成二维码', run: retryQRCode, disabled: qrcodeLoading }]" />
+    <AppNotice :message="currentTab === 'qrcode' && qrcodeStatus === 'expired' ? '二维码已过期，正在自动刷新…' : ''" title="扫码登录" type="warning" :duration="0" />
+    <AppNotice :message="currentTab === 'qrcode' && qrcodeStatus === 'scanned' ? (scannedUsername || '用户') + ' 已扫描，请在手机上确认登录。' : ''" title="扫码登录" type="info" :duration="0" />
     <div class="login-box">
       <h1 class="login-title">欢迎登录 BetterKuGou</h1>
       
@@ -100,49 +104,24 @@
             </div>
             
             <!-- 加载失败 -->
-            <button type="button" v-else-if="qrcodeStatus === 'error'" class="qrcode-error-msg" @click="retryQRCode">
-              <svg viewBox="0 0 1024 1024" width="48" height="48" fill="currentColor">
-                <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64zm0 820c-205.4 0-372-166.6-372-372s166.6-372 372-372 372 166.6 372 372-166.6 372-372 372z"/>
-                <path d="M464 336a48 48 0 1096 0 48 48 0 10-96 0zm32 120h64v288h-64z"/>
-              </svg>
-              <p class="error-title">加载失败</p>
-              <p class="error-subtitle">点击重新加载</p>
-            </button>
+            <button type="button" v-else-if="qrcodeStatus === 'error'" class="qrcode-retry" @click="retryQRCode">重新生成二维码</button>
             
             <!-- 二维码过期 -->
-            <div v-else-if="qrcodeStatus === 'expired'" class="qrcode-expired-msg">
-              <svg viewBox="0 0 1024 1024" width="48" height="48" fill="currentColor">
-                <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64zm0 820c-205.4 0-372-166.6-372-372s166.6-372 372-372 372 166.6 372 372-166.6 372-372 372z"/>
-                <path d="M686.7 638.6L544.1 535.5V288c0-4.4-3.6-8-8-8h-48c-4.4 0-8 3.6-8 8v275.4c0 2.6 1.2 5 3.3 6.5l165.4 120.6c3.6 2.6 8.6 1.8 11.2-1.7l28.6-39c2.6-3.7 1.8-8.7-1.9-11.2z"/>
-              </svg>
-              <p class="expired-title">二维码已过期</p>
-              <p class="expired-subtitle">正在自动刷新...</p>
-            </div>
+            <div v-else-if="qrcodeStatus === 'expired'" class="qrcode-loading"><span class="loading-spinner" role="status" aria-label="正在刷新二维码"></span></div>
             
             <!-- 已扫描，等待确认 -->
             <div v-else-if="qrcodeStatus === 'scanned'" class="qrcode-scanned-msg">
               <div class="qrcode-image-small">
                 <img :src="qrcodeUrl" alt="二维码" />
               </div>
-              <div class="scan-success-icon">
-                <svg viewBox="0 0 1024 1024" width="48" height="48" fill="currentColor" class="success-icon">
-                  <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64zm193.5 301.7l-210.6 292a31.8 31.8 0 01-51.7 0L318.5 484.9c-3.8-5.3 0-12.7 6.5-12.7h46.9c10.2 0 19.9 4.9 25.9 13.3l71.2 98.8 157.2-218c6-8.3 15.6-13.3 25.9-13.3H699c6.5 0 10.3 7.4 6.5 12.7z"/>
-                </svg>
-              </div>
-              <p class="scanned-user">{{ scannedUsername || '用户' }} 已扫描</p>
-              <p class="scanned-tip">请在手机上确认登录</p>
             </div>
-            <div v-else-if="qrcodeStatus === 'success'" class="qrcode-scanned-msg" role="status"><span class="success-icon">✓</span><p>登录成功</p></div>
+            <div v-else-if="qrcodeStatus === 'success'" class="qrcode-loading"><span class="loading-spinner" role="status" aria-label="正在打开音乐"></span></div>
             </Transition>
           </div>
           
           <!-- 提示文字 -->
           <p v-if="qrcodeStatus === 'waiting'" class="qrcode-tip">请使用酷狗音乐 App 扫码登录</p>
         </div>
-      </div>
-
-      <div class="login-feedback-region" aria-live="polite" aria-atomic="true">
-        <Transition name="ui-fade" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><p v-if="loginFeedback.text" :key="loginFeedback.kind + loginFeedback.text" class="login-feedback" :class="loginFeedback.kind" :role="loginFeedback.kind === 'error' ? 'alert' : 'status'">{{ loginFeedback.text }}</p></Transition>
       </div>
 
       <!-- 返回按钮 -->
@@ -207,6 +186,7 @@ export default {
       accountLoading: false,
       disposed: false,
       loginGeneration: 0,
+      loginFeedbackRevision: 0,
       loginFeedback: { text: '', kind: 'info' }
     }
   },
@@ -244,6 +224,7 @@ export default {
   methods: {
     setFeedback(text, kind = 'error') {
       this.loginFeedback = { text: String(text || '操作失败，请重试'), kind }
+      this.loginFeedbackRevision++
     },
     /** 认证立即落盘；先刷新成功状态，再沿原事件出口导航。 */
     async completeLogin(userData) {
@@ -813,65 +794,6 @@ export default {
   font-size: var(--font-size-sm);
 }
 
-/* 错误状态样式 */
-.qrcode-error-msg {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--spacing-sm);
-  cursor: pointer;
-  transition: all var(--transition-base);
-  padding: var(--spacing-md);
-  border-radius: var(--radius-md);
-}
-
-.qrcode-error-msg:hover {
-  background: var(--color-error-light);
-}
-
-.qrcode-error-msg svg {
-  color: var(--color-error);
-}
-
-.error-title {
-  color: var(--color-error);
-  font-size: var(--font-size-base);
-  font-weight: 600;
-  margin: 0;
-}
-
-.error-subtitle {
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  margin: 0;
-}
-
-/* 过期状态样式 */
-.qrcode-expired-msg {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--spacing-sm);
-  padding: var(--spacing-md);
-}
-
-.qrcode-expired-msg svg {
-  color: var(--color-text-tertiary);
-}
-
-.expired-title {
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-base);
-  font-weight: 600;
-  margin: 0;
-}
-
-.expired-subtitle {
-  color: var(--color-text-tertiary);
-  font-size: var(--font-size-sm);
-  margin: 0;
-}
-
 /* 已扫描状态样式 */
 .qrcode-scanned-msg {
   display: flex;
@@ -896,42 +818,7 @@ export default {
   object-fit: contain;
 }
 
-.scan-success-icon {
-  margin-top: -70px;
-  margin-bottom: var(--spacing-sm);
-  animation: scaleIn 0.3s ease-out;
-}
 
-.success-icon {
-  color: var(--color-success);
-}
-
-@keyframes scaleIn {
-  from {
-    transform: scale(0);
-    opacity: 0;
-  }
-  to {
-    transform: scale(1);
-    opacity: 1;
-  }
-}
-
-.scanned-user {
-  color: var(--color-text);
-  font-size: var(--font-size-base);
-  font-weight: 600;
-  margin: 0;
-  text-align: center;
-}
-
-.scanned-tip {
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  margin: 0;
-  text-align: center;
-  white-space: pre-line;
-}
 
 .qrcode-tip {
   color: var(--color-text-secondary);
@@ -990,10 +877,7 @@ export default {
   transform: translateX(-2px);
 }
 .login-submit, .captcha-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
-.login-feedback-region { min-height: 42px; margin-top: 10px; }
-.login-feedback { padding: 9px 12px; border-radius: var(--radius-sm); background: var(--color-background); color: var(--color-text-secondary); font-size: var(--font-size-xs); line-height: 1.7; overflow-wrap: anywhere; }
-.login-feedback.error { color: var(--color-error); }
-.login-feedback.success { color: var(--color-success); }
 .login-submit .loading-spinner { border-top-color: currentColor; }
 @media (prefers-reduced-motion: reduce) { .form-content { animation: none; } }
+.qrcode-retry { padding: 10px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-background-light); color: var(--color-text); cursor: pointer; }
 </style>

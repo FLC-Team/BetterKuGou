@@ -17,8 +17,8 @@
       </div>
 
       <template v-if="available">
-        <Transition name="ui-fade" mode="out-in"><p v-if="actionError || state.error" :key="actionError || errorText(state.error)" class="updates-error" role="alert">{{ actionError || errorText(state.error) }}</p></Transition>
-        <Transition name="ui-fade" mode="out-in"><p v-if="actionMessage" :key="actionMessage" class="updates-feedback" role="status">{{ actionMessage }}</p></Transition>
+        <AppNotice :message="actionError || (state.error ? errorText(state.error) : '')" type="error" title="应用更新" />
+        <AppNotice :message="actionMessage" type="success" title="应用更新" />
 
         <Transition name="updates-expand"><div v-if="state.status === 'downloading'" class="updates-stage"><div class="updates-stage-inner"><div class="updates-progress">
           <div class="progress-heading"><span>下载进度</span><strong>{{ hasDownloadProgress ? downloadPercent.toFixed(1) + '%' : '准备下载…' }}</strong></div>

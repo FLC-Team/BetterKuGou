@@ -2,6 +2,7 @@ const fs = require('fs')
 const fsp = fs.promises
 const path = require('path')
 const logger = require('./logger')
+const { normalizeAudioEffects } = require('./audioEffectsConfig.cjs')
 
 const {
   isAutoLaunchSupported,
@@ -202,6 +203,9 @@ function ensureSchema(settings) {
   if (!isPlainObject(normalized.playback)) normalized.playback = cloneDeep(defaultsCache.playback)
   normalized.playback.showTranslation = typeof normalized.playback.showTranslation === 'boolean' ? normalized.playback.showTranslation : true
   normalized.playback.restartOnPreviousNearEnd = normalized.playback.restartOnPreviousNearEnd === true
+  for (const key of ['smoothTrackSwitch', 'preloadNextTrack', 'skipTrailingSilence']) {
+    normalized.playback[key] = typeof normalized.playback[key] === 'boolean' ? normalized.playback[key] : true
+  }
   normalized.playback.syncPlayHistory = typeof normalized.playback.syncPlayHistory === 'boolean' ? normalized.playback.syncPlayHistory : true
   const library = isPlainObject(normalized.playback.lyricLibrary) ? normalized.playback.lyricLibrary : {}
   normalized.playback.lyricLibrary = {
@@ -227,7 +231,10 @@ function ensureSchema(settings) {
   normalized.desktopLyrics = normalizeDesktopLyrics(desktop)
   normalized.islandLyrics = normalizeIslandLyrics(normalized.islandLyrics)
   normalized.taskbarLyrics = normalizeTaskbarLyrics(normalized.taskbarLyrics)
+  normalized.audioEffects = normalizeAudioEffects(normalized.audioEffects)
   if (!isPlainObject(normalized.software)) normalized.software = cloneDeep(defaultsCache.software)
+  normalized.software.minimizeToTray = normalized.software.minimizeToTray === true
+  normalized.software.promptBeforeClose = typeof normalized.software.promptBeforeClose === 'boolean' ? normalized.software.promptBeforeClose : true
   const updates = isPlainObject(normalized.software.updates) ? normalized.software.updates : {}
   normalized.software.updates = {
     autoCheck: typeof updates.autoCheck === 'boolean' ? updates.autoCheck : true,
@@ -300,6 +307,9 @@ function createDefaults(app) {
       fullscreenLyrics: true,
       enqueueFullPlaylist: true,
       restartOnPreviousNearEnd: false,
+      smoothTrackSwitch: true,
+      preloadNextTrack: true,
+      skipTrailingSilence: true,
       syncPlayHistory: true,
       showTranslation: true,
       lyricLibrary: { enabled: true, autoSave: true, minMatch: 'high', autoUpdate: true },
@@ -312,6 +322,7 @@ function createDefaults(app) {
     desktopLyrics: { ...desktopLyricDefaults },
     islandLyrics: normalizeIslandLyrics(),
     taskbarLyrics: normalizeTaskbarLyrics(),
+    audioEffects: normalizeAudioEffects(),
     download: {
       offlinePlaylistCacheEnabled: true,
       offlineCachePath: '',
@@ -337,7 +348,8 @@ function createDefaults(app) {
       restorePlaylist: true,
       restorePlaybackState: true,
       defaultPage: 'home',
-      minimizeToTray: false
+      minimizeToTray: false,
+      promptBeforeClose: true
     },
     session: {
       playlist: [],
@@ -409,7 +421,7 @@ function getSettings() {
 }
 
 /** 按调用顺序执行整个设置事务，成功落盘后才发布缓存和通知。 */
-async function setSettings(nextSettings, { merge = true } = {}) {
+async function setSettings(nextSettings, { merge = true, removedPaths = [] } = {}) {
   if (!settingsCache) {
     throw new Error('Settings store not initialized')
   }
@@ -417,18 +429,30 @@ async function setSettings(nextSettings, { merge = true } = {}) {
     throw new TypeError('Settings payload must be an object')
   }
   assertSafeKeys(nextSettings)
+  if (!Array.isArray(removedPaths) || removedPaths.length > 4096 || removedPaths.some(keys =>
+    !Array.isArray(keys) || !keys.length || keys.length > 32 || keys.some(key => typeof key !== 'string' || !key || UNSAFE_KEYS.has(key)))) {
+    throw new TypeError('Invalid settings removal paths')
+  }
   const payload = cloneDeep(nextSettings)
-  const task = commitQueue.then(() => commitSettings(payload, merge))
+  const removals = cloneDeep(removedPaths)
+  const task = commitQueue.then(() => commitSettings(payload, merge, removals))
   // 调用者仍能收到本次失败，后续事务继续使用最后一次成功的缓存。
   commitQueue = task.catch(() => {})
   return task
 }
 
 /** 队列内读取已提交状态，协调系统自启设置与磁盘提交，失败时保留旧缓存。 */
-async function commitSettings(nextSettings, merge) {
+async function commitSettings(nextSettings, merge, removedPaths = []) {
   let updated
   if (merge) {
-    updated = mergeDeep(settingsCache, nextSettings)
+    const base = removedPaths.length ? cloneDeep(settingsCache) : settingsCache
+    // Apply removals before the final patch: delete-then-edit of a subtree must not restore its old fields.
+    for (const keys of removedPaths) {
+      let parent = base
+      for (const key of keys.slice(0, -1)) parent = isPlainObject(parent) ? parent[key] : null
+      if (isPlainObject(parent)) delete parent[keys.at(-1)]
+    }
+    updated = mergeDeep(base, nextSettings)
   } else {
     updated = cloneDeep(nextSettings)
   }

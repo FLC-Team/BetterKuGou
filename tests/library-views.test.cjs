@@ -18,7 +18,7 @@ function fixture(file, globals = {}, props = {}) {
     minimizeIcon: '', maximizeIcon: '', restoreIcon: '', closeIcon: '', nextplayIcon: '',
     contextMenuManager: { closeActiveMenu() {}, registerMenu() {}, unregisterMenu() {} },
     localStorage: { getItem: () => null },
-    getUserHistory() {}, getUserListen() {}, getFollowedArtists() {}, getFollowedNewSongs() {}, getCloudSongs() {}, ...globals })
+    getUserHistory() {}, getUserListen() {}, getFollowedArtists() {}, getFollowedNewSongs() {}, getCloudSongs() {}, completeLibrarySongs: async songs => songs, ...globals })
   for (const utility of ['src/utils/songMetadata.js', 'src/utils/libraryMetadata.js', 'src/views/logic/libraryPage.js']) {
     const source = strip(fs.readFileSync(path.join(root, utility), 'utf8'))
     const names = [...source.matchAll(/^export (?:function|const) (\w+)/gm)].map(match => match[1])
@@ -111,10 +111,99 @@ test('history follows an explicit changed cursor and does not claim a complete n
   assert.deepEqual(Array.from(view.page.items, item => item.hash), ['a', 'b'])
 })
 
+test('my music keyboard tabs wrap, keep download accessible to guests and move focus to the selected tab', async () => {
+  const { view } = fixture('src/views/MyMusicView.vue', {}, { userLoggedIn: false, userId: '' })
+  const focused = []
+  let prevented = 0
+  view.$refs.libraryTabs = { querySelectorAll: () => view.tabs.map(tab => ({ focus: () => focused.push(tab.id) })) }
+  const key = value => ({ key: value, preventDefault: () => { prevented++ } })
+  view.handleTabKey(key('ArrowLeft'), 0)
+  await flush()
+  assert.equal(view.activeTab, 'downloads')
+  assert.equal(view.activeTabIndex, 5)
+  assert.equal(view.selectedTab.label, '下载')
+  assert.deepEqual(focused, ['downloads'])
+  view.handleTabKey(key('Home'), 5)
+  await flush()
+  assert.equal(view.activeTab, 'history')
+  view.handleTabKey(key('End'), 0)
+  await flush()
+  assert.equal(view.activeTab, 'downloads')
+  view.handleTabKey(key('Tab'), 5)
+  assert.equal(prevented, 3, 'normal Tab continues to move through page content')
+  assert.equal(Object.keys(view.pages).length, 0, 'guest navigation does not request private collections')
+})
+
+test('my music reuses followed artists when the listening period changes and normalizes their avatar', async () => {
+  let followRequests = 0
+  const { view } = fixture('src/views/MyMusicView.vue', {
+    getFollowedArtists: async () => { followRequests++; return { data: { list: [{ userid: 900, name: 'Artist', ext_params: { singerid: 18, k_pic: 'https://example.test/avatar.jpg' } }], total: 1 } } },
+    getUserListen: async () => ({ data: { list: [], total: 0 } })
+  }, { userLoggedIn: true, userId: 3 })
+  view.selectTab('follow')
+  await flush()
+  const followKey = view.resourceKey
+  assert.equal(view.page.items[0].avatar, 'https://example.test/avatar.jpg')
+  assert.equal(view.artistId(view.page.items[0]), 18)
+  view.selectTab('listen')
+  await flush()
+  view.selectListenType('1')
+  await flush()
+  view.selectTab('follow')
+  await flush()
+  assert.equal(view.resourceKey, followKey)
+  assert.equal(followRequests, 1)
+  assert.equal(view.page.items.length, 1)
+})
+
+test('my music waits for playable metadata and discards an old tab completion', async () => {
+  const pending = deferred()
+  const { view } = fixture('src/views/MyMusicView.vue', {
+    getUserHistory: async () => ({ data: { list: [{ album_audio_id: 18, name: 'Recent song' }] } }),
+    completeLibrarySongs: () => pending.promise,
+    getFollowedArtists: async () => ({ data: { list: [{ singerid: 7, singername: 'Current artist' }], total: 1 } })
+  }, { userLoggedIn: true, userId: 3 })
+  const request = view.loadPage()
+  await flush()
+  assert.equal(view.page.loading, true)
+  assert.equal(view.page.items.length, 0)
+  view.selectTab('follow')
+  await flush()
+  pending.resolve([{ hash: 'resolved', cover: 'https://example.test/cover.jpg' }])
+  await request
+  assert.equal(view.activeTab, 'follow')
+  assert.equal(view.page.items[0].singername, 'Current artist')
+  assert.equal(view.page.loading, false)
+})
+
+test('unavailable music preserves current playback, repeats its notice and excludes only unplayable entries from play-all', () => {
+  const { view, emitted } = fixture('src/views/MyMusicView.vue')
+  const unavailable = { name: 'Unavailable', album_audio_id: 18 }
+  const playable = { name: 'Playable', hash: 'known-hash' }
+  view.songEvents.play(unavailable)
+  view.songEvents['play-next'](unavailable)
+  assert.equal(emitted.length, 0)
+  assert.equal(view.playbackNoticeRevision, 2)
+  assert.match(view.playbackNotice, /刷新后重试/)
+  const songs = [unavailable, playable]
+  view.songEvents['play-all'](songs)
+  assert.equal(songs.length, 2, 'displayed history is not modified')
+  assert.deepEqual(plain(emitted), [['play-all', [playable]]])
+  assert.match(view.playbackNotice, /1 首.*已跳过/)
+  view.songEvents['play-all']([unavailable])
+  assert.equal(emitted.length, 1, 'all unavailable songs do not clear existing playback')
+  view.songEvents.play(playable)
+  assert.equal(view.playbackNotice, '')
+  assert.equal(emitted[1][1], playable)
+})
+
 test('multi-select keeps original song rights and isolates cloud entries from different accounts', () => {
   const songs = [{ hash: 'same', source: 'cloud', sourceUserId: 'a', fileid: 1, privilege: 8 },
     { hash: 'same', source: 'cloud', sourceUserId: 'b', fileid: 1, privilege: 9 }]
   const { view } = fixture('src/components/common/LibrarySongs.vue', {}, { songs })
+  view.selectSong(songs[0], 0, true)
+  assert.equal(view.selectedSongs.length, 0, 'selection is unavailable until explicit batch mode')
+  view.startSelection()
   view.selectSong(songs[0], 0, true)
   assert.deepEqual(plain(view.selectedSongs), [songs[0]])
   view.selectAll(true)
@@ -125,6 +214,10 @@ test('multi-select keeps original song rights and isolates cloud entries from di
   assert.equal(view.selectedSongs.length, 0)
   assert.equal(view.sameSong(songs[0], { hash: 'same' }), false)
   assert.equal(view.sameSong({ hash: 'SAME' }, { hash: 'same' }), true)
+  view.selectSong(songs[0], 0, true)
+  view.finishSelection()
+  assert.equal(view.selectionMode, false)
+  assert.equal(view.selectedSongs.length, 0)
 })
 
 test('comment filter switching ignores stale replies and preserves the server floor partition', async () => {

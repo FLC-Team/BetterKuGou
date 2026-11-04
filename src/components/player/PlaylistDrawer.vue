@@ -109,6 +109,7 @@
 <script>
 import { logger } from '../../utils/logger.js'
 import { librarySongKey } from '../../utils/libraryMetadata.js'
+import { getSongSearchKeyword } from '../../utils/songMetadata.js'
 
 import { TransitionGroup } from 'vue'
 import ContextMenu from '../common/ContextMenu.vue'
@@ -391,37 +392,17 @@ export default {
     
     // 提取歌曲名称
     getSongName(song) {
-      if (!song || typeof song !== 'object') {
-        return '未知歌曲'
-      }
-      
-      // 优先使用 name 字段
-      if (song.name && typeof song.name === 'string') {
-        return song.name
-      }
-      
-      // 备用字段
-      if (song.filename && typeof song.filename === 'string') {
-        return song.filename
-      }
-      
-      // 如果都没有，显示调试信息但不频繁打印
-      if (Math.random() < 0.1) { // 只有10%的概率打印，减少日志噪音
-        logger.warn('PlaylistDrawer', '🎵 [PlaylistDrawer] 歌曲名称字段为空，歌曲对象:', song)
-      }
-      
-      return '未知歌曲'
+      return getSongSearchKeyword(song) || '未知歌曲'
     },
     
     // 格式化时长
-    formatDuration(duration) {
-      if (!duration || duration <= 0) {
-        logger.warn('PlaylistDrawer', '🎵 [PlaylistDrawer] 时长字段为空或无效，歌曲对象:', this.song)
-        return '0:00'
-      }
-      const minutes = Math.floor(duration / 60)
-      const seconds = duration % 60
-      return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`
+    formatDuration(song) {
+      const milliseconds = song?.timelen ?? song?.timelength ?? song?.duration_ms
+      const duration = milliseconds != null ? Number(milliseconds) / 1000
+        : Number(song?.Duration ?? song?.duration ?? song?.time_length ?? song?.TimeLength)
+      if (!Number.isFinite(duration) || duration <= 0) return '0:00'
+      const wholeSeconds = Math.floor(duration)
+      return `${Math.floor(wholeSeconds / 60)}:${String(wholeSeconds % 60).padStart(2, '0')}`
     }
   }
 }

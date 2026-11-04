@@ -12,7 +12,7 @@
 .lyric-background { position: absolute; inset: 0; overflow: hidden; }
 .background-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; filter: blur(50px); transform: scale(1.12); opacity: 0.45; }
 .background-overlay { position: absolute; inset: 0; background: var(--lyric-overlay); }
-.track-background-enter-active, .track-background-leave-active { transition: opacity 0.8s ease; }
+.track-background-enter-active, .track-background-leave-active { transition: opacity 280ms ease; }
 .track-background-enter-from, .track-background-leave-to { opacity: 0; }
 
 /* 两栏共享实际可用高度，封面始终有独立的方形尺寸。 */
@@ -46,6 +46,10 @@
 }
 .album-cover-placeholder { display: flex; align-items: center; justify-content: center; background: var(--lyric-cover-placeholder); color: var(--lyric-cover-placeholder-text); }
 .song-info { width: 100%; text-align: center; min-width: 0; }
+.track-switch-status-stage { position: relative; height: 16px; margin-top: 4px; }
+.track-switch-status { position: absolute; inset: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--lyric-text-muted); font-size: 11px; line-height: 16px; }
+.track-switch-status-enter-active, .track-switch-status-leave-active { transition: opacity 140ms ease; }
+.track-switch-status-enter-from, .track-switch-status-leave-to { opacity: 0; }
 .track-text-stage { display: grid; min-width: 0; }
 .track-text-stage > * { grid-area: 1 / 1; min-width: 0; }
 .song-title {
@@ -89,7 +93,7 @@
 .lyric-quality { position: relative; }
 .lyric-tool { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 30px; padding: 0 12px; border: 1px solid var(--lyric-track); border-radius: 20px; color: var(--lyric-text-secondary); background: transparent; font: inherit; font-size: 11px; cursor: pointer; transition: color 0.15s ease, background-color 0.15s ease; }
 .lyric-tool:hover, .lyric-tool.is-open { color: var(--lyric-text); background: var(--lyric-hover); }
-.lyric-tool:focus-visible, .quality-option:focus-visible, .lyric-tool-feedback button:focus-visible { outline: 2px solid var(--lyric-text); outline-offset: 3px; }
+.lyric-tool:focus-visible, .quality-option:focus-visible { outline: 2px solid var(--lyric-text); outline-offset: 3px; }
 .quality-trigger-label { color: var(--lyric-text-muted); }
 .quality-trigger-value { min-width: 30px; font-size: 10px; font-weight: 600; letter-spacing: 0.03em; }
 .quality-chevron { width: 5px; height: 5px; margin-left: 1px; border-top: 1px solid currentColor; border-left: 1px solid currentColor; transform: translateY(2px) rotate(45deg); }
@@ -108,8 +112,6 @@
 .quality-menu-status { margin-top: 8px; padding: 10px 6px 0; border-top: 1px solid var(--lyric-track); color: var(--lyric-text-secondary); font-size: 11px; line-height: 1.5; }
 .quality-menu-status.is-switching { color: var(--lyric-text); }
 .quality-menu-note { margin: 4px 6px 2px; color: var(--lyric-text-muted); font-size: 10px; line-height: 1.5; }
-.lyric-tool-feedback { margin-top: 8px; text-align: center; color: var(--lyric-text-secondary); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
-.lyric-tool-feedback button { margin-left: 8px; background: transparent; color: var(--lyric-text); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .translation-btn { gap: 7px; }
 .translation-indicator { width: 4px; height: 4px; border-radius: 50%; background: var(--lyric-text-muted); opacity: 0.5; }
 .translation-btn.active { color: var(--lyric-text); }
@@ -126,47 +128,42 @@
 .return-current-lyric { position: absolute; bottom: 22px; left: 50%; z-index: 30; transform: translateX(-50%); padding: 8px 16px; border: 1px solid var(--lyric-track); border-radius: 20px; color: var(--lyric-text); background: var(--lyric-background); font-size: 12px; white-space: nowrap; }
 .return-current-lyric:hover { background: var(--lyric-active-hover); }
 .return-current-lyric:focus-visible { outline: 2px solid var(--lyric-text); outline-offset: 3px; }
-.lyric-copy-feedback { position: absolute; bottom: 0; left: 0; right: 0; z-index: 30; text-align: center; color: var(--lyric-text-secondary); font-size: 12px; pointer-events: none; }
 .track-lyrics { position: absolute; inset: 0; }
 .lyric-loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--lyric-text-muted); font-size: 14px; letter-spacing: 0.12em; }
 
 /* 只在内容层切歌，歌词行的纵向定位和逐字高亮继续独立更新。 */
-.track-piece { --track-delay: 0ms; }
-.track-title { --track-delay: 45ms; }
-.track-artist { --track-delay: 90ms; }
-.track-lyrics { --track-delay: 110ms; }
 :is(.track-previous-enter-active, .track-previous-leave-active) {
-  --track-in-x: -44px;
-  --track-out-x: 44px;
+  --track-in-x: -20px;
+  --track-out-x: 20px;
   --track-in-y: 0px;
   --track-out-y: 0px;
 }
 :is(.track-next-enter-active, .track-next-leave-active) {
-  --track-in-x: 44px;
-  --track-out-x: -44px;
+  --track-in-x: 20px;
+  --track-out-x: -20px;
   --track-in-y: 0px;
   --track-out-y: 0px;
 }
 :is(.track-auto-enter-active, .track-auto-leave-active) {
-  --track-in-y: 18px;
-  --track-out-y: -12px;
+  --track-in-y: 10px;
+  --track-out-y: -8px;
 }
 :is(.track-select-enter-active, .track-select-leave-active) {
-  --track-in-y: 32px;
-  --track-out-y: -22px;
+  --track-in-y: 16px;
+  --track-out-y: -12px;
 }
 :is(.track-shuffle-enter-active, .track-shuffle-leave-active) {
   --track-in-y: 0px;
   --track-out-y: 0px;
-  --track-in-scale: 0.92;
-  --track-out-scale: 1.04;
+  --track-in-scale: 0.96;
+  --track-out-scale: 1.02;
 }
 :is(.track-previous-enter-active, .track-next-enter-active, .track-auto-enter-active, .track-select-enter-active, .track-shuffle-enter-active) {
-  transition: opacity 0.46s ease var(--track-delay), transform 0.52s cubic-bezier(0.22, 1, 0.36, 1) var(--track-delay);
+  transition: opacity 220ms ease, transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
   will-change: opacity, transform;
 }
 :is(.track-previous-leave-active, .track-next-leave-active, .track-auto-leave-active, .track-select-leave-active, .track-shuffle-leave-active) {
-  transition: opacity 0.24s ease, transform 0.32s cubic-bezier(0.4, 0, 1, 1);
+  transition: opacity 160ms ease, transform 160ms cubic-bezier(0.4, 0, 1, 1);
   pointer-events: none;
   will-change: opacity, transform;
 }
@@ -234,7 +231,7 @@
 @media (prefers-reduced-motion: reduce) {
   .lyric-tool { transition: none !important; }
   .lyric-line, .karaoke-char, .control-btn, .track-piece, .background-image,
-  .bridge-indicator, .bridge-body { transition: none !important; }
+  .bridge-indicator, .bridge-body, .track-switch-status { transition: none !important; }
   .background-image { transform: none; }
   .bridge-body { transform: none !important; }
   .bridge-wave { display: none; }
@@ -262,7 +259,6 @@
   animation: quality-busy 700ms linear infinite;
 }
 @keyframes quality-busy { to { transform: rotate(360deg); } }
-.lyric-tool-feedback button:disabled { opacity: 0.6; cursor: wait; }
 .lyric-feedback-enter-active, .lyric-feedback-leave-active { transition: opacity 180ms ease, translate 180ms ease; }
 .lyric-feedback-enter-from, .lyric-feedback-leave-to { opacity: 0; translate: 0 6px; }
 .lyric-feedback-leave-active { pointer-events: none; }
