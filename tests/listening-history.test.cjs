@@ -21,7 +21,7 @@ function fixture(upload) {
     begin(song = { album_audio_id: 9 }, options) { tracker.begin(song, options); sample() },
     advance(seconds = 1, extra = {}) { clock += seconds * 1000; position += seconds; sample(extra) },
     seek(value) { position = value; tracker.discontinuity(); sample() },
-    setEnabled(value) { enabled = value }, setAccount(value) { identity = value },
+    setEnabled(value) { enabled = value; tracker.syncEnabled(); sample() }, setAccount(value) { identity = value },
     retry() { const [id, callback] = timers.entries().next().value; timers.delete(id); callback() },
   }
 }
@@ -110,7 +110,8 @@ test('account changes, disabling, replacing songs and disposing discard old sess
     for (let n = 0; n < 30; n++) f.advance()
     await flush()
     change(f)
-    f.retry(); await flush()
+    if (f.timers.size) f.retry()
+    await flush()
     assert.equal(f.requests.length, 1)
     assert.equal(f.requests[0].options.signal.aborted, true)
   }
@@ -133,4 +134,99 @@ test('anonymous users and cloud files without an owned catalogue ID never upload
     for (let n = 0; n < 50; n++) f.advance()
     assert.equal(f.requests.length, 0)
   }
+})
+
+test('disabling and re-enabling keeps a completed play instance deduplicated', async () => {
+  const f = fixture()
+  f.begin()
+  for (let n = 0; n < 30; n++) f.advance()
+  await flush()
+  for (let cycle = 0; cycle < 2; cycle++) {
+    f.setEnabled(false)
+    for (let n = 0; n < 40; n++) f.advance()
+    f.begin({ album_audio_id: 9 }, { preserve: true })
+    f.setEnabled(true)
+    for (let n = 0; n < 40; n++) f.advance()
+  }
+  assert.equal(f.requests.length, 1)
+})
+
+test('disabling cancels an in-flight upload and never resends its unknown result', async () => {
+  for (const outcome of ['resolve', 'reject']) {
+    let finish
+    const pending = new Promise((resolve, reject) => { finish = outcome === 'resolve' ? resolve : reject })
+    const f = fixture(() => pending)
+    f.begin()
+    for (let n = 0; n < 30; n++) f.advance()
+    f.setEnabled(false)
+    assert.equal(f.requests[0].options.signal.aborted, true)
+    f.setEnabled(true)
+    finish(Object.assign(new Error('cancelled transport'), { code: 'ERR_CANCELED' }))
+    await flush()
+    for (let n = 0; n < 40; n++) f.advance()
+    assert.equal(f.requests.length, 1, outcome)
+    assert.equal(f.timers.size, 0)
+  }
+})
+
+test('disabling cancels queued retries and re-enabling does not restart an attempted upload', async () => {
+  const f = fixture(() => { throw Object.assign(new Error('offline'), { code: 'ERR_NETWORK' }) })
+  f.begin()
+  for (let n = 0; n < 30; n++) f.advance()
+  await flush()
+  assert.equal(f.timers.size, 1)
+  f.setEnabled(false)
+  assert.equal(f.timers.size, 0)
+  f.setEnabled(true)
+  for (let n = 0; n < 40; n++) f.advance()
+  assert.equal(f.requests.length, 1)
+})
+
+test('unqualified plays retain enabled listening credit without counting disabled time', () => {
+  const f = fixture()
+  f.begin()
+  for (let n = 0; n < 20; n++) f.advance()
+  f.setEnabled(false)
+  for (let n = 0; n < 40; n++) f.advance()
+  f.setEnabled(true)
+  for (let n = 0; n < 9; n++) f.advance()
+  assert.equal(f.requests.length, 0)
+  f.advance()
+  assert.equal(f.requests.length, 1)
+  assert.equal(f.requests[0].options.signal.aborted, false)
+})
+
+test('a play that starts disabled can qualify after enabling, including a disabled source replacement', () => {
+  const f = fixture()
+  f.setEnabled(false)
+  f.begin()
+  for (let n = 0; n < 40; n++) f.advance()
+  f.begin({ album_audio_id: 9 }, { preserve: true })
+  f.setEnabled(true)
+  for (let n = 0; n < 29; n++) f.advance()
+  assert.equal(f.requests.length, 0)
+  f.advance()
+  assert.equal(f.requests.length, 1)
+})
+
+test('disabled play records still reset at account, stop and new-play boundaries', () => {
+  const f = fixture()
+  f.begin()
+  for (let n = 0; n < 20; n++) f.advance()
+  f.setEnabled(false)
+  f.setAccount({ userId: 'B', token: 'placeholder-b' })
+  f.setEnabled(true)
+  for (let n = 0; n < 40; n++) f.advance()
+  assert.equal(f.requests.length, 0)
+  f.begin()
+  for (let n = 0; n < 30; n++) f.advance()
+  assert.equal(f.requests.length, 1)
+  f.setEnabled(false)
+  f.tracker.reset()
+  f.setEnabled(true)
+  for (let n = 0; n < 40; n++) f.advance()
+  assert.equal(f.requests.length, 1)
+  f.begin({ album_audio_id: 10 })
+  for (let n = 0; n < 30; n++) f.advance()
+  assert.equal(f.requests.length, 2)
 })

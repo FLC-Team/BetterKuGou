@@ -124,9 +124,17 @@ async function transferFile(url,file,{signal,checkpoint={},onCheckpoint=async()=
   if(!append && response.statusCode!==200) { response.resume(); throw transferError('NETWORK','音频响应状态无效') }
   if(!append) { offset=0; total=Number(response.headers['content-length'])||null }
   const next={etag:typeof response.headers.etag==='string'&&!response.headers.etag.startsWith('W/')?response.headers.etag:null,total}
-  await onCheckpoint(next)
-  const handle=await fsp.open(file,append?'a':'w'); let received=offset
-  try { for await(const chunk of response) { if(signal?.aborted) throw transferError('CANCELLED','任务已暂停'); let written=0; while(written<chunk.length) written+=(await handle.write(chunk,written,chunk.length-written)).bytesWritten; received+=chunk.length; onProgress(received,total) } await handle.sync() } finally { await handle.close(); response.destroy() }
+  let handle; let received=offset
+  try {
+    handle=await fsp.open(file,append?'a':'w')
+    // A new validator must never describe bytes left from the previous representation.
+    if(!append) await handle.sync()
+    await onCheckpoint(next)
+    for await(const chunk of response) { if(signal?.aborted) throw transferError('CANCELLED','任务已暂停'); let written=0; while(written<chunk.length) written+=(await handle.write(chunk,written,chunk.length-written)).bytesWritten; received+=chunk.length; onProgress(received,total) }
+    await handle.sync()
+  } finally {
+    try { await handle?.close() } finally { response.destroy() }
+  }
   if(signal?.aborted) throw transferError('CANCELLED','任务已暂停')
   if(total!==null && received!==total) throw transferError('INCOMPLETE','音频传输不完整，请重试')
   if(!received) throw transferError('INVALID_AUDIO','音频文件为空')

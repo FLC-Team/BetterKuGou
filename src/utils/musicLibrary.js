@@ -46,8 +46,8 @@ export function createMusicLibrary({ api, getDirectory, getIdentity, isOnline = 
     state.revision++
     onFavorites(songs, resource)
   }
-  async function readFavorites(scope) {
-    const resources = await getDirectory({ signal: scope.signal })
+  async function readFavorites(scope, { retryDirectory = false } = {}) {
+    const resources = await getDirectory({ signal: scope.signal, retryDirectory })
     requireCurrent(scope)
     const explicit = resources.filter(item => item.isFavorite === true && item.listId != null)
     const binding = getFavoriteBinding(scope.userId)
@@ -61,14 +61,15 @@ export function createMusicLibrary({ api, getDirectory, getIdentity, isOnline = 
     publish(songs, resource, scope)
     return songs
   }
-  function refreshFavorites() {
+  /** 显式刷新可重试失败目录；自动读取默认只报告错误，防就绪通知形成重试循环。 */
+  function refreshFavorites({ retryDirectory = false } = {}) {
     if (refreshTask) return refreshTask
     const scope = capture()
     if (!scope.userId || !scope.token) return Promise.resolve([])
     state.loading = true
     state.error = ''
     // Reads share the mutation queue: a slow UI refresh must never publish a pre-write snapshot.
-    const task = serializeFavorites(() => { requireCurrent(scope); return readFavorites(scope) }).catch(error => {
+    const task = serializeFavorites(() => { requireCurrent(scope); return readFavorites(scope, { retryDirectory }) }).catch(error => {
       if (current(scope)) {
         state.loaded = false
         state.error = error.message || '收藏读取失败，请重试'
@@ -119,7 +120,7 @@ export function createMusicLibrary({ api, getDirectory, getIdentity, isOnline = 
     if (!hash) return Promise.reject(new Error('歌曲缺少有效标识'))
     return singleFlight(`favorite:${hash}`, scope => serializeFavorites(async () => {
       requireCurrent(scope)
-      if (!state.loaded) await readFavorites(scope)
+      if (!state.loaded) await readFavorites(scope, { retryDirectory: true })
       requireCurrent(scope)
       const matches = state.favorites.filter(item => hashOf(item) === hash)
       const removing = matches.length > 0
@@ -217,7 +218,7 @@ export function createMusicLibrary({ api, getDirectory, getIdentity, isOnline = 
     bindFavorites(resource) {
       return singleFlight('favorite:binding', scope => serializeFavorites(async () => {
         requireCurrent(scope)
-        const resources = await getDirectory({ signal: scope.signal })
+        const resources = await getDirectory({ signal: scope.signal, retryDirectory: true })
         requireCurrent(scope)
         const candidate = resources.find(item => item.listId != null && String(item.listId) === String(resource?.listId) &&
           (item.isFavorite || item.favoriteCandidate))
@@ -232,7 +233,7 @@ export function createMusicLibrary({ api, getDirectory, getIdentity, isOnline = 
     /** 清空只提交明确的云端条目；由调用方先展示数量并取得确认。 */
     clearFavorites: () => singleFlight('favorite:clear', scope => serializeFavorites(async () => {
       requireCurrent(scope)
-      await readFavorites(scope)
+      await readFavorites(scope, { retryDirectory: true })
       requireCurrent(scope)
       const songs = [...state.favorites]
       if (!songs.length) return

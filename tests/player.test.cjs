@@ -166,6 +166,49 @@ function createFrameClock() {
   }
 }
 
+test('history sync preference toggles keep the current play deduplicated through pause and quality replacement', async t => {
+  let clock = 0
+  const requests = []
+  const store = qualityStore()
+  const { player, audio, component } = createPlayer(t, {
+    performance: { now: () => clock },
+    useSettingsStore: () => store,
+    localStorage: { getItem: name => ({ kugou_userid: 'A', kugou_token: 'placeholder' })[name] || null, setItem() {} },
+    uploadPlayHistory: async (...args) => { requests.push(args); return { status: 1 } },
+  })
+  await player.loadSong(song('history'))
+  audio.readyState = 4
+  player.sampleListeningHistory()
+  const advance = seconds => {
+    for (let n = 0; n < seconds; n++) {
+      clock += 1000; audio.currentTime++; player.sampleListeningHistory()
+    }
+  }
+  const toggle = enabled => {
+    store.settings.playback.syncPlayHistory = enabled
+    component.watch['settingsStore.settings.playback.syncPlayHistory'].call(player)
+  }
+  advance(30)
+  await flush()
+  assert.equal(requests.length, 1)
+  const tracker = player.listeningHistory
+  toggle(false)
+  advance(40)
+  toggle(true)
+  assert.equal(player.listeningHistory, tracker)
+  audio.pause()
+  advance(20)
+  await audio.play()
+  player.sampleListeningHistory()
+  advance(40)
+  assert.equal(requests.length, 1)
+  qualityAudio(audio, player)
+  assert.equal(await player.changeQuality('320'), true)
+  player.sampleListeningHistory()
+  advance(40)
+  assert.equal(requests.length, 1)
+})
+
 test('cloud playback skips public metadata and ordinary URLs, carries ownership and disables quality changes', async t => {
   const requests = []
   const store = qualityStore()

@@ -1689,6 +1689,41 @@ test('playlist directory requests are shared and late account results cannot rep
   await app.dispose()
 })
 
+test('failed directory reads recover on user refresh without readiness watchers causing retry loops', async () => {
+  const values = new Map([['kugou_token', 'token-a'], ['kugou_userid', 'A']])
+  let reads = 0, available = false, readinessCallbacks = 0
+  const recovered = deferred()
+  const app = loadApp({}, {
+    localStorage: { getItem: key => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) },
+    getUserPlaylists: async () => { reads++; if (!available) throw new Error('directory offline'); return recovered.promise },
+    libraryApi: { getAllPlaylistTracks: async () => [{ hash: 'fresh', fileid: 9 }] }
+  })
+  app.userLoggedIn.value = true
+  const stop = vue.watch(app.userPlaylistsLoaded, ready => {
+    // Bound the probe so a regression fails rather than hanging in an infinite watcher loop.
+    if (ready && ++readinessCallbacks < 5) app.musicLibrary.refreshFavorites().catch(() => {})
+  })
+  try {
+    await app.fetchUserPlaylists()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(reads, 1)
+    await assert.rejects(app.musicLibrary.refreshFavorites({ retryDirectory: true }), /directory offline/)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(reads, 2, 'a failed user retry must not trigger automatic repeated requests')
+    available = true
+    const retry = app.musicLibrary.refreshFavorites({ retryDirectory: true })
+    assert.equal(app.musicLibrary.refreshFavorites({ retryDirectory: true }), retry)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(reads, 3)
+    recovered.resolve({ status: 1, data: { info: [{ id: 'favorites-a', listid: 7, is_favorite: 1, userid: 'A' }] } })
+    await retry
+    assert.equal(app.musicLibrary.state.loaded, true)
+    assert.equal(app.musicLibrary.state.favorites[0].hash, 'fresh')
+    assert.equal(reads, 3)
+  } finally { stop(); await app.dispose() }
+})
+
 test('startup restores cached playlist entries before online directory validation and retains offline-only entries', async () => {
   const initialization = deferred()
   const online = deferred()

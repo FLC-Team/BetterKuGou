@@ -241,8 +241,8 @@ export default {
   },
   watch: {
     'settingsStore.settings.playback.syncPlayHistory'() {
-      this.listeningHistory?.reset()
-      if (this.currentSong && this.loadedSongHash === this.currentSong.hash) this.beginListeningHistory()
+      this.listeningHistory?.syncEnabled()
+      this.sampleListeningHistory()
     },
     displayLyric() {
       if (!this.isDisposed && this.currentSong?.hash === this.loadedSongHash) this.sendLyricsToDesktop(this.currentLyrics, this.currentLyricData)

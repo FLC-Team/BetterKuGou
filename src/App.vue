@@ -353,8 +353,9 @@ const musicLibrary = createMusicLibrary({
     userId: localStorage.getItem('kugou_userid'), token: localStorage.getItem('kugou_token')
   } : null,
   isOnline: () => navigator.onLine !== false,
-  getDirectory: async () => {
-    if (!userPlaylistsLoaded.value) await fetchUserPlaylists()
+  getDirectory: async ({ retryDirectory = false } = {}) => {
+    // Only an explicit user action retries a failed directory; readiness watchers must not loop.
+    if (!userPlaylistsLoaded.value || (retryDirectory && userPlaylistsError.value)) await fetchUserPlaylists()
     if (userPlaylistsError.value) throw new Error(userPlaylistsError.value)
     return onlineUserPlaylists
   },
@@ -374,10 +375,6 @@ const musicLibrary = createMusicLibrary({
     if (window.electronAPI?.playlistCache) callPlaylistCache('putPlaylist', {
       id: resource.id, name: resource.name || '我喜欢', isFavorite: true, songs: cloneDeep(songs)
     }).catch(error => logger.warn('App', '保存云端收藏快照失败', { name: error?.name }))
-  },
-  onPlaylistChanged: resource => {
-    const item = onlineUserPlaylists.find(item => String(item.listId) === String(resource.listId))
-    if (item) item.needsRefresh = true
   }
 })
 provide('musicLibrary', musicLibrary)

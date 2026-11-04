@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const vm = require('node:vm')
+const vue = require('vue')
 
 function deferred() {
   let resolve
@@ -15,7 +16,7 @@ function page(songs, count = songs.length) {
   return { status: 1, data: { songs, count } }
 }
 
-function loadFavorites({ props = {}, api = {}, cache = {} } = {}) {
+function loadFavorites({ props = {}, api = {}, cache = {}, reactiveView = false, desktopCache = false } = {}) {
   const storage = new Map(Object.entries({ kugou_userid: 'account-a', kugou_token: 'example-token-a', ...cache }))
   const writes = []
   const emitted = []
@@ -46,6 +47,8 @@ function loadFavorites({ props = {}, api = {}, cache = {} } = {}) {
     nextplayIcon: 'nextplay.svg',
     contextMenuManager: menuManager,
     logger,
+    window: desktopCache ? { electronAPI: { playlistCache: {} } } : undefined,
+    callPlaylistCache: (...args) => api.callPlaylistCache?.(...args) ?? Promise.resolve(null),
     localStorage: {
       getItem: key => storage.get(key) ?? null,
       setItem(key, value) { storage.set(key, String(value)); writes.push(['set', key]) },
@@ -59,6 +62,10 @@ function loadFavorites({ props = {}, api = {}, cache = {} } = {}) {
       calls.tracks.push(args)
       return api.getPlaylistTracks?.(...args) ?? Promise.resolve(page([{ hash: 'song-a', name: '示例歌曲' }]))
     },
+    getAllPlaylistTracks(...args) {
+      calls.tracks.push(args)
+      return api.getAllPlaylistTracks?.(...args) ?? Promise.resolve([{ hash: 'song-a' }])
+    },
     setTimeout(callback, delay) { const id = ++timerId; timers.set(id, { callback, delay }); return id },
     clearTimeout(id) { timers.delete(id) },
     confirm: () => true,
@@ -66,7 +73,7 @@ function loadFavorites({ props = {}, api = {}, cache = {} } = {}) {
   })
   vm.runInContext(source, sandbox)
   const options = sandbox.module.exports
-  const view = {
+  const values = {
     ...options.data(),
     currentSong: null,
     playlistId: null,
@@ -78,13 +85,18 @@ function loadFavorites({ props = {}, api = {}, cache = {} } = {}) {
     $emit: (...args) => emitted.push(args),
     $nextTick: callback => Promise.resolve().then(callback)
   }
+  const view = reactiveView ? vue.reactive(values) : values
   for (const [name, method] of Object.entries(options.methods)) view[name] = method.bind(view)
   for (const [name, getter] of Object.entries(options.computed)) Object.defineProperty(view, name, { get: () => getter.call(view) })
+  const stopRevisionWatch = !reactiveView ? () => {} : options.watch.playlistRevision
+    ? vue.watch(() => view.playlistRevision, options.watch.playlistRevision.bind(view))
+    : vue.watch(() => view.musicLibrary.state.playlistRevisions,
+      options.watch['musicLibrary.state.playlistRevisions'].handler.bind(view), { deep: true })
   return {
     view, storage, writes, emitted, calls, timers, menuManager,
     activate() { options.activated.call(view); return view.loadPromise || Promise.resolve() },
     deactivate() { options.deactivated.call(view) },
-    unmount() { options.beforeUnmount.call(view) },
+    unmount() { stopRevisionWatch(); options.beforeUnmount.call(view) },
     ready(playlists) {
       view.userPlaylists = playlists
       view.playlistsLoaded = true
@@ -93,6 +105,119 @@ function loadFavorites({ props = {}, api = {}, cache = {} } = {}) {
     }
   }
 }
+
+function revisionFixture(t, request, desktopCache = false) {
+  const library = vue.reactive({ state: { playlistRevisions: {} } })
+  const favorites = loadFavorites({ reactiveView: true, desktopCache,
+    props: { playlistId: 'playlist-a', playlistResource: { id: 'playlist-a', listId: 7, source: 'owned' }, musicLibrary: library },
+    api: { getAllPlaylistTracks: request }
+  })
+  const saved = []
+  favorites.view.persistPlaylistSnapshot = () => saved.push(favorites.view.favoriteList.map(song => song.hash))
+  t.after(() => favorites.unmount())
+  return { ...favorites, library, saved }
+}
+const flushRevision = () => new Promise(resolve => setImmediate(resolve))
+
+for (const desktopCache of [false, true]) test(`cached playlists refresh their own hidden edits without unrelated reloads (desktop cache: ${desktopCache})`, async t => {
+  let reads = 0
+  const f = revisionFixture(t, async () => [{ hash: ++reads === 1 ? 'old' : 'updated' }], desktopCache)
+  await f.view.loadFavorites()
+  f.view.searchQuery = 'retained search'
+  f.deactivate()
+  f.library.state.playlistRevisions['playlist-a'] = 1
+  await flushRevision()
+  assert.equal(reads, 1)
+  await f.activate()
+  assert.equal(reads, 2)
+  assert.equal(f.view.favoriteList[0].hash, 'updated')
+  assert.equal(f.view.searchQuery, 'retained search')
+  f.library.state.playlistRevisions['playlist-b'] = 1
+  await flushRevision()
+  assert.equal(reads, 2)
+  f.deactivate(); await f.activate()
+  assert.equal(reads, 2)
+})
+
+test('the favorites refresh button authorizes a directory retry while automatic loading does not', async () => {
+  const retryOptions = []
+  const favorites = loadFavorites({ props: { musicLibrary: { state: { loaded: false },
+    async refreshFavorites(options) { retryOptions.push(options.retryDirectory); throw new Error('directory failed') }
+  } } })
+  await favorites.view.loadFavorites()
+  await favorites.view.loadFavorites(true)
+  assert.deepEqual(retryOptions, [false, true])
+  assert.match(favorites.view.errorMessage, /directory failed/)
+})
+
+test('playlist edits arriving during a read coalesce into one follow-up and never publish the outdated read', async t => {
+  const stale = deferred(), latest = deferred()
+  let reads = 0
+  const f = revisionFixture(t, () => ++reads === 1 ? Promise.resolve([{ hash: 'old' }]) : reads === 2 ? stale.promise : latest.promise)
+  await f.view.loadFavorites()
+  f.library.state.playlistRevisions['playlist-a'] = 1
+  await flushRevision()
+  f.library.state.playlistRevisions['playlist-a'] = 2
+  await flushRevision()
+  f.library.state.playlistRevisions['playlist-a'] = 3
+  await flushRevision()
+  assert.equal(reads, 2)
+  stale.resolve([{ hash: 'stale' }])
+  await flushRevision()
+  assert.equal(reads, 3)
+  assert.equal(f.view.favoriteList[0].hash, 'old')
+  assert.deepEqual(f.saved, [['old']])
+  latest.resolve([{ hash: 'latest' }])
+  await flushRevision()
+  assert.equal(f.view.favoriteList[0].hash, 'latest')
+  assert.deepEqual(f.saved, [['old'], ['latest']])
+  assert.equal(reads, 3)
+})
+
+test('failed playlist invalidation retains old rows and waits for an explicit retry or later activation', async t => {
+  let reads = 0, fail = true
+  const f = revisionFixture(t, async () => {
+    if (++reads > 1 && fail) throw new Error('temporary refresh failure')
+    return [{ hash: reads === 1 ? 'old' : 'recovered' }]
+  })
+  await f.view.loadFavorites()
+  f.library.state.playlistRevisions['playlist-a'] = 1
+  await flushRevision(); await flushRevision()
+  assert.equal(reads, 2)
+  assert.equal(f.view.favoriteList[0].hash, 'old')
+  assert.match(f.view.errorMessage, /temporary/)
+  fail = false
+  f.deactivate(); await f.activate()
+  assert.equal(reads, 3)
+  assert.equal(f.view.favoriteList[0].hash, 'recovered')
+})
+
+test('a hidden in-flight invalidation remains dirty until activation and account changes reject its result', async t => {
+  const stale = deferred(), foreign = deferred()
+  let reads = 0
+  const f = revisionFixture(t, () => {
+    reads++
+    return reads === 2 ? stale.promise : reads === 4 ? foreign.promise : Promise.resolve([{ hash: `song-${reads}` }])
+  })
+  await f.view.loadFavorites()
+  f.library.state.playlistRevisions['playlist-a'] = 1
+  await flushRevision()
+  f.deactivate()
+  f.library.state.playlistRevisions['playlist-a'] = 2
+  stale.resolve([{ hash: 'stale' }])
+  await flushRevision()
+  assert.equal(reads, 2)
+  assert.equal(f.view.favoriteList[0].hash, 'song-1')
+  await f.activate()
+  assert.equal(f.view.favoriteList[0].hash, 'song-3')
+  f.library.state.playlistRevisions['playlist-a'] = 3
+  await flushRevision()
+  f.storage.set('kugou_userid', 'account-b')
+  foreign.resolve([{ hash: 'foreign' }])
+  await flushRevision()
+  assert.equal(f.view.favoriteList[0].hash, 'song-3')
+  assert.deepEqual(f.saved, [['song-1'], ['song-3']])
+})
 
 test('favorites reuse the supplied directory, wait for readiness, and share an in-flight request', async () => {
   const response = deferred()

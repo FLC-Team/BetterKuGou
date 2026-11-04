@@ -43,6 +43,25 @@ test('cloud favorites use listId/fileid and only publish server-confirmed change
   assert.equal(f.library.isFavorite({ hash: 'B' }), true)
 })
 
+test('only explicit favorite actions authorize retrying a failed directory read', async () => {
+  const reads = []
+  const resource = { id: 'collection-test', listId: 23, isFavorite: true, isOwned: true }
+  const f = fixture({ getDirectory: async options => { reads.push(options.retryDirectory === true); return [resource] } })
+  await f.library.refreshFavorites()
+  assert.deepEqual(reads, [false])
+  await f.library.refreshFavorites({ retryDirectory: true })
+  assert.deepEqual(reads, [false, true])
+  f.library.reset(); reads.length = 0
+  await f.library.toggleFavorite({ hash: 'b', name: 'New' })
+  assert.deepEqual(reads, [true, false], 'only the user-triggered preflight can retry, never its automatic readback')
+  reads.length = 0
+  await f.library.clearFavorites()
+  assert.deepEqual(reads, [true, false])
+  reads.length = 0
+  await f.library.bindFavorites(resource)
+  assert.deepEqual(reads, [true, false])
+})
+
 test('ambiguous names or first playlist never become a write target', async () => {
   const f = fixture({ getDirectory: async () => [{ listId: 4, name: '喜欢的民谣' }, { listId: 3, name: '我喜欢的音乐' }] })
   await assert.rejects(f.library.toggleFavorite({ hash: 'x' }), /确认账号/)

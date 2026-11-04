@@ -53,6 +53,7 @@ export default {
     return {
       loading: false,
       loaded: false,
+      appliedPlaylistRevision: null,
       isDisposed: false,
       isActive: true,
       requestGeneration: 0,
@@ -80,6 +81,14 @@ export default {
   },
   computed: {
     isPlaylistView() { return this.playlistId != null },
+    playlistRevision() {
+      const resource = this.playlistResource
+      const key = resource?.id ?? resource?.globalCollectionId ?? resource?.listId ?? this.playlistId
+      return this.musicLibrary?.state?.playlistRevisions?.[String(key)] || 0
+    },
+    playlistNeedsRefresh() {
+      return this.isPlaylistView && !!this.musicLibrary && this.appliedPlaylistRevision !== this.playlistRevision
+    },
     isPublicPlaylist() { return this.isPlaylistView && this.playlistResource?.source !== 'owned' && this.playlistResource?.source !== 'favorite' },
     pageTitle() { return this.isPlaylistView ? this.playlistName || '歌单' : '我喜欢的音乐' },
     currentPlayingHash() {
@@ -188,9 +197,8 @@ export default {
     'musicLibrary.state.revision'() {
       if (!this.isPlaylistView && this.musicLibrary?.state.loaded) this.applyCloudFavorites()
     },
-    'musicLibrary.state.playlistRevisions': {
-      deep: true,
-      handler() { if (this.isPlaylistView && this.isActive) this.loadFavorites(true) }
+    playlistRevision() {
+      if (this.isActive && this.playlistNeedsRefresh) this.loadFavorites(true)
     },
     playlistId() { this.loadFavorites() },
     playlistsLoaded(ready) {
@@ -206,7 +214,8 @@ export default {
   activated() {
     this.$nextTick(() => setListMotionActive(this.$refs?.songList?.$el, true))
     this.isActive = true
-    if (this.loaded && !this.loadPromise && this.offlineCacheAvailable) this.touchPlaylistSnapshot()
+    if (this.playlistNeedsRefresh) this.loadFavorites(true)
+    else if (this.loaded && !this.loadPromise && this.offlineCacheAvailable) this.touchPlaylistSnapshot()
     else this.loadFavorites()
   },
   deactivated() {
@@ -243,7 +252,7 @@ export default {
       return !this.isDisposed && generation === this.requestGeneration && this.hasCurrentScope(scope)
     },
 
-    /** 按账号和歌单复用进行中的请求；已加载页面只在手动刷新时重新取曲目。 */
+    /** 按账号和歌单复用进行中请求；手动刷新与自身版本变化才更新已加载曲目。 */
     loadFavorites(force = false) {
       if (this.isDisposed) return Promise.resolve()
       const identity = this.readIdentity()
@@ -255,6 +264,7 @@ export default {
         this.loadPromise = null
         this.loading = false
         this.loaded = false
+        this.appliedPlaylistRevision = null
         this.favoriteList = []
         this.searchQuery = ''
         this.favoritePlaylistId = null
@@ -278,10 +288,13 @@ export default {
       this.errorMessage = ''
       const generation = ++this.requestGeneration
       const scope = this.requestScope
-      const promise = this.fetchFavorites(generation, scope, force === true).finally(() => {
+      const revision = this.playlistRevision
+      const promise = this.fetchFavorites(generation, scope, force === true, revision).finally(() => {
         if (this.isCurrentRequest(generation, scope) && this.loadPromise === promise) {
           this.loading = false
           this.loadPromise = null
+          // Coalesce edits made during this read. A failure at the same revision never retries itself.
+          if (this.isActive && this.playlistNeedsRefresh && revision !== this.playlistRevision) return this.loadFavorites(true)
         }
       })
       this.loadPromise = promise
@@ -289,7 +302,7 @@ export default {
     },
 
     /** 曲目先汇总到临时数组，全部分页成功且身份仍有效时才替换可见列表。 */
-    async fetchFavorites(generation, scope, force) {
+    async fetchFavorites(generation, scope, force, revision = this.playlistRevision) {
       try {
         if (this.offlineCacheAvailable && !this.cacheSnapshotRead) {
           this.cacheSnapshotRead = true
@@ -298,16 +311,17 @@ export default {
         }
         if (this.musicLibrary) {
           if (!this.isPlaylistView) {
-            if (force || !this.musicLibrary.state.loaded) await this.musicLibrary.refreshFavorites()
+            if (force || !this.musicLibrary.state.loaded) await this.musicLibrary.refreshFavorites({ retryDirectory: force })
             if (!this.isCurrentRequest(generation, scope)) return
             this.applyCloudFavorites()
           } else {
             const resource = this.playlistResource || { id: this.playlistId, globalCollectionId: this.playlistId }
             const songs = await getAllPlaylistTracks(resource)
-            if (!this.isCurrentRequest(generation, scope)) return
+            if (!this.isCurrentRequest(generation, scope) || revision !== this.playlistRevision) return
             this.favoritePlaylistId = resource.id
             this.favoriteList = songs.map((song, index) => ({ ...song, index: index + 1 }))
             this.loaded = true
+            this.appliedPlaylistRevision = revision
             this.persistPlaylistSnapshot(scope)
           }
           return
