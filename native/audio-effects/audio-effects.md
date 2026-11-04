@@ -14,6 +14,8 @@
 
 构建脚本固定并核验 Git commit：VST3 SDK `v3.8.1_build_84`（MIT）、KISS FFT `131.2.0`（BSD-3-Clause）、nlohmann/json `v3.11.3`（MIT）。不安装系统组件；依赖源代码在根 `.cache/audio-effects/deps/`。发行目录的 `THIRD_PARTY_NOTICES.txt` 包含实际版权声明与许可证。
 
+macOS 在根 CMake 的 `project()` 后、载入 SDK 子目录前启用 Objective-C++，使 SDK 自身的 `.mm` 目标与宿主共同继承编译规则；原生窗口及 SDK 模块仍使用 ARC 和 Cocoa。Windows/Linux 仅启用各自所需语言。
+
 运行需要与宿主同架构的 VST3。构建需要 Git、Node、CMake 3.25+ 和 C++17 工具链。Windows 使用 Visual Studio C++ 与 Windows SDK；macOS 使用 Xcode/Clang/Cocoa；Linux 使用 C++ 编译器和 X11 开发库，窗口要求 X11 或 XWayland。原生 Wayland 不在首版支持范围。
 
 项目根目录已验证的构建/检查入口：
