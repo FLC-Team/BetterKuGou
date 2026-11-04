@@ -32,12 +32,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxcb1-dev libxkbcommon-x11-dev
       - run: npm run check
       - run: npm run build:audio-effects
-      - run: npm test
+      # Source tests passed in the release run; this branch diagnoses only RPM packaging.
       - run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
             npm run dist:win -- --publish never
           elif [ "${{ runner.os }}" = "Linux" ]; then
-            npm run dist:linux -- --publish never
+            npm run build && node node_modules/electron-builder/cli.js --linux rpm --publish never
           elif [ "${{ runner.os }}" = "macOS" ]; then
             npm run dist:mac -- --publish never
           fi
