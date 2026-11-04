@@ -164,7 +164,10 @@ static int appMain(int argc,char** argv){
     bk::platformInit();
     if(argc==3&&std::string(argv[1])=="--scan"){auto app=Steinberg::owned(new bk::Application);Steinberg::Vst::PluginContextFactory::instance().setPluginContext(app);auto result=bk::scan(argv[2],app);std::string text=result.dump(-1,' ',false,bk::Json::error_handler_t::replace);fwrite(text.data(),1,text.size(),bk::protocol);bk::platformShutdown();return 0;}
     if(argc!=2||(std::string(argv[1])!="--host"&&std::string(argv[1])!="--echo"))throw std::runtime_error("Use --host, --echo, --scan PATH or --self-test");
-    auto* host=new bk::Host(std::string(argv[1])=="--echo");int result=host->run();std::fflush(nullptr);std::_Exit(result);
+    auto* host=new bk::Host(std::string(argv[1])=="--echo");int result=host->run();
+    // The detached reader may still hold stdin's FILE lock. Flush only the
+    // private protocol stream after the writer has joined, never all stdio.
+    std::fflush(bk::protocol);std::_Exit(result);
   }catch(const std::exception&e){std::cerr<<"audio-host: "<<e.what()<<'\n';return 1;}
 }
 #ifdef _WIN32

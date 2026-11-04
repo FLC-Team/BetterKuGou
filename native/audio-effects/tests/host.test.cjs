@@ -77,7 +77,7 @@ test('native BPM synthetic pulses across sample rates and silence', { skip: !ava
   assert.match(result.stdout, /passed/)
 })
 
-test('native echo preserves framed stereo PCM and rejects unknown commands', { skip: !available }, async t => {
+test('native echo preserves framed stereo PCM and rejects unknown commands', { skip: !available, timeout: 10000 }, async t => {
   const client = host()
   t.after(() => client.child.kill())
   const pcm = Buffer.alloc(4096)
@@ -88,10 +88,12 @@ test('native echo preserves framed stereo PCM and rejects unknown commands', { s
   assert.deepEqual(response.pcm, pcm)
   const invalid = await client.send({ id: 'invalid', command: 'unknown' })
   assert.equal(invalid.header.ok, false)
+  assert.equal(client.child.stdin.writableEnded, false, 'Shutdown must complete without the parent closing stdin')
+  assert.equal(client.child.stdin.destroyed, false)
   await client.shutdown()
 })
 
-test('native parser rejects oversized frames before allocating payload', { skip: !available }, async t => {
+test('native parser rejects oversized frames before allocating payload', { skip: !available, timeout: 10000 }, async t => {
   const client = host()
   t.after(() => client.child.kill())
   const prefix = Buffer.alloc(8)
