@@ -5,6 +5,7 @@ const vm = require('node:vm')
 const test = require('node:test')
 const vue = require('vue')
 const { parse, compileTemplate } = require('@vue/compiler-sfc')
+const { registerAppNotice } = require('./helpers/noticeHarness.cjs')
 
 const pages = ['HomeView', 'PersonalFMView', 'FavoriteView', 'SearchView', 'ArtistView',
   'AlbumDetailView', 'RankDetailView', 'DailyRecommendView', 'PlaylistDrawer']
@@ -23,6 +24,10 @@ const windowedList = { props: ['items'], render() {
 } }
 const metadata = vm.createContext({})
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/utils/songMetadata.js'), 'utf8').replace(/^export /gm, ''), metadata)
+
+const librarySource = fs.readFileSync(path.join(__dirname, '../src/utils/libraryMetadata.js'), 'utf8').replace(/^import[^\n]*\n/gm, '')
+const libraryExports = [...librarySource.matchAll(/^export (?:function|const) (\w+)/gm)].map(match => match[1])
+Object.assign(metadata, vm.runInContext(`(() => { ${librarySource.replace(/^export /gm, '')}\nreturn { ${libraryExports.join(',')} } })()`, metadata))
 
 /** Use the actual child component so navigation tests exercise the buttons users click. */
 function loadArtistLinks() {
@@ -46,8 +51,8 @@ function mountPage(t, name, overrides = {}) {
     : descriptor.script.content
   const timers = []
   const sandbox = vm.createContext({ listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},
-    logger, ArtworkCover: leaf, SongBadges: leaf, ContextMenu: leaf, ArtistLinks: loadArtistLinks(), WindowedList: windowedList,
-    getSongArtists: metadata.getSongArtists, nextplayIcon: '',
+    logger, librarySongKey: metadata.librarySongKey, ArtworkCover: leaf, SongBadges: leaf, ContextMenu: leaf, ArtistLinks: loadArtistLinks(), LibraryActions: leaf, PlaylistOverview: leaf, WindowedList: windowedList,
+    getSongArtists: metadata.getSongArtists, getSongSearchKeyword: metadata.getSongSearchKeyword, nextplayIcon: '',
     TransitionGroup: transitionGroup,
     localStorage: { getItem: () => null },
     filterSongs: songs => songs,
@@ -85,27 +90,32 @@ function mountPage(t, name, overrides = {}) {
     nextSibling: item => item.parent?.children[item.parent.children.indexOf(item) + 1] || null
   })
   const emitted = []
-  const app = renderer.createApp({
+  const Page = {
     name: source.name, components: source.components, directives: source.directives, methods: source.methods, computed: source.computed,
     emits: source.emits,
     data() {
       return {
         ...source.data.call({}), currentSong: null, playlistId: null, playlistName: '',
-        albumName: '', searchKeyword: '示例歌曲', rankData: {}, rankInfo: {}, album: {},
+        albumName: '', searchKeyword: '示例歌曲', rankData: {}, rankInfo: {}, album: {}, musicLibrary: null,
         songs: [song], hotSongs: [song], favoriteList: [song], aiRecommendList: [song],
         searchResults: { lists: [song] }, artist: { author_name: '示例歌手' },
         playlist: [song], visible: true, isPlaying: false, settings: { playback: {} }, ...overrides
       }
     },
     render
-  }, Object.fromEntries(source.emits.map(event => [
+  }
+  const listeners = Object.fromEntries(source.emits.map(event => [
     `on${event[0].toUpperCase()}${event.slice(1).replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase())}`,
     (...args) => emitted.push([event, ...args])
-  ])))
+  ]))
   const root = node('root')
-  const instance = app.mount(root)
+  const instanceRef = vue.ref(null)
+  const app = renderer.createApp({ render: () => vue.h(Page, { ...listeners, ref: instanceRef }) })
+  const notices = registerAppNotice(app)
+  app.mount(root)
+  const instance = instanceRef.value
   t.after(() => app.unmount())
-  return { root, emitted, instance, timers }
+  return { root, emitted, instance, timers, notices }
 }
 
 function find(root, predicate) {
@@ -118,6 +128,21 @@ function find(root, predicate) {
 }
 
 const hasClass = (node, value) => String(node.props.class || '').split(' ').includes(value)
+const nodeText = node => node.text + node.children.map(nodeText).join('')
+
+test('queue duration renders normalized milliseconds and legacy seconds without NaN', t => {
+  const songs = [
+    { ...song, hash: 'ms', timelen: 181900 },
+    { ...song, hash: 's', timelen: undefined, duration: '182.9' },
+    { ...song, hash: 'unknown', timelen: undefined, duration: undefined },
+    { ...song, hash: 'bad', timelen: Infinity }
+  ]
+  const { root } = mountPage(t, 'PlaylistDrawer', { playlist: songs })
+  const rows = []
+  const collect = item => { if (hasClass(item, 'song-duration')) rows.push(nodeText(item)); item.children.forEach(collect) }
+  collect(root)
+  assert.deepEqual(rows, ['3:01', '3:02', '0:00', '0:00'])
+})
 
 /** Model DOM bubbling so the compiled .stop handlers must prevent the row's playback handler. */
 function dispatch(target, eventName, detail = 1) {
@@ -129,6 +154,35 @@ function dispatch(target, eventName, detail = 1) {
     for (const handler of [].concat(handlers || [])) handler(event)
   }
   return stopped
+}
+
+for (const [name, field, retry, expectedArgs] of [
+  ['FavoriteView', 'errorMessage', 'loadFavorites', [true]],
+  ['SearchView', 'errorMessage', 'performSearch', ['示例歌曲', false]],
+  ['ArtistView', 'errorMessage', 'loadInitial', []],
+  ['AlbumDetailView', 'error', 'load', []],
+  ['PersonalFMView', 'error', 'loadData', []],
+  ['RankDetailView', 'error', 'loadData', []],
+  ['DailyRecommendView', 'error', 'loadData', []]
+]) {
+  test(`${name}: loading errors use the shared notification and retain the real retry binding`, async t => {
+    const { root, instance, notices } = mountPage(t, name, { searchRequestAppend: false })
+    const calls = []
+    instance[retry] = (...args) => { calls.push(args); instance[field] = '' }
+    instance[field] = '模拟网络中断，请重试'
+    await vue.nextTick()
+    assert.equal(notices.entries.length, 1, 'one error is sent through AppNotice')
+    assert.equal(notices.entries[0].type, 'error')
+    assert.equal(notices.entries[0].duration, 0, 'retry remains available until handled')
+    assert.equal(find(root, item => hasClass(item, 'refresh-error')), null, 'no page-owned alert bar remains')
+    const outlet = find(root, item => item.type === 'notification-outlet')
+    const retryButton = find(outlet, item => item.type === 'button' && nodeText(item) === '重试')
+    assert.ok(retryButton, 'the actual notification action is rendered')
+    await retryButton.props.onClick()
+    await vue.nextTick()
+    assert.deepEqual(calls, [expectedArgs])
+    assert.equal(notices.entries.length, 0, 'successful retry clears the owned notification')
+  })
 }
 
 for (const name of pages) {

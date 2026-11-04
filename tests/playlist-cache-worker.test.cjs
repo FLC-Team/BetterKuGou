@@ -23,6 +23,36 @@ function wav(size = 4096) {
   return buffer
 }
 
+test('removing a playlist persists only its current-account directory entry and preserves leased audio', async t => {
+  const f = await fixture(t)
+  await f.playlist('shared-id', ['song-a'], false)
+  await f.play()
+  await f.complete()
+  const lease = await f.send('getSource', { hash: 'song-a', quality: '128' })
+  await f.login('account-b')
+  await f.playlist('shared-id', ['song-b'], false)
+  await f.send('removePlaylist', { id: 'shared-id' })
+  assert.equal(f.engine().snapshot().playlists.length, 0)
+  await f.playlist('shared-id', ['late-response'], false)
+  assert.equal(f.engine().snapshot().playlists.length, 0, 'a delayed page snapshot cannot revive a removed playlist')
+  await f.login('account-a')
+  assert.equal(f.engine().snapshot().playlists[0].id, 'shared-id')
+  await f.send('removePlaylist', { id: 'shared-id' })
+  assert.equal(f.engine().snapshot().playlists.length, 0)
+  await f.login('account-c')
+  await f.playlist('shared-id', ['song-c'], false)
+  assert.equal(f.engine().snapshot().playlists.length, 1, 'another account may cache the same resource ID')
+  await f.login('account-a')
+  await f.playlist('shared-id', ['late-after-relogin'], false)
+  assert.equal(f.engine().snapshot().playlists.length, 0, 'the original account tombstone survives account changes')
+  assert.deepEqual(await fs.readFile(lease.path), f.audio)
+  await f.send('releaseSource', { leaseId: lease.leaseId })
+  assert.ok(await f.send('getSource', { hash: 'song-a', quality: '128' }))
+  await f.restart()
+  assert.equal(f.engine().snapshot().playlists.length, 0, 'deleted metadata cannot repopulate the sidebar after restart')
+  assert.equal(await f.send('readPlaylist', { id: 'shared-id' }), null)
+})
+
 async function until(callback, message = 'cache condition', timeout = 4000) {
   const deadline = Date.now() + timeout
   while (Date.now() < deadline) {
@@ -58,7 +88,8 @@ async function fixture(t, options = {}) {
   origin = `http://127.0.0.1:${server.address().port}`
   const states = []
   const auth = []
-  let engine = createCacheEngine({ cacheRoot: directory, apiBase: origin, allowLocalTestUrls: true, limitBytesOverride: options.limitBytes, retryBaseDelayMs: options.retryBaseDelayMs, onState: value => states.push(value), onAuthExpired: value => auth.push(value) })
+  const sourceReady = []
+  let engine = createCacheEngine({ cacheRoot: directory, apiBase: origin, allowLocalTestUrls: true, limitBytesOverride: options.limitBytes, retryBaseDelayMs: options.retryBaseDelayMs, onState: value => states.push(value), onAuthExpired: value => auth.push(value), onSourceReady: value => { sourceReady.push(value); options.onSourceReady?.(value) } })
   await engine.ready
   let generation = 1
   await engine.dispatch('setSession', { userId: 'account-a', token: 'placeholder-private-token' }, generation)
@@ -72,7 +103,7 @@ async function fixture(t, options = {}) {
     await fs.rm(directory, { recursive: true, force: true })
   })
   return {
-    directory, calls, responses, audio, origin, states, auth, pending, send,
+    directory, calls, responses, audio, origin, states, auth, sourceReady, pending, send,
     engine: () => engine,
     async login(userId, token = 'placeholder-private-token') { generation++; return engine.dispatch('setSession', userId ? { userId, token } : null, generation) },
     async playlist(id = 'favorite-id', hashes = ['song-a'], isFavorite = true) { return send('putPlaylist', { id, name: isFavorite ? '我喜欢' : id, isFavorite, songs: hashes.map(hash => ({ hash, name: hash })) }) },
@@ -85,12 +116,62 @@ async function fixture(t, options = {}) {
     },
     async restart() {
       await engine.stop()
-      engine = createCacheEngine({ cacheRoot: directory, apiBase: origin, allowLocalTestUrls: true, limitBytesOverride: options.limitBytes, retryBaseDelayMs: options.retryBaseDelayMs, onState: value => states.push(value), onAuthExpired: value => auth.push(value) })
+      engine = createCacheEngine({ cacheRoot: directory, apiBase: origin, allowLocalTestUrls: true, limitBytesOverride: options.limitBytes, retryBaseDelayMs: options.retryBaseDelayMs, onState: value => states.push(value), onAuthExpired: value => auth.push(value), onSourceReady: value => sourceReady.push(value) })
       await engine.ready
       return engine.dispatch('setSession', { userId: 'account-a', token: 'placeholder-private-token' }, ++generation)
     }
   }
 }
+
+test('analysis sources expose exact verified content and read-only metadata without extending persisted indexes', async t => {
+  const f = await fixture(t)
+  assert.equal(await f.send('getSource', { hash: 'song-a', quality: '128', purpose: 'analysis' }), null)
+  await f.play()
+  const normal = await f.complete()
+  const analysis = await f.send('getSource', { hash: 'song-a', quality: '128', purpose: 'analysis' })
+  assert.equal(normal.audioMetadata, undefined)
+  assert.equal(normal.sha256, undefined)
+  assert.equal(analysis.sha256, crypto.createHash('sha256').update(f.audio).digest('hex'))
+  assert.equal(analysis.audioMetadata.channels, 1)
+  assert.equal(analysis.audioMetadata.sampleRate, 8000)
+  assert.ok(Math.abs(analysis.audioMetadata.duration - (4096 - 44) / 16000) < 0.001)
+  assert.equal(await f.send('getSource', { hash: 'song-a', quality: '320', purpose: 'analysis', allowFallback: true }), null)
+  assert.equal(await f.send('getSource', { hash: 'song-a', quality: 'invalid', purpose: 'analysis' }), null)
+  const index = await fs.readFile(path.join(f.directory, crypto.createHash('sha256').update('account-a').digest('hex'), 'index.json'), 'utf8')
+  assert.doesNotMatch(index, /audioMetadata|silenceStart|skipAt/)
+  assert.deepEqual(f.sourceReady, [{ generation: 1, userId: 'account-a', hash: 'song-a', quality: '128', source: 'catalog' }])
+  await f.play()
+  assert.equal(f.sourceReady.length, 1, 'already complete sources do not rebroadcast a new download')
+  await f.send('releaseSource', { leaseId: analysis.leaseId })
+})
+
+test('unsupported or excessive analysis metadata does not prevent ordinary playback', async t => {
+  const f = await fixture(t)
+  await f.play()
+  await f.complete()
+  const library = require('node-taglib-sharp')
+  const original = library.File.createFromPath
+  let disposed = 0, reads = 0
+  t.after(() => { library.File.createFromPath = original })
+  library.File.createFromPath = () => { reads++; return { properties: { durationMilliseconds: 600000, audioSampleRate: 96000, audioChannels: 2 }, dispose() { disposed++ } } }
+  assert.ok(await f.send('getSource', { hash: 'song-a', quality: '128' }))
+  assert.equal(reads, 0)
+  assert.equal(await f.send('getSource', { hash: 'song-a', quality: '128', purpose: 'analysis' }), null)
+  assert.equal(disposed, 1)
+  library.File.createFromPath = () => { throw new Error('unsupported format') }
+  assert.equal(await f.send('getSource', { hash: 'song-a', quality: '128', purpose: 'analysis' }), null)
+  assert.ok(await f.send('getSource', { hash: 'song-a', quality: '128' }))
+})
+
+test('optional source-ready delivery failure cannot erase or re-download a completed audio file', async t => {
+  const f = await fixture(t, { onSourceReady: () => { throw new Error('notification destination closed') } })
+  await f.play()
+  const source = await f.complete()
+  assert.deepEqual(await fs.readFile(source.path), f.audio)
+  assert.equal(f.engine().snapshot().cachedSongCount, 1)
+  assert.equal(f.sourceReady.length, 1)
+  assert.equal(f.calls.filter(call => call.path === '/file').length, 1)
+})
 
 test('playlist snapshots persist all rows but only a first real playback queues audio, with favorites alias and cross-entry deduplication', async t => {
   const f = await fixture(t)
@@ -116,6 +197,37 @@ test('playlist snapshots persist all rows but only a first real playback queues 
   await f.restart()
   assert.equal((await f.send('readPlaylist', { id: null })).songs.length, 2)
   assert.ok(await f.send('getSource', { hash: 'song-a', quality: '128' }))
+})
+
+test('cloud originals cache once across quality preferences and never satisfy catalogue or foreign-owner lookups', async t => {
+  const f = await fixture(t)
+  const song = { hash: 'same-hash', source: 'cloud', sourceUserId: 'account-a', name: 'Private', originalName: 'Private, original.wav', audio_id: 45 }
+  f.responses.set('/user/cloud/url', (request, response) => response.end(JSON.stringify({ status: 1,
+    data: { url: [`${f.origin}/file?hash=same-hash`], filesize: f.audio.length, extname: 'wav' } })))
+  await f.send('putPlaylist', { id: 'mixed', songs: [song, { hash: 'same-hash', name: 'Catalog' }] })
+  await f.send('cacheSong', { song, quality: '320' })
+  const payload = { hash: song.hash, source: 'cloud', sourceUserId: 'account-a', quality: 'original' }
+  const first = await until(() => f.send('getSource', payload), 'cloud original')
+  await f.send('releaseSource', { leaseId: first.leaseId })
+  assert.equal(first.requestedQuality, 'original')
+  assert.equal(first.detail.originalName, song.originalName)
+  assert.equal(f.calls.some(call => ['/audio', '/song/url'].includes(call.path)), false)
+  assert.equal(f.calls.find(call => call.path === '/user/cloud/url').query.name, song.originalName)
+  assert.equal(f.engine().snapshot().playlists[0].cached, 1)
+  await f.send('cacheSong', { song, quality: 'flac' })
+  assert.equal(f.calls.filter(call => call.path === '/user/cloud/url').length, 1)
+  assert.equal(await f.send('getSource', { hash: song.hash, quality: '128', allowFallback: true }), null)
+  assert.equal(await f.send('getSource', { ...payload, sourceUserId: 'account-b' }), null)
+  await assert.rejects(f.send('cacheSong', { song: { ...song, sourceUserId: 'account-b' } }), error => error.code === 'PERMISSION')
+  await f.play('same-hash')
+  await f.complete('same-hash')
+  assert.equal(f.engine().snapshot().cachedSongCount, 2)
+  assert.equal(f.engine().snapshot().playlists[0].cached, 2)
+  await f.restart()
+  const restored = await f.send('getSource', payload)
+  assert.ok(restored)
+  await f.send('releaseSource', { leaseId: restored.leaseId })
+  assert.ok(await f.send('getSource', { hash: song.hash, quality: '128' }))
 })
 
 test('keeps favorites plus ten latest ordinary playlists and preserves whole local edits', async t => {

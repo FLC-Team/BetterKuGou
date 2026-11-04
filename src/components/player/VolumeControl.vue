@@ -32,7 +32,7 @@
                    aria-label="音量百分比" :aria-invalid="Boolean(error)" @input="error = ''" />
             <span aria-hidden="true">%</span>
           </span></label>
-          <p v-if="error" class="volume-error" role="alert">{{ error }}</p>
+          <AppNotice :message="error" type="error" title="音量输入" />
           <div class="volume-editor-actions">
             <button type="button" @click="closeEditor(true)">取消</button>
             <button type="submit" class="volume-confirm">确定</button>
@@ -166,7 +166,6 @@ export default {
 .volume-editor button:focus-visible, .volume-input-wrap input:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 .volume-editor .volume-confirm { background: var(--color-primary); color: var(--color-on-primary, #fff); }
 .volume-editor-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
-.volume-error { color: var(--color-error); margin: 10px 0 0; font-size: 12px; }
 .volume-editor-enter-active, .volume-editor-leave-active { transition: opacity .16s ease, translate .16s ease; }
 .volume-editor-enter-from, .volume-editor-leave-to { opacity: 0; translate: 0 4px; }
 .volume-editor-leave-active { pointer-events: none; }

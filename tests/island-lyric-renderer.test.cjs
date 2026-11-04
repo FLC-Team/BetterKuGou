@@ -87,11 +87,12 @@ function rendererFixture({ reducedMotion = false, actions = {} } = {}) {
   }
   document.activeElement = document.body
   nodes.forEach(node => { if (node.id !== 'island') node.parentElement = nodes.get('island') })
-  for (const id of ['previousBtn', 'playBtn', 'nextBtn', 'translationBtn', 'closeBtn', 'feedback']) nodes.get(id).parentElement = nodes.get('details')
+  for (const id of ['previousBtn', 'playBtn', 'nextBtn', 'translationBtn', 'closeBtn']) nodes.get(id).parentElement = nodes.get('details')
   for (const id of ['currentViewport', 'nextViewport', 'leftSlot', 'rightSlot']) nodes.get(id).parentElement = nodes.get('notchToggle')
   const subscriptions = new Map()
   const calls = []
-  const api = {}
+  const notices = []
+  const api = { reportNotice: notice => notices.push(JSON.parse(JSON.stringify(notice))) }
   for (const name of ['onSongUpdate', 'onLyricUpdate', 'onTimeUpdate', 'onSettingsUpdate', 'onPlaybackUpdate', 'onError', 'onPointerUpdate']) {
     api[name] = callback => { subscriptions.set(name, callback); return () => subscriptions.delete(name) }
   }
@@ -110,11 +111,13 @@ function rendererFixture({ reducedMotion = false, actions = {} } = {}) {
   const frames = new Map()
   const timers = new Map()
   let nextId = 0
+  let now = 0
   let resizeCallback
   let resizeDisconnected = false
   const warnings = []
   const context = vm.createContext({
     window, document, Intl, console: { warn: (...args) => warnings.push(args) },
+    performance: { now: () => now },
     requestAnimationFrame(callback) { const id = ++nextId; frames.set(id, callback); return id },
     cancelAnimationFrame(id) { frames.delete(id) },
     setTimeout(callback, delay) { const id = ++nextId; timers.set(id, { callback, delay }); return id }, clearTimeout(id) { timers.delete(id) },
@@ -123,10 +126,10 @@ function rendererFixture({ reducedMotion = false, actions = {} } = {}) {
   vm.runInContext(source, context, { filename: 'islandLyric.html' })
   document.listeners.get('DOMContentLoaded')()
   return {
-    calls, animations, media, window, document, subscriptions, frames, timers, warnings, images,
+    calls, notices, animations, media, window, document, subscriptions, frames, timers, warnings, images,
     node: id => nodes.get(id),
     emit(name, ...args) { subscriptions.get(name)?.(...args) },
-    flush() { const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback()) },
+    flush(elapsed = 0) { now += elapsed; const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback()) },
     expire(delay) { for (const [id, timer] of [...timers]) if (timer.delay === delay) { timers.delete(id); timer.callback() } },
     resize() { resizeCallback() },
     dispose() { window.dispatch('beforeunload') },
@@ -141,6 +144,75 @@ function krc(time = 0, texts = ['甲', '乙', '丙']) {
 function song(view, trackId = 'controlled', cover = null) {
   view.emit('onSongUpdate', { trackId, title: 'Controlled track', artist: 'Placeholder', cover })
 }
+
+test('fresh audio samples interpolate each frame at the real rate and repeated samples cannot extend 300 ms', () => {
+  const view = rendererFixture()
+  song(view)
+  view.emit('onLyricUpdate', [krc()])
+  view.emit('onPlaybackUpdate', { playing: true, available: true })
+  view.emit('onTimeUpdate', 100, { advancing: true, playbackRate: 2, duration: 3000 })
+  view.flush(50)
+  assert.deepEqual(view.fills(), ['20%', '0%', '0%'])
+  assert.equal(view.frames.size, 1)
+  view.emit('onTimeUpdate', 100, { advancing: true, playbackRate: 2 })
+  view.flush(100)
+  assert.deepEqual(view.fills(), ['40%', '0%', '0%'])
+  view.flush(150)
+  assert.deepEqual(view.fills(), ['70%', '0%', '0%'])
+  assert.equal(view.frames.size, 0)
+  view.emit('onTimeUpdate', 100, { advancing: true, playbackRate: 2 })
+  view.flush(1000)
+  assert.deepEqual(view.fills(), ['70%', '0%', '0%'])
+  assert.equal(view.frames.size, 0)
+  view.dispose()
+})
+
+test('pause, buffering, seeks, replay and track changes freeze or reset the island clock without old frames', () => {
+  const view = rendererFixture()
+  song(view)
+  view.emit('onLyricUpdate', [krc()])
+  view.emit('onPlaybackUpdate', { playing: true, available: true })
+  view.emit('onTimeUpdate', 100, { advancing: true })
+  view.flush(100)
+  assert.deepEqual(view.fills(), ['20%', '0%', '0%'])
+  view.emit('onPlaybackUpdate', { playing: false })
+  view.flush(1000)
+  assert.deepEqual(view.fills(), ['20%', '0%', '0%'])
+  assert.equal(view.frames.size, 0)
+  view.emit('onPlaybackUpdate', { playing: true })
+  view.flush(1000)
+  assert.deepEqual(view.fills(), ['20%', '0%', '0%'], 'play state alone cannot revive an old audio anchor')
+  view.emit('onTimeUpdate', 500, { advancing: false })
+  view.flush(1000)
+  assert.deepEqual(view.fills(), ['50%', '0%', '0%'])
+  view.emit('onTimeUpdate', 50, { advancing: true, discontinuity: true, playbackRate: 0.5 })
+  view.flush(100)
+  assert.deepEqual(view.fills(), ['10%', '0%', '0%'])
+  view.emit('onPlaybackUpdate', { playing: true, time: 1500, discontinuity: true })
+  view.flush(1000)
+  assert.deepEqual(view.fills(), ['100%', '50%', '0%'], 'reopening uses a frozen replay until a new advancing sample')
+  song(view, 'replacement')
+  view.emit('onLyricUpdate', [krc()])
+  view.flush(1000)
+  assert.deepEqual(view.fills(), ['0%', '0%', '0%'])
+  assert.equal(view.frames.size, 0)
+  view.dispose()
+})
+
+test('reduced motion preserves accurate word feedback without decorative replacements and unload cancels interpolation', () => {
+  const view = rendererFixture({ reducedMotion: true })
+  song(view)
+  view.emit('onLyricUpdate', [krc()])
+  view.emit('onPlaybackUpdate', { playing: true, available: true })
+  view.emit('onTimeUpdate', 100, { advancing: true })
+  view.flush(50)
+  assert.deepEqual(view.fills(), ['15%', '0%', '0%'])
+  assert.equal(view.animations.length, 0)
+  assert.equal(view.frames.size, 1)
+  view.dispose()
+  assert.equal(view.frames.size, 0)
+  assert.equal(view.subscriptions.size, 0)
+})
 
 test('paused reopen, forward/backward seeks and repeated lines calculate glyphs from absolute playback time', () => {
   const view = rendererFixture()
@@ -423,13 +495,14 @@ test('controls reflect actual playback, wait for acknowledgement and preserve vi
   assert.equal(view.node('playBtn').disabled, true)
   assert.equal(view.node('island').classList.contains('playing'), false)
   await view.node('closeBtn').click()
-  assert.equal(view.node('feedback').textContent, '设置保存失败，请重试。')
+  assert.equal(view.notices.at(-1).message, '设置保存失败，请重试。')
+  assert.equal(view.notices.at(-1).type, 'error')
   assert.equal(view.node('closeBtn').disabled, false)
   view.expire(220)
-  assert.equal(view.node('island').classList.contains('expanded'), true)
+  assert.equal(view.node('island').classList.contains('expanded'), false, 'error feedback does not keep a separate local popup open')
   rejectClose = false
   await view.node('closeBtn').click()
-  assert.equal(view.node('feedback').textContent, '')
+  assert.equal(view.notices.length, 1, 'successful retry does not repeat the old error')
   view.dispose()
 })
 
@@ -465,8 +538,8 @@ test('dynamic reduced motion cancels running replacements and unload releases al
   song(view, 'changed')
   assert.equal(view.animations.length, count)
   view.emit('onError', '<controlled-error>')
-  assert.equal(view.node('feedback').textContent, '<controlled-error>')
-  assert.equal(view.node('feedback').children.length, 0)
+  assert.deepEqual(view.notices.at(-1), { title: '灵动岛歌词', message: '<controlled-error>', type: 'error' })
+  assert.equal(view.node('feedback'), undefined)
   view.dispose()
   assert.equal(view.frames.size, 0)
   assert.equal(view.timers.size, 0)
@@ -688,8 +761,8 @@ test('drag cancellation during begin, failed position saving and unload finish t
   await moving
   assert.equal(view.calls.filter(call => call.name === 'drag').length, 0)
   assert.equal(view.calls.filter(call => call.name === 'endDrag').length, 1)
-  assert.equal(view.node('feedback').textContent, '位置保存失败，请重试。')
-  assert.equal(island.classList.contains('expanded'), true)
+  assert.equal(view.notices.at(-1).message, '位置保存失败，请重试。')
+  assert.equal(island.classList.contains('expanded'), false)
   island.dispatch('pointerdown', { button: 0, pointerId: 8, clientX: 200, clientY: 25 })
   const unloading = island.dispatch('pointermove', { pointerId: 8, clientX: 220, clientY: 25 })
   view.dispose()

@@ -12,8 +12,10 @@
 
 - `useSettingsStore()` 暴露稳定的 `settings` 引用和 ready/loading/error/revision 状态。
 - `initSettings()` 复用初始化 Promise，并发读取 `window.settingsAPI` 的默认设置、默认目录与已保存设置，再统一补全、应用主题并就绪；任一读取失败沿用对应回退，浏览器回退 LocalStorage。
-- 默认分组为 playback/desktopLyrics/islandLyrics/taskbarLyrics/download/custom/shortcuts/software/session，Schema 版本为 1。
+- 默认分组为 playback/audioEffects/desktopLyrics/islandLyrics/taskbarLyrics/download/custom/shortcuts/software/session，Schema 版本为 1。
+- `audioEffects` 默认 `{ enabled: false, searchPaths: [], chain: [] }`，主进程共用规范化模块白名单保存，沿现有设置事务及导入导出。插件扫描结果、二进制状态、节拍缓存、运行状态不进入设置；设置页由音效服务管理此分组，避免普通页面草稿回写覆盖链。
 - 当前版本的设置也按默认值补全缺失分组，保留已保存的用户选择。
+- 关闭偏好复用 software：`promptBeforeClose` 默认 true，缺失/非法类型回退 true；`minimizeToTray` 默认 false，仅布尔 true 表示托盘。关闭提示的成功写入会同步原 store，设置草稿仍保留未提交字段；导入、重置和保存使用相同双端补全规则。
 - 主题包列表保存在 `custom.themePackages`，选择的包 ID 使用原 `custom.theme`；旧配置自动补全空列表，不迁移或删除已有配色。
 - `custom.themeAdjustmentId` 仅标识设置页创建的个性主题包；精调保留原包并复用该 ID 更新，不创建另一套主题来源。
 - `desktopLyrics` 由双端 `normalizeDesktopLyrics()` 补全与白名单校验；主进程导出此函数供窗口同步复用。保留 fontSize=medium、theme=classic、locked=false、bounds=null，默认开启双行、逐字高亮、换句动画及模糊、置顶和同屏全屏歌词隐藏。其余隐藏/节能/信息模式等布尔项默认关闭，严格保留布尔类型。
@@ -23,9 +25,12 @@
 - 灵动岛 autoHide=true、hideOnFullscreen=false、hideOnLyricView=true；外部全屏检测按主进程能力提示平台限制。opacity 默认 1、范围 0.2–1，backgroundOpacity 默认 1、范围 0–1，scale 默认 1、范围 0.5–2；数字只接受有限数值，colors 只接受六位十六进制，默认 text=#ffffff、inactive=#656565、background=#000000。
 - `playback.showTranslation` 默认 true，非法类型回退默认；全屏、桌面和灵动岛沿用此总偏好。桌面与灵动岛的 `hideTranslation` 分别隐藏各自窗口的翻译与已有音译，不修改总偏好。
 - `playback.restartOnPreviousNearEnd` 默认 false，双端只接受布尔 true 开启，旧配置缺失及非法类型回退 false；沿原事务保存、导入导出和恢复。播放器统一上一首入口实时消费此偏好。
+- `playback.smoothTrackSwitch/preloadNextTrack/skipTrailingSilence` 是三个独立且默认开启的播放偏好；双端仅接受布尔值，旧配置缺失或非法类型回退 true，沿现有 Schema 1、串行保存和导入导出流程补全。分别控制短促音频过渡、只提前准备下一首以及完整缓存可分析时跳过已确认的结尾无声；预加载不写入离线缓存。
 - `playback.quality` 默认字符串 128；双端仅接收 128/320/flac/high，补全旧配置，非法导入值回退 128。它表示所选音质偏好，当前音源的真实格式和码率由播放器独立维护。
 - `software.updates` 默认 `{ autoCheck: true, autoDownload: false, channel: 'stable' }`；双端补全旧配置，布尔开关严格校验、渠道限定 stable/beta，移除未知字段及任何自动安装开关。更新服务只消费保存成功的设置，检查结果、进度和本机安装包路径不进入本 store。
 - 离线缓存复用 download 分组：offlinePlaylistCacheEnabled 默认 true；cacheSizeIndex 默认 0，限定 0–5；concurrentDownloads 默认 3，限定 1–10。双端按同一规则补全与校验，不将缓存资源、凭证或进度存入设置。
+- 歌曲文件下载复用 downloadPath/concurrentDownloads，quality 默认 follow，限定 follow/128/320/flac/high；embedMetadata/embedCover/saveLyrics 默认 true 且严格校验布尔值。原生选目录只修改父级草稿，成功保存才配置后台任务，已建任务保留创建时选项。
+- `playback.syncPlayHistory` 默认 true，双端非法值回退 true，关闭后不向酷狗账号写听歌记录，已有播放列表恢复快照仍独立保存。
 - `download.offlineCachePath` 默认空，表示沿用主进程默认缓存目录；非空值由主进程完成目录迁移后专用提交并广播。渲染草稿不直接编辑此字段，普通保存、导入和重置不能改变已提交目录；旧 `downloadPath/cachePath` 继续保留兼容。
 - `updateSettings()` 默认合并，`overwriteSettings()` 替换，均保留响应式对象引用。
 - `saveSessionSnapshot()` 合并队列、当前歌曲、索引及播放时间、音量和模式。
@@ -39,8 +44,9 @@
 - `playback.romanization` 限定 off/on，默认 off；preferSimplifiedChinese 默认 true，segmentLyrics/showProfanity 默认 false，均严格保留布尔值。内容偏好实时处理显示副本，中文翻译继续使用原 showTranslation。
 
 - 编辑先更新界面并记录 mutation 版本，持久化任务进入串行 Promise 队列。
-- 每次执行保存时采集最新快照；成功后只移除已提交版本的编辑。
+- 普通编辑将待提交 mutation 合并为局部 patch，经固定 `settings:patch` 在主进程事务执行时合并，保留其他窗口同时保存的位置、锁定及配置；新建设置、显式整份替换、导入和重置仍使用 `settings:set`。成功后只移除已提交版本的编辑。
 - 保存期间的主进程广播暂存，提交后叠加尚未提交的修改。
+- 局部编辑中的 undefined 删除通过独立字段路径传递；主进程在事务内先删除再合并，最后补全 Schema 默认值，保留删除后再编辑的顺序且不影响并发的无关字段。
 - 失败恢复最近已提交或重新读取的快照，只撤销失败调用及此前的修改。
 - 后续编辑仍重放并排队保存，前一次失败不阻断后续任务。
 
@@ -58,17 +64,19 @@
 | playback.showTranslation / romanization / preferSimplifiedChinese / segmentLyrics / showProfanity / lyricLibrary | 设置“歌词内容”管理翻译、文字处理及歌词版本库；翻译也可在全屏和桌面歌词工具栏内切换。 |
 | playback.quality | 播放器请求的普通音质偏好；底栏与全屏歌词快速切换当前歌，设置“播放”选择后续歌曲偏好。 |
 | playback.restartOnPreviousNearEnd | 设置“播放”的末尾重播开关；开启后歌曲实际剩余 0–10 秒时上一首从头播放当前歌，关闭时保持正常上一首导航。 |
+| playback.smoothTrackSwitch / preloadNextTrack / skipTrailingSilence | 设置“播放”的独立开关；控制手动约 150ms / 自然约 600ms 的声音过渡、下一首预加载和保守的尾部静音跳过。 |
 | desktopLyrics.fontSize / theme / locked / bounds | 独立歌词窗口字号、配色、原生锁定穿透及位置尺寸；设置与窗口工具栏同步，位置由主进程保存；托盘/设置支持解锁和找回。 |
 | desktopLyrics 显示、动效、外观及隐藏规则 | 设置“桌面歌词”的 DesktopLyricSettings 编辑父级草稿；HTML 消费行数/逐字/字体配色/阴影等，主进程消费显隐、透明度、置顶与穿透；只应用保存成功的偏好。 |
 | islandLyrics.* | 设置“灵动岛歌词”的 IslandLyricSettings 编辑原草稿的启用、贴顶/浮动、屏幕/坐标、内容、字体颜色、透明度缩放及隐藏规则；先保存再重新显示，自动隐藏时提供 3 秒预览，停用时仍可编辑偏好。 |
 | taskbarLyrics.* | 设置“任务栏歌词”的 TaskbarLyricSettings 编辑启用、嵌入、屏幕、布局、内容及外观；共用父级草稿，保存成功后生效，系统能力不足时明确禁用。 |
 | custom.playerStyle / theme / customTheme / themePackages | 播放栏布局、完整主题及旧三色配色；设置“外观与主题”，精调只编辑已有消费的视觉令牌。 |
 | shortcuts.enableGlobal / keys | App 与主进程快捷键；设置“快捷键”，注册探测只检查可用性。 |
-| software.autoLaunch / minimizeToTray / restorePlaylist / restorePlaybackState / defaultPage | 系统启动、关闭、会话恢复和启动页；设置“启动与应用”。 |
+| software.autoLaunch / minimizeToTray / promptBeforeClose / restorePlaylist / restorePlaybackState / defaultPage | 系统启动、关闭方式及每次关闭前询问、会话恢复和启动页；设置“启动与应用”。 |
 | software.updates.autoCheck / autoDownload / channel | 主进程更新服务的自动检查、自动下载及正式/测试渠道；设置“更新与备份 → 应用更新”，保存成功后生效。 |
 | download.offlinePlaylistCacheEnabled / cacheSizeIndex / concurrentDownloads | 独立离线缓存服务消费已提交偏好；设置“下载与缓存”，默认启用、2GB 和 3 并发。 |
 | download.offlineCachePath | 离线缓存实际根目录，空值使用 userData/offline-playlists；设置“下载与缓存 → 更改位置”迁移全部账号后由主进程提交。 |
-| download.downloadPath / cachePath | 保留旧配置兼容，普通文件下载尚未开放；这两个字段不控制离线缓存目录。 |
+| download.downloadPath / quality / embedMetadata / embedCover / saveLyrics | 歌曲文件下载目录、音质、标签、封面及配套歌词；设置“下载与缓存”，建任务时冻结。cachePath 保留旧配置兼容，不控制离线缓存目录。 |
+| playback.syncPlayHistory | 登录账号真实播放达到阈值后同步听歌记录，默认开启；设置“播放设置”。 |
 | session.* | 播放器实时队列、进度、音量和模式；由播放会话维护，不在偏好设置重复编辑。 |
 
 ## 运行

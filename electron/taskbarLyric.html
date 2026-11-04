@@ -36,7 +36,6 @@
     .control svg { width: 15px; height: 15px; fill: currentColor; }
     .pause-icon, .playing .play-icon { display: none; }
     .playing .pause-icon { display: block; }
-    .feedback { position: absolute; inset: 0; padding: 3px 8px; display: flex; align-items: center; background: var(--panel); color: var(--text); font-size: 12px; line-height: 1.3; z-index: 2; cursor: pointer; }
     @media (max-width: 240px) {
       .taskbar { padding-left: 4px; padding-right: 4px; gap: 4px; }
       .artwork, .logo { display: none; }
@@ -58,7 +57,6 @@
       <button class="control" id="playBtn" type="button" title="播放" aria-label="播放"><svg class="play-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 2 10 6-10 6z"/></svg><svg class="pause-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2h4v12H3zm6 0h4v12H9z"/></svg></button>
       <button class="control" id="nextBtn" type="button" title="下一首" aria-label="下一首"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M12 3h2v10h-2zM3 3l8 5-8 5z"/></svg></button>
     </div>
-    <div class="feedback" id="feedback" role="status" aria-live="polite" title="点击关闭提示后重试" hidden></div>
   </section>
   <script>
     const api = window.taskbarLyricAPI
@@ -74,7 +72,6 @@
     const previousBtn = document.getElementById('previousBtn')
     const playBtn = document.getElementById('playBtn')
     const nextBtn = document.getElementById('nextBtn')
-    const feedback = document.getElementById('feedback')
     const media = window.matchMedia?.('(prefers-reduced-motion: reduce)')
     const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null
     const options = { doubleLine: true, karaoke: true, hideTranslation: false, showTranslation: true, songInfoOnly: false, adaptive: true, showAlbum: true, showControls: true, showLogo: false, fontScale: 1, fontFamily: '', lineGap: 0, contentAlignment: 'auto', albumAlignment: 'auto', originalPosition: 'top', transition: 'slide', colorMode: 'taskbar', dark: true }
@@ -185,8 +182,6 @@
         lineIndex = -2
         entries = []
         stopAnimations()
-        feedback.hidden = true
-        feedback.textContent = ''
       }
       song = next
       if (!lyrics.length || options.songInfoOnly) lineIndex = -2
@@ -423,9 +418,7 @@
 
     function showError(message) {
       if (disposed) return
-      feedback.textContent = typeof message === 'string' && message ? message : '操作失败，请重试'
-      feedback.hidden = false
-      animateReplacement(feedback)
+      api?.reportNotice?.({ title: '任务栏歌词', message: typeof message === 'string' && message ? message : '操作失败，请重试', type: 'error' })
     }
 
     /** Controls wait for acknowledgement and never optimistically change the audio state. */
@@ -437,8 +430,6 @@
         const result = await api.control(action)
         if (disposed) return
         if (!result?.success) throw new Error(result?.error || '操作失败，请重试')
-        feedback.hidden = true
-        feedback.textContent = ''
       } catch (error) {
         if (!disposed) { console.warn('taskbar-lyric', '播放控制失败', error); showError(error.message) }
       } finally {
@@ -466,7 +457,6 @@
       listen(previousBtn, 'click', () => runAction(previousBtn, 'prev'))
       listen(playBtn, 'click', () => runAction(playBtn, 'toggle'))
       listen(nextBtn, 'click', () => runAction(nextBtn, 'next'))
-      listen(feedback, 'click', () => { feedback.hidden = true; feedback.textContent = '' })
       listen(window, 'resize', updateLayout)
       listen(window, 'beforeunload', dispose)
       if (media?.addEventListener) listen(media, 'change', stopAnimations)

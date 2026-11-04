@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const vue = require('vue')
+const { registerAppNotice } = require('./helpers/noticeHarness.cjs')
 const { parse, compileScript } = require('@vue/compiler-sfc')
 
 const motionVue = { ...vue,
@@ -69,7 +70,7 @@ function mount(t, options = {}) {
       }
     })
     Object.assign(globals, { packageInfo: { version: '0.0.0' }, applyTheme() {}, ThemePackages: emptyComponent,
-      ThemeAdjustments: emptyComponent, AppUpdates: emptyComponent, PlaylistCacheSettings: emptyComponent,
+      ThemeAdjustments: emptyComponent, AppUpdates: emptyComponent, PlaylistCacheSettings: emptyComponent, MusicDownloadSettings: emptyComponent, AudioEffectsSettings: emptyComponent,
       DesktopLyricSettings: emptyComponent, IslandLyricSettings: emptyComponent, TaskbarLyricSettings: emptyComponent })
     globals.LyricLibrary = compile('components/common/LyricLibrary.vue', globals)
     globals.LyricSettings = compile('components/common/LyricSettings.vue', globals)
@@ -101,6 +102,7 @@ function mount(t, options = {}) {
     beforeAction: async () => { calls.push(['saveSettings']); return options.beforeAction ? options.beforeAction() : true },
     onClose: () => { closed++ }, 'onProtected-state': value => protection.push(value)
   }) })
+  registerAppNotice(app)
   app.mount(root)
   let mounted = true
   const unmount = () => { if (mounted) { mounted = false; app.unmount() } }

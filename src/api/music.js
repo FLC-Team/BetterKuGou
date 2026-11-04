@@ -32,7 +32,7 @@ const createAuthExpiredError = (cause) => {
 }
 
 // 创建 axios 实例
-const apiClient = axios.create({
+export const apiClient = axios.create({
   baseURL: API_BASE_URL,
   timeout: 10000,
   withCredentials: true
@@ -45,6 +45,9 @@ apiClient.interceptors.request.use(
     // 对于需要完整认证的 API（如 getSongUrl），会在函数内部单独处理
     const token = localStorage.getItem('kugou_token')
     const userid = localStorage.getItem('kugou_userid')
+    if (config.libraryIdentity && (config.libraryIdentity.token !== token || config.libraryIdentity.userId !== userid)) {
+      return Promise.reject(Object.assign(new Error('账号已变化，请重试'), { code: 'ERR_CANCELED' }))
+    }
     requestIdentities.set(config, { token, userId: userid })
     
     if (token && !config.params?.cookie) {
@@ -123,9 +126,10 @@ export const getRankInfo = (rankid, page = 1, pagesize = 30) => {
 }
 
 /** 获取排行榜曲目；榜单介绍 /rank/info 不提供可播放的歌曲列表。 */
-export const getRankSongs = (rankid, page = 1, pagesize = 100) => {
+export const getRankSongs = (rankid, page = 1, pagesize = 100, options = {}) => {
   return apiClient.get('/rank/audio', {
-    params: { rankid, page, pagesize }
+    params: { rankid, page, pagesize, ...(options.rankCid != null ? { rank_cid: options.rankCid } : {}) },
+    signal: options.signal
   })
 }
 
@@ -314,9 +318,10 @@ export const getPlaylistTracks = (id, page = 1, pagesize = 100) => {
  * @param {string} type - 搜索类型：song（单曲），album（专辑），author（歌手），special（歌单），lyric（歌词），mv（MV）
  * @returns {Promise}
  */
-export const searchMusic = (keywords, page = 1, pagesize = 30, type = 'song') => {
+export const searchMusic = (keywords, page = 1, pagesize = 30, type = 'song', options = {}) => {
   return apiClient.get('/search', {
-    params: { keywords, page, pagesize, type }
+    params: { keywords, page, pagesize, type },
+    signal: options.signal
   })
 }
 

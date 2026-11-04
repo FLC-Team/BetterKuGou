@@ -81,8 +81,6 @@
 .radio-option__display > span { color: var(--color-text-secondary); font-size: 10px; }
 .radio-option input:checked + .radio-option__display { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 5%, transparent); }
 .radio-option input:focus-visible + .radio-option__display { outline: 2px solid var(--color-primary); outline-offset: 3px; }
-.settings-notice { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; padding: 12px 17px; margin: 12px clamp(22px, 3.5cqi, 48px) 0; border: 1px solid var(--color-border); border-radius: var(--radius-sm); font-size: var(--font-size-xs); color: var(--color-text-secondary); line-height: 1.8; }
-.settings-notice.is-error { z-index: 4; color: var(--color-error); background: var(--color-background-light); box-shadow: var(--shadow-card-soft); }
 .outline-btn { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; min-height: 34px; padding: 7px 14px; border: 1px solid var(--color-border); border-radius: 40px; color: var(--color-text); font-size: 11px; }
 .outline-btn:hover:not(:disabled) { border-color: var(--color-primary); color: var(--color-primary); }
 .settings-view button:disabled { opacity: .45; cursor: default; }
@@ -102,7 +100,6 @@
 .shortcut-key { min-width: 110px; min-height: 33px; padding: 6px 12px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-background-light); color: var(--color-text); font-size: 11px; font-variant-numeric: tabular-nums; }
 .is-editing .shortcut-key { border-color: var(--color-primary); color: var(--color-primary); }
 .clear-shortcut-btn { width: 25px; height: 30px; color: var(--color-text-secondary); font-size: 18px; }
-.shortcut-error { width: 100%; color: var(--color-error); font-size: 11px; }
 .unavailable-settings { min-width: 0; border: 0; opacity: .55; }
 .settings-footer { padding: 14px 0 18px; color: var(--color-text-tertiary); font-size: 10px; line-height: 1.8; }
 .settings-view :deep(.theme-preview) { height: 84px; }
@@ -110,7 +107,6 @@
 .save-status { min-width: 110px; }
 .save-status::before { transition: background-color .18s ease, scale .18s ease; }
 .save-status.is-saving::before, .save-status.is-pending::before { animation: settings-working 1s ease-in-out infinite alternate; }
-.save-status.is-error::before { background: var(--color-error); }
 .save-status.is-saved::before { animation: settings-saved .28s ease-out; }
 .radio-option__display { transition: border-color .2s ease, background-color .2s ease, box-shadow .2s ease, scale .2s ease; }
 .radio-option:hover .radio-option__display { border-color: var(--color-primary); }

@@ -1,6 +1,7 @@
 <template>
   <div class="album-detail-view list-page" :aria-busy="loading">
     <div class="list-content">
+      <AppNotice :message="error" title="专辑加载失败" type="error" :actions="[{ label: '重试', run: load, disabled: loading }]" />
       <button type="button" class="back-btn" @click="$emit('navigate', 'home')">← 返回发现</button>
       <header class="collection-hero">
         <ArtworkCover :src="getCover(album)" class="collection-art" mark="♪" />
@@ -9,6 +10,8 @@
           <h1 class="page-title">{{ album?.album_name || album?.name || albumName || '专辑' }}</h1>
           <p class="collection-description">一张专辑，一段完整的音乐叙事。</p>
           <div class="collection-meta"><span><ArtistLinks :song="album" @select="$emit('navigate', 'artist', $event)" /></span><span v-if="album?.publish_date || album?.pub_time">{{ album.publish_date || album.pub_time }}</span><span>{{ songs.length }} 首歌曲</span></div>
+          <div class="collection-actions"><button type="button" class="action-btn" @click="songActions?.['show-details']?.({ name: album?.album_name || albumName }, { type: 'album', id: albumId })">专辑评论</button>
+            <button type="button" class="action-btn" :disabled="!songs.length" @click="songActions?.['download']?.(songs)">下载专辑</button></div>
 
         </div>
       </header>
@@ -30,6 +33,7 @@
               <div class="song-title-line">
                 <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="getSongName(song.name)">{{ getSongName(song.name) }}</button>
                 <SongBadges :song="song" />
+                <LibraryActions :song="song" />
               </div>
               <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />
             </div>
@@ -40,9 +44,7 @@
       </div>
 
       <div v-else-if="loading" class="loading-container"><span class="loading-spinner" role="status" aria-label="加载中"></span><p>正在打开专辑…</p></div>
-      <div v-else-if="error" class="error" role="alert">
-  <p class="empty-text">无法打开专辑</p><p>{{ error }}</p><button type="button" class="retry-btn" @click="load">重试</button>
-      </div>
+      <div v-else-if="error" class="empty-state"><button type="button" class="retry-btn" @click="load">重新加载</button></div>
       <div v-else class="empty"><p class="empty-text">暂无专辑曲目</p><p>稍后再来听听，或返回发现更多音乐。</p></div>
       </Transition>
     </div>
@@ -52,6 +54,7 @@
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
 import SongBadges from '../components/common/SongBadges.vue'
+import LibraryActions from '../components/common/LibraryActions.vue'
 import ArtistLinks from '../components/common/ArtistLinks.vue'
 import { getSongArtists } from '../utils/songMetadata.js'
 import { logger } from '../utils/logger.js'
@@ -59,7 +62,8 @@ import { logger } from '../utils/logger.js'
 import { getAlbumDetail, getAlbumSongs, getImagesByHash } from '../api/music.js'
 
 export default {
-  components: { ArtworkCover, SongBadges, ArtistLinks },
+  inject: { songActions: { default: null } },
+  components: { ArtworkCover, SongBadges, ArtistLinks, LibraryActions },
   name: 'AlbumDetailView',
   props: {
     albumId: { type: [String, Number], required: false },

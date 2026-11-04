@@ -9,13 +9,14 @@
 ## 重要文件
 
 - `main.js`：应用入口，编排启动、窗口、托盘、IPC 和退出清理。
-- `preload.js`：通过 `contextBridge` 暴露 `electronAPI`、`settingsAPI`、`loadingAPI`、`desktopLyricAPI`、`islandLyricAPI` 与 `taskbarLyricAPI`；事件订阅隐藏 Electron event 并返回解绑函数，`electronAPI.updates` 提供固定的更新操作及状态订阅；`waitForBackend()` 与 `notifyReady()` 仅桥接固定的启动就绪频道。
+- `preload.js`：通过 `contextBridge` 暴露 `electronAPI`、`settingsAPI`、`loadingAPI`、`desktopLyricAPI`、`islandLyricAPI` 与 `taskbarLyricAPI`；事件订阅隐藏 Electron event 并返回解绑函数，`electronAPI.updates` 提供固定的更新操作及状态订阅；`waitForBackend()` 与 `notifyReady()` 仅桥接固定的启动就绪频道。`onAppNotice()` 订阅统一通知，独立歌词窗口仅通过 `reportNotice()` 转发有界纯文本。
 - `settingsStore.js`：设置默认值、Schema 补全、导入导出、自启协调与串行原子持久化。
+- `audioEffectsConfig.cjs`：音频效果偏好白名单，限定插件链/搜索目录数量与字段；与主设置存储共用规范化入口。
 - `autoLaunch.js`：封装 Windows/macOS 登录启动设置；不支持的平台返回明确的状态或错误。
 - `logger.js`：主进程日志级别与输出入口，默认 `info`，通过 `BK_LOG_LEVEL` 或 `DEBUG` 开启诊断。
 - `loading.html`：启动进度窗口，通过 `loadingAPI` 接收真实进度和状态；阶段文字以可取消的 WAAPI 动效切换，进度和 spinner 独立更新。
 - `desktopLyric.html`：独立透明歌词窗口，通过 `desktopLyricAPI` 接收歌曲、歌词、毫秒时间、真实播放状态、显示设置及错误；显示当前原文与翻译或下一句，提供播放、字号、样式、翻译、锁定、关闭及缩放控件，保留动画反馈与减少动态支持。
-- `islandLyric.html`：贴顶黑色凹口与浮动歌词两种模式；默认左 Logo、中间单行歌词、右封面，支持双行、歌曲信息及左右内容自定义。大陆模式鼠标避让且穿透，浮动模式通过点击、右键或键盘展开播放控制并支持拖动；固定 `islandLyricAPI` 接收已确认播放快照，纯文本渲染及逐字/横移均按绝对播放时间更新。
+- `islandLyric.html`：贴顶黑色凹口与浮动歌词两种模式；默认左 Logo、中间单行歌词、右封面，支持双行、歌曲信息及左右内容自定义。大陆模式鼠标避让且穿透，浮动模式通过点击、右键或键盘展开播放控制并支持拖动；固定 `islandLyricAPI` 接收已确认播放快照。逐字/横移从实际音频锚点按播放倍率逐帧插值，单次授权最多 300ms，重复采样不续期；暂停、缓冲、跳转、换曲与重开冻结或重置，只有新推进采样恢复时钟。系统减少动态关闭装饰过渡，保留准确高亮，卸载取消帧和订阅；显示时间不写回播放器。
 
 ## 核心流程
 
@@ -24,21 +25,29 @@
 
 1. `app.whenReady()` 创建加载窗口和托盘，初始化设置后并行启动本地 API 与主窗口，不等待固定定时器。渲染入口并行初始化设置与等待实际 HTTP 就绪，后端失败或 10 秒截止仍允许界面挂载；主窗口顶层页面挂载后的首帧通过 `renderer:ready` 显示窗口并关闭加载窗，仅处理一次，退出中忽略就绪。启动期间的播放指令暂存到渲染就绪后发送。
 2. 渲染进程经 preload 请求设置或系统能力，主进程执行后通过 IPC 返回结果或广播更新。
+   系统操作及三个独立歌词窗口的结果统一通过 `app:notice` 交给主窗口 Fue 通知。`app:report-notice` 只接受当前歌词窗口顶层文档，字段白名单为 id/title/message/type，长度分别限定 80/120/2000 字符，拒绝未知类型及额外字段。主窗挂载前最多缓存 20 条，同 id 替换，`renderer:ready` 后排空；错误或警告找回隐藏/最小化主窗，已可见时不抢焦点。安装、关闭方式等业务确认保留确认对话框。
+   设置初始化失败停止正常启动，通过 `getStartupFailure()` 只挂载 Fue 通知根，不加载业务 App 或启动后端；用户关闭或 `quitAfterStartupFailure()` 沿既有清理退出。错误界面 15 秒未就绪或页面加载失败时退出，退出清理缓存通知与等待计时器。
+   `electronAPI.audioEffects` 提供固定音效操作、状态订阅和一次性 MessagePort 连接；PCM 直达 Utility Process。初始化注册具备 CORS/流式能力的 `bk-audio`，只接受内存中已授予的媒体租约；重载/崩溃/关闭释放租约及音效连接，退出等待原生宿主关闭。原生二进制按当前平台/架构从开发目录或 `resources/audio-effects/` 加载，缺失时明确报告不可用。
 3. 播放器上报歌曲、播放状态、歌词及毫秒时间，主进程更新托盘、Windows 任务栏预览按钮并转发给桌面歌词。
+   主窗口播放时关闭后台动画与定时器节流，确保最小化后的交叉淡化和自然续播及时完成；暂停、清空歌曲、重载或崩溃后恢复节流。策略复用已验证的播放器状态通道，不接受其他窗口或子 frame 控制。
    主进程缓存歌曲 `trackId`、歌词、毫秒时间、总时长与播放倍率；窗口 ready/重开时按设置、歌曲、歌词、时间、播放状态顺序重放。时间桥接只转发规范化的 `advancing/playbackRate/discontinuity`，旧快照重放明确禁止推进，收到新音频采样才恢复插值。确认换曲清空旧内容，空歌曲清空快照，同一身份元数据更新保留歌词；带过期身份的歌词与时间上报被拒绝。
    `updateTaskbarButtons()` 用 `setThumbarButtons()` 设置上一首、播放/暂停、下一首，复用 `broadcastPlayerControl()`，不还原或聚焦窗口。图标从开发 `public/taskbar/` 或生产 `dist/taskbar/` 读取并缓存；原生更新失败仅记录警告，下次显示或状态变化重试。
 4. 初始化设置后创建更新服务，传入 `app.getVersion()`、平台架构和 `userData/updates/`；更新服务自行延迟调度，主窗口和本地 API 启动不等待网络任务。开发 Worker 位于 `electron/services/updateWorker.cjs`，打包通过 extraResources 加载 `resources/updater/updateWorker.cjs`。
 5. `performApplicationCleanup()` 复用一个清理 Promise；释放窗口定时器、设置订阅、更新 Worker、快捷键、附属窗口、后端和托盘后，才允许正式退出。
 6. Windows 打包版非阻塞启动每 PID 安装退出管道。安装器明确请求后，向就绪主窗口发送带随机 requestId 的保存准备通知；仅原顶层 frame 的当前回执可被接收。保存成功并发送管道确认后正常退出，重载、崩溃、断开或超时取消请求，清理时关闭管道，不改变正常多实例启动行为。
 7. 初始化独立离线缓存服务，读取已提交的 `download.offlineCachePath`，空值使用 `userData/offline-playlists/`；开发 Worker 位于 services，打包 Worker 从 `resources/playlist-cache/playlistCacheWorker.cjs` 加载。设置成功广播后 configure；退出先等待进行中的目录迁移，再停止 Worker，后台缓存故障不阻断窗口与在线播放。
+   `bk-cache` 的受租约保护资源支持 Fetch，供独立尾静音分析读取完整文件；`playlistCache.onSourceReady` 仅转发当前账号代次已完成保存的音源标识。分析源按需提供校验后的内容版本与有界音频元数据，不公开本机路径，不改变普通取源开销。
 
 8. 歌词库服务固定使用 `userData/lyric-library/`，独立管理曲目的在线原文、编辑副本及选中版本；已提交设置控制读取、自动保存阈值及后台更新。关闭管理保留文件，修改通知带歌曲 hash、revision 和 online/edit/select 原因；退出失效未发布写入并等待队列清理。
+9. 歌曲下载服务在缓存与歌词库就绪后创建，Worker 位于开发 services 或打包 `resources/music-download/`，标签库从 app.asar 生产依赖解析。通过缓存 set-session 同步账号，读取选中歌词和私有缓存租约；退出先等待下载停止，再关闭歌词库与缓存。
 
 ## 设置保障
 
 - `setSettings()` 将整个事务串行执行；合并基于最后成功的缓存，原子落盘成功后才更新缓存和通知订阅者。
+- preload 的 `settingsAPI.patch()` 固定桥接 `settings:patch`，仅接受当前主窗口顶层且退出期间拒绝；主进程事务合并局部编辑。`settingsAPI.set()` 保留整份替换语义。
 - 写入失败保留旧缓存，清理临时文件，后续事务仍可继续；已调整的系统自启状态尝试恢复。
 - `ensureSchema()` 补全默认字段，拒绝任意层级的 `__proto__`、`constructor`、`prototype`。
+- `software.promptBeforeClose` 默认 true，旧配置或非法类型补 true；`minimizeToTray` 保留原布尔字段，非法类型回退 false。关闭询问勾选“不再提示”时以部分事务保存两项，成功后才隐藏或退出，失败留窗并提供重试提示。
 - `playback.restartOnPreviousNearEnd` 默认 false，与渲染侧一致只接受布尔 true 开启末尾上一首重播；旧配置及非法导入值回退 false，沿已有串行设置事务持久化。
 - 损坏 JSON 在回退默认值前备份；设置位于 Electron `userData` 下，不写入项目目录。
 - `custom.themePackages` 与其他设置共用持久化；theme IPC 从 `src/themes/themeCatalog.mjs` 共用校验，过滤损坏包，选择主题仅写主题字段。旧 auto 名称兼容为 system，打包包含共享目录与 JSON 清单。
@@ -51,18 +60,23 @@
 - `software.updates` 仅保存 `autoCheck`、`autoDownload` 和 `channel`，默认 true、false、stable，渠道限定 stable/beta；旧配置与非法导入值按同一规则补全。成功提交的设置广播才调用更新服务 `configure()`，不保存下载进度、文件路径或安装开关。
 - `download.offlinePlaylistCacheEnabled` 默认 true，`cacheSizeIndex` 限定 0–5（2048/4096/6144/8192/10240MB/无限制），`concurrentDownloads` 为 1–10，默认 3；原预留下载目录与缓存路径保持兼容，不作为离线服务目录来源。
 - `download.offlineCachePath` 默认空，仅迁移专用的 `setOfflineCacheDirectory()` 可在文件复制校验完成后串行原子保存；普通设置草稿、导入和重置保留最近已提交的路径，避免改变配置却未迁移文件。该事务不触发自启等无关系统操作，Windows 文件短暂占用时有限重试原子替换，持续失败保留原设置。
+- `playback.syncPlayHistory` 默认 true，双端仅接受布尔值；已提交设置控制登录账号的真实听歌记录同步。
+- 文件下载使用 `download.downloadPath` 和 `concurrentDownloads`，新增 quality 默认 follow（另选 128/320/flac/high）、embedMetadata/embedCover/saveLyrics 默认 true；非法导入值补默认。原生下载目录选择只返回父级设置草稿，保存成功后生效，不走缓存目录迁移事务。
 - 桌面歌词替换数组或歌曲身份时重置行索引，时间消息保存实际音频位置与可推进状态；只在明确可播放时以倍率逐帧插值，单个采样最多延伸 300ms，重复采样不延长截止时间。暂停、缓冲、seek、换源和重开立即冻结或重置，细小消息抖动不撤回已开始的自然换行；所有插值仅控制歌词显示，不写回播放进度。首帧、暂停重开、前后跳转和同文重复句均从绝对时间重算所有字素，歌词以纯文本创建 DOM，保留 Unicode 字素与原空格。
 - 前奏预览首句；当前句有译文且开关启用时次行显示译文，否则显示下一句。长句原文及当前译文根据播放时间与溢出宽度平移，下一句保持句首。自然连续换行时预览从次行位置上移、放大为当前行，下一句淡入；跳转、快速换曲、暂停及减少动态效果取消旧过渡。内容、字号和视口变化后重测，暂停保持横向位置。
 
 ## 窗口与兼容保障
 
+- `downloads:*` 固定主窗口顶层 IPC 提供任务和原生目录选择/文件定位，调用方不能指定下载 URL、缓存源路径、凭证或任意待定位文件。后台状态与认证失效校验账号代次，复用缓存认证失效通道；`playlist-cache:remove-playlist` 同样只允许主窗口顶层。
+
 - 所有窗口禁用 Node 集成并启用上下文隔离；HTML 不直接使用 `require('electron')`。
+- 主窗口和加载窗口通过 `getAppTrayIcon()` 显式指定公共 Logo，开发读取 `public/logo.png`，打包读取 `dist/logo.png`；Windows 在创建任何窗口前将 AppUserModelId 设为安装快捷方式相同的 `com.betterkugou.app`，保持任务栏分组和图标一致。
 - 桌面窗口的就绪、加载失败、10 秒超时、崩溃与关闭回调均绑定创建时实例；快速开关不能复活旧窗口或清除新窗口引用，显示失败返回 false，成功通过 `showInactive()` 显示而不抢焦点。窗口关闭清理显示器监听和计时器。
 - 锁定同步应用原生鼠标穿透、禁止移动与禁止聚焦，HTML 将工具栏 inert，独立解锁按钮固定右/上边距 8 DIP、44×36 DIP。主进程只在光标进入此矩形且按钮未隐藏时暂时开放点击，其余区域维持穿透；悬停渐隐只对锁定窗口生效，解锁热点至少保留 20% 透明度便于找回。`hideUnlockButton` 关闭该热点，托盘和设置仍能解锁。“找回并解锁”恢复主屏默认位置/尺寸并临时可见 5 秒。
 - `desktopLyricPolicy` 消费已提交偏好，统一应用 `autoHidePaused`、`hideOnLyricView`、`hideOnFullscreen`、`opacity`、`hoverFade`/`hoverOpacity` 与 `alwaysOnTop`。主页面通过固定布尔 `setLyricViewVisible()` 上报应用歌词界面，只有主窗口可见且与桌面窗口同屏才隐藏桌面；主窗隐藏/最小化恢复桌面，再显示时继续检测；重载/崩溃/销毁清除过期上报。外部前台全屏检测仅 Windows，通过独立只读服务返回屏幕范围，同屏才隐藏。
 - 透明度、穿透及运行时隐藏不写回设置。原生显隐发送 `desktopLyricAPI.onRuntimeState({hidden})`，HTML 隐藏时停止绘制调度，恢复后按最新音频锚点显示。指针检测只在锁定且有渐隐/解锁热点时运行，外部检测只在需要时运行；普通/高效模式分别 100/300ms，关闭窗口和退出清理监测器。
 - `doubleLine` 控制副行，`songInfoOnly` 显示标题/歌手并停止持续插值，关闭 `karaokeEnabled` 时整句高亮。高效模式按 34ms 调度且禁用装饰动画；换行动画与模糊分别由 `transitionEnabled`/`transitionBlur` 控制，系统减少动态优先。颜色空值继承主题，字体使用转义后的单个 family，描边 100% 对应 1px；阴影按颜色/深度/方向/透明度/半径绘制，封面模式按需从 24×24 图片取色，迟到结果按版本拒绝、失败回退自定义颜色。
-- 透明窗口禁用原生 resize，右下手柄通过固定 `beginResize/resize/endResize` 桥接由主进程读取屏幕 DIP 坐标调整，方向键通过 `resizeBy` 微调；取消、失焦、锁定和卸载终止手势，不信任渲染进程提供的屏幕坐标。播放控制仅允许当前桌面顶层窗口发送 prev/toggle/next，复用主播放器控制链；按钮读取真实播放/可操作状态，主窗口就绪、重载、崩溃、关闭及安装准备/取消均同步。锁定时工具栏隐藏，托盘解锁或找回失败通过原生对话框反馈。
+- 透明窗口禁用原生 resize，右下手柄通过固定 `beginResize/resize/endResize` 桥接由主进程读取屏幕 DIP 坐标调整，方向键通过 `resizeBy` 微调；取消、失焦、锁定和卸载终止手势，不信任渲染进程提供的屏幕坐标。播放控制仅允许当前桌面顶层窗口发送 prev/toggle/next，复用主播放器控制链；按钮读取真实播放/可操作状态，主窗口就绪、重载、崩溃、关闭及安装准备/取消均同步。锁定时工具栏隐藏，托盘解锁或找回失败通过主窗口 Fue 通知反馈。
 - `playlist-cache:*` IPC 仅允许主窗口顶层，通过固定桥接操作绑定账号、读写快照、缓存已播放歌曲、保存歌词、加载封面及管理任务。主进程不接收任意文件路径，媒体地址仅包含不可猜租约；协议在 ready 前注册 standard/secure/stream，支持 GET/HEAD/单段 Range，不绕过 CSP。退出账号保留已授播放租约，后续源必须按当前账号重新申请。
 - `electronAPI.lyricLibrary` 仅暴露 list/read/saveOnline/saveEdit/select 和可解绑 onChanged；`lyric-library:*` 仅接受主窗口顶层。服务校验歌曲 hash、版本存在性、原始响应和大小，剔除凭证，不暴露路径、删除或通用文件能力；用户编辑与手动选中的历史版本不会被自动更新替换。
 - `playlist-cache:choose-directory` 无路径参数，只采用原生选择框返回的父目录并追加 `offline-playlists`；选择前后核对主窗口身份和退出状态，重复选择或迁移返回忙碌。服务依次复制校验全部账号、保存新路径、切换租约并等待旧读流释放后清理；状态广播携带实际目录、迁移阶段和错误/警告。
@@ -71,12 +85,12 @@
 - `electronAPI.updates.onPrepareForInstall()` 订阅准备/取消通知并返回解绑函数；`completePrepareForInstall(requestId, result)` 只反馈当前准备结果，不直接授权安装或退出。保存中屏蔽托盘播放操作，过期回执无效。
 - 安装只能由 `updates:install` 的用户动作触发：Worker 先校验文件，原生对话框默认取消，明确确认后再次校验并核对文件、版本和资产身份，随后才调用 `shell.openPath()`。只允许 exe/dmg/deb/rpm，AppImage 定位后由用户处理；启动、下载完成、退出均不安装，也不自动退出应用。
 - 订阅和定时任务成对释放；桌面歌词卸载时取消订阅、待执行的动画帧、结果提示定时器、WAAPI 动画和尺寸观察器，终止缩放。两份独立 HTML 使用自己的 prefers-reduced-motion 查询与变更监听，系统偏好变化立即取消旧动画，提示已进入淡出时立即清空其终态，卸载时解除媒体查询监听；连续歌曲/阶段/结果更新先取消旧动效，迟到的完成回调不清除新内容。桌面控件支持键盘聚焦显现、原生按压反馈，锁定后不可交互。
-- 普通关闭遵循 `minimizeToTray`，主动退出和清理中的关闭不再隐藏到托盘。
+- 标题栏 `window-close` 仅接受当前主窗口顶层来源并调用主窗口 close；系统关闭沿同一入口。`requestMainWindowClose()` 默认通过原生异步对话框询问托盘/退出/取消及“不再提示”，未勾选不保存，取消不执行；同一窗口只允许一个进行中请求，旧窗口、退出或安装准备期间的迟到结果失效。设置关闭询问后直接消费 `minimizeToTray`；退出设主动退出标志并调用 app.quit，清理中的关闭不再次询问或隐藏。
 - 任务栏按钮仅在 Windows 注册，等待主窗口顶层就绪期间、主页面重载/崩溃、安装保存及退出时禁用。回调检查窗口身份与实时状态，关闭后旧回调不作用于新窗口；播放/暂停图标只随音频回报更新，不做乐观切换。
 - 开发及构建后的主入口共用同一职责；Vite 处理主进程本地模块，并将加载、桌面歌词、灵动岛和任务栏歌词四份 HTML 复制到构建入口旁。
 - 灵动岛服务独立管理窗口就绪、关闭/超时/崩溃和显示器监听；所有回调绑定创建实例，显示使用 showInactive。主入口向两种歌词窗口转发同一歌曲、歌词、时间及真实可操作状态，主窗口重载/崩溃、安装准备及退出均禁用灵动岛控制。灵动岛控制、拖动及穿透 IPC 仅接受当前岛顶层来源，主窗口的显示、显示器枚举、能力查询及全屏歌词可见性通知也校验顶层来源；控制复用 prev/toggle/next，不改变原播放导航。
 - 大陆模式依据所选显示器 bounds 贴住真实上沿，不被顶部任务栏的 workArea 下移；浮动模式在工作区内夹紧位置。拖动只由主进程读取光标 DIP 坐标，结束后保存显示器/模式/位置，靠近顶部吸附为大陆模式，失败恢复已提交位置，退出等待在途位置保存。屏幕列表热插拔通知与迟到枚举结果有代次保护，所选屏幕断开后回主屏。
-- Windows/Linux 禁用最小化到托盘时，主窗口关闭即走现有退出清理，不依赖灵动岛启用状态或最后窗口退出事件；仅剩桌面歌词时也关闭辅助窗口并等待后台服务停止。启用托盘和 macOS 关闭驻留仍沿用原行为，macOS Dock 激活按主窗口是否存在恢复或重建，不受剩余歌词窗口影响。正式退出保留已保存的灵动岛开关。
+- 用户选择或保存“退出程序”时，Windows/Linux/macOS 均走现有退出清理，不依赖灵动岛启用状态或最后窗口退出事件；仅剩桌面歌词时也关闭辅助窗口并等待后台服务停止。托盘选择继续后台播放；macOS 主窗口意外销毁后 Dock 激活仍按主窗口是否存在恢复或重建，不受剩余歌词窗口影响。正式退出保留已保存的灵动岛开关。
 - 大陆模式保持穿透、不接收键盘操作，鼠标进入固定凹口形状区域时淡出避让，离开后恢复；浮动模式只在实际圆角区域接收鼠标，点击/右键或 Enter/空格展开，Escape 收起，悬停和聚焦不自动展开。Windows/macOS 使用原生 forward，Linux 每 80ms 读取 DIP 光标并转换为窗口内坐标；Linux 创建时保留 focusable 以支持浮动键盘操作，切回大陆时清除焦点并恢复穿透。退出释放轮询、订阅、计时器、动画和尺寸观察器。
 - 整体不透明度只应用一次：Windows/macOS 通过原生 setOpacity，Linux 通过主进程指定的 opacityInRenderer 在 body 生效；背景不透明度单独作用于凹口和面板。缩放与字体尺寸共同参与布局及命中区域，减少动态偏好变更取消旧装饰动画。
 - 自动隐藏只改变窗口可见性：暂停/无音乐或播放不可用时可隐藏，手动预览暂时绕过此条件；同屏应用全屏歌词或外部应用全屏仍按偏好避让。Windows 外部检测复用 fullscreenMonitor 对共享 windowsForeground 的适配，主入口从 app.getAppPath()/electron/services/windowsForeground.ps1 提供固定路径，Node 读取 ASAR 内脚本并编码交给隐藏 PowerShell，物理矩形转 DIP 后匹配显示器；其他系统能力返回 false。禁用或退出停止检测，不改播放或启用偏好。

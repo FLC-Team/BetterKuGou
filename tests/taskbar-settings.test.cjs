@@ -33,6 +33,7 @@ function loadMainSchema() {
   const context = vm.createContext({ module: { exports: {} }, process, structuredClone, require(name) {
     if (name === './logger') return logger
     if (name === './autoLaunch') return {}
+    if (name === './audioEffectsConfig.cjs') return require('../electron/audioEffectsConfig.cjs')
     return require(name)
   } })
   vm.runInContext(read('electron/settingsStore.js'), context)

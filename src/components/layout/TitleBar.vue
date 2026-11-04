@@ -5,14 +5,17 @@
       <Transition name="ui-pop" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><button v-if="!isLyricViewVisible" type="button" class="navigation-back" aria-label="返回上一页" title="返回上一页" :disabled="!canGoBack" @click="$emit('back')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m14 6-6 6 6 6" /></svg>
       </button></Transition>
-      <img src="/logo.png" alt="Logo" class="logo-icon" />
-      <span class="app-name">BETTERKUGOU</span>
+      <img src="/logo.png" alt="" class="logo-icon" />
+      <div class="brand-copy">
+        <span class="app-name">BETTER<span>KUGOU</span></span>
+        <span class="brand-caption">音乐，随心而听</span>
+      </div>
     </div>
     
     <!-- 搜索框（居中） -->
-    <Transition name="ui-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><div v-if="!isLyricViewVisible" class="search-container" role="search" aria-label="音乐搜索">
+    <Transition name="ui-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><div v-if="!isLyricViewVisible" class="search-container" role="search" aria-label="音乐搜索" @focusout="leaveSearch">
       <form class="search-box" @submit.prevent="performSearch">
-        <button class="search-btn" type="submit" aria-label="搜索" title="搜索" :disabled="!searchKeyword.trim()">
+        <button class="search-btn" type="submit" aria-label="搜索" title="搜索" :disabled="!searchKeyword.trim() && !defaultKeyword">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
             <circle cx="10.75" cy="10.75" r="6.75" />
             <path d="m16 16 4.5 4.5" />
@@ -23,11 +26,19 @@
           v-model="searchKeyword"
           type="text"
           aria-label="搜索歌曲、歌手、专辑"
-          placeholder="搜索歌曲、歌手、专辑"
+          :placeholder="defaultKeyword || '搜索歌曲、歌手、专辑'"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-controls="search-suggestions"
+          :aria-expanded="showSearchHints"
+          :aria-activedescendant="activeSuggestion >= 0 ? `search-suggestion-${activeSuggestion}` : undefined"
           enterkeyhint="search"
           autocomplete="off"
           spellcheck="false"
-          @keydown.esc="!$event.isComposing && !$event.target.composing && $event.target.blur()"
+          @focus="openSearchHints"
+          @keydown="handleSearchKey"
+          @compositionstart="startComposition"
+          @compositionend="endComposition"
         />
         <Transition name="ui-pop" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><button v-if="searchKeyword" class="search-clear" type="button" aria-label="清空搜索" title="清空搜索" @click="clearSearch">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
@@ -36,6 +47,14 @@
         </button>
         <span v-else class="search-hint" aria-hidden="true">↵</span></Transition>
       </form>
+      <Transition name="ui-pop" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><section v-if="showSearchHints" ref="searchHints" class="search-suggestions" aria-label="搜索提示">
+        <div class="suggestion-heading"><strong>{{ searchKeyword.trim() ? '搜索建议' : '大家都在搜' }}</strong><button type="button" aria-label="关闭搜索提示" @click="closeSearchHints">×</button></div>
+        <p v-if="hintsLoading" role="status">正在查找…</p>
+        <p v-else-if="!hintsError && !suggestionOptions.length">{{ searchKeyword.trim() ? '暂无建议，按回车搜索当前关键词。' : '暂无热搜，输入关键词开始搜索。' }}</p>
+        <div id="search-suggestions" role="listbox" :aria-label="searchKeyword.trim() ? '搜索建议' : '热门搜索'">
+          <button v-for="(keyword, index) in suggestionOptions" :id="`search-suggestion-${index}`" :key="keyword" type="button" role="option" :aria-selected="index === activeSuggestion" @mousedown.prevent @click="chooseSuggestion(keyword)"><span>{{ String(index + 1).padStart(2, '0') }}</span>{{ keyword }}</button>
+        </div>
+      </section></Transition>
     </div></Transition>
     
     <div class="window-controls">
@@ -50,7 +69,7 @@
         </div>
         <span class="user-name">{{ userInfo.username || '用户' }}</span>
       </button>
-      <button v-else class="control-btn login-btn" @click="handleLogin" title="登录">
+      <button v-else type="button" class="control-btn login-btn" @click="handleLogin" title="登录" aria-label="登录">
         <svg class="icon" viewBox="0 0 1024 1024" width="18" height="18">
           <path d="M512 512m-512 0a512 512 0 1 0 1024 0 512 512 0 1 0-1024 0Z" fill="currentColor" opacity=".2"></path>
           <path d="M512 640c-70.692 0-128-57.308-128-128s57.308-128 128-128 128 57.308 128 128-57.308 128-128 128z m0-192c-35.346 0-64 28.654-64 64s28.654 64 64 64 64-28.654 64-64-28.654-64-64-64z m256 448H256c-17.673 0-32-14.327-32-32 0-123.514 100.486-224 224-224h96c123.514 0 224 100.486 224 224 0 17.673-14.327 32-32 32z m-479.967-64h447.935c-13.547-77.612-81.232-137.036-159.968-137.036h-96c-78.736 0-146.421 59.424-159.967 137.036z" fill="currentColor"></path>
@@ -60,18 +79,19 @@
 
       
       <!-- 窗口控制按钮 -->
-      <button class="control-btn minimize" @click="minimizeWindow" title="最小化">
+      <button type="button" class="control-btn minimize" @click="minimizeWindow" title="最小化">
         <img :src="icons.minimize" alt="最小化" class="icon" />
       </button>
-      <button class="control-btn maximize" @click="toggleMaximize" :title="isMaximized ? '还原' : '最大化'">
+      <button type="button" class="control-btn maximize" @click="toggleMaximize" :title="isMaximized ? '还原' : '最大化'">
         <Transition name="ui-pop" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><img :key="String(isMaximized)" :src="isMaximized ? icons.restore : icons.maximize" :alt="isMaximized ? '还原' : '最大化'" class="icon" /></Transition>
       </button>
-      <button class="control-btn close" @click="closeWindow" title="关闭">
+      <button type="button" class="control-btn close" @click="closeWindow" title="关闭">
         <img :src="icons.close" alt="关闭" class="icon" />
       </button>
     </div>
 
     <!-- 用户菜单 -->
+    <AppNotice :message="hintsError" title="搜索提示" type="error" :actions="[{ label: '重试', run: retrySearchHints }]" />
     <UserMenu
       :visible="showUserMenu"
       :userInfo="userInfo"
@@ -86,6 +106,7 @@
 
 <script>
 import { logger } from '../../utils/logger.js'
+import { getSearchSuggestions, getSearchHot, getSearchDefault } from '../../api/library.js'
 
 // 动态导入图标文件
 import minimizeIcon from '../../assets/icons/minimize.svg'
@@ -127,6 +148,18 @@ export default {
       isMaximized: false,
       showUserMenu: false,
       userMenuPosition: { top: 0, right: 0 },
+      showSearchHints: false,
+      suggestions: [],
+      hotKeywords: [],
+      defaultKeyword: '',
+      hintsLoading: false,
+      hintsError: '',
+      discoveryLoaded: false,
+      composing: false,
+      activeSuggestion: -1,
+      suggestionTimer: null,
+      hintController: null,
+      hintGeneration: 0,
       // 图标路径配置 - 如需替换图标,只需修改这里的路径
       icons: {
         minimize: minimizeIcon,
@@ -137,14 +170,17 @@ export default {
     }
   },
   computed: {
+    suggestionOptions() { return this.searchKeyword.trim() ? this.suggestions : this.hotKeywords },
     searchKeyword: {
       get() { return this.modelValue },
       set(value) { this.$emit('update:modelValue', value) }
     }
   },
   watch: {
+    modelValue(value) { if (this.showSearchHints && !this.composing) this.scheduleSuggestions(value) },
     userLoggedIn(value) { if (!value) this.showUserMenu = false },
     isLyricViewVisible(newVal) {
+      if (newVal) this.closeSearchHints()
       logger.trace('TitleBar', 'TitleBar: 歌词界面状态 =', newVal)
     }
   },
@@ -167,10 +203,92 @@ export default {
     }
   },
   beforeUnmount() {
+    this.cancelSearchHints()
     this.unsubscribeMaximized?.()
     this.unsubscribeUnmaximized?.()
   },
   methods: {
+    /** Follow known search-word containers only; service text remains plain text in the template. */
+    readSearchWords(response) {
+      const words = [], seen = new Set()
+      const visit = (value, depth = 0) => {
+        if (value == null || depth > 7 || words.length >= 20) return
+        if (typeof value === 'string') { const word = value.trim(); if (word && !seen.has(word)) { seen.add(word); words.push(word) }; return }
+        if (Array.isArray(value)) { value.forEach(item => visit(item, depth + 1)); return }
+        if (typeof value !== 'object') return
+        const word = value.keyword ?? value.searchword ?? value.search_word ?? value.word ?? value.HintInfo ?? value.hintinfo ?? value.KeyWord ?? value.show_word ?? value.default_word
+        if (typeof word === 'string') visit(word, depth + 1)
+        for (const key of ['data', 'list', 'lists', 'info', 'items', 'hot', 'keywords', 'hotwords', 'hot_list', 'hot_keywords', 'MusicTip', 'AlbumTip', 'AuthorTip', 'SingerTip', 'CorrectTip', 'RecordDatas', 'Datas', 'records', 'default', 'default_search', 'fallback']) visit(value[key], depth + 1)
+      }
+      visit(response)
+      return words
+    },
+    cancelSearchHints() { if (this.suggestionTimer != null) clearTimeout(this.suggestionTimer); this.suggestionTimer = null; this.hintController?.abort(); this.hintGeneration++ },
+    openSearchHints() { this.showSearchHints = true; this.scheduleSuggestions(this.searchKeyword) },
+    closeSearchHints() { this.showSearchHints = false; this.activeSuggestion = -1; this.cancelSearchHints(); this.hintsLoading = false },
+    leaveSearch(event) { if (!event.currentTarget.contains(event.relatedTarget)) this.closeSearchHints() },
+    startComposition() { this.composing = true; this.cancelSearchHints(); this.hintsLoading = false; this.suggestions = [] },
+    endComposition(event) { this.composing = false; if (this.showSearchHints) this.scheduleSuggestions(event.target.value) },
+    scheduleSuggestions(value) {
+      this.cancelSearchHints(); this.activeSuggestion = -1; this.hintsError = ''; this.suggestions = []
+      if (this.composing || !this.showSearchHints) return
+      const keyword = String(value || '').trim()
+      if (!keyword) { this.hintsLoading = false; this.loadSearchDiscovery(); return }
+      this.hintsLoading = true
+      this.suggestionTimer = setTimeout(() => { this.suggestionTimer = null; this.fetchSuggestions(keyword) }, 180)
+    },
+    /** A new draft, dismissal or IME composition invalidates every previous request. */
+    async fetchSuggestions(keyword) {
+      const generation = ++this.hintGeneration; const controller = this.hintController = new AbortController()
+      this.hintsLoading = true; this.hintsError = ''
+      try {
+        const response = await getSearchSuggestions(keyword, { signal: controller.signal })
+        if (generation !== this.hintGeneration || controller.signal.aborted || !this.showSearchHints) return
+        this.suggestions = this.readSearchWords(response)
+      } catch (error) { if (generation === this.hintGeneration && !controller.signal.aborted) { this.hintsError = '暂时无法读取建议'; logger.warn('TitleBar', '读取搜索建议失败', { name: error?.name }) } }
+      finally { if (generation === this.hintGeneration) this.hintsLoading = false }
+    },
+    async loadSearchDiscovery(force = false) {
+      if (this.discoveryLoaded && !force) return
+      const generation = ++this.hintGeneration; const controller = this.hintController = new AbortController()
+      this.hintsLoading = true; this.hintsError = ''
+      const [hot, defaults] = await Promise.allSettled([getSearchHot({}, { signal: controller.signal }), getSearchDefault({}, { signal: controller.signal })])
+      if (generation !== this.hintGeneration || controller.signal.aborted || !this.showSearchHints) return
+      if (hot.status === 'fulfilled') { this.hotKeywords = this.readSearchWords(hot.value); this.discoveryLoaded = true }
+      else { this.hintsError = '暂时无法读取热搜'; logger.warn('TitleBar', '读取热搜失败', { name: hot.reason?.name }) }
+      if (defaults.status === 'fulfilled') this.defaultKeyword = this.readSearchWords(defaults.value)[0] || ''
+      else logger.warn('TitleBar', '读取默认搜索词失败', { name: defaults.reason?.name })
+      this.hintsLoading = false
+    },
+    retrySearchHints() { this.showSearchHints = true; if (this.searchKeyword.trim()) this.scheduleSuggestions(this.searchKeyword); else this.loadSearchDiscovery(true) },
+    chooseSuggestion(keyword) { this.searchKeyword = keyword; this.$emit('search', keyword); this.closeSearchHints(); this.$refs.searchInput?.blur() },
+    handleSearchKey(event) {
+      if (event.isComposing || event.target.composing || this.composing || event.keyCode === 229) return
+      if (event.key === 'Escape') { event.preventDefault(); this.closeSearchHints(); event.target.blur(); return }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault(); if (!this.showSearchHints) this.openSearchHints()
+        const count = this.suggestionOptions.length
+        if (count) this.activeSuggestion = this.activeSuggestion < 0 ? (event.key === 'ArrowDown' ? 0 : count - 1) : (this.activeSuggestion + (event.key === 'ArrowDown' ? 1 : count - 1)) % count
+        this.revealActiveSuggestion()
+      } else if (event.key === 'Enter' && this.showSearchHints && this.activeSuggestion >= 0) { event.preventDefault(); this.chooseSuggestion(this.suggestionOptions[this.activeSuggestion]) }
+    },
+    /** Scroll only the suggestions panel; keyboard selection must not move the surrounding page or input focus. */
+    revealActiveSuggestion() {
+      const index = this.activeSuggestion
+      this.$nextTick(() => {
+        if (!this.showSearchHints || this.activeSuggestion !== index) return
+        const panel = this.$refs.searchHints
+        const row = panel?.querySelector(`[id="search-suggestion-${index}"]`)
+        if (!panel || !row) return
+        const viewport = panel.getBoundingClientRect()
+        const bounds = row.getBoundingClientRect()
+        const scale = panel.offsetHeight > 0 && viewport.height > 0 ? viewport.height / panel.offsetHeight : 1
+        const top = viewport.top + panel.clientTop * scale
+        const bottom = top + panel.clientHeight * scale
+        if (bounds.top < top) panel.scrollTop -= (top - bounds.top) / scale
+        else if (bounds.bottom > bottom) panel.scrollTop += (bounds.bottom - bottom) / scale
+      })
+    },
     handleLogin() {
       logger.trace('TitleBar', 'Login clicked')
       // 发射登录事件到父组件
@@ -191,7 +309,6 @@ export default {
     },
     handleEditProfile() {
       logger.trace('TitleBar', 'Edit profile clicked')
-      // TODO: 实现编辑资料功能
       this.$emit('edit-profile')
     },
     handleSettings() {
@@ -226,8 +343,8 @@ export default {
     },
     // 输入法选词期间不提交；沿用父级搜索事件和关键词规范化。
     performSearch() {
-      if (this.$refs.searchInput?.composing) return
-      const keyword = this.searchKeyword.trim()
+      if (this.composing || this.$refs.searchInput?.composing) return
+      const keyword = this.searchKeyword.trim() || this.defaultKeyword
       if (!keyword) {
         logger.trace('TitleBar', '搜索关键词为空')
         return
@@ -235,9 +352,11 @@ export default {
       logger.trace('TitleBar', '执行搜索:', keyword)
       // 发射搜索事件到父组件
       this.$emit('search', keyword)
+      this.closeSearchHints()
     },
     clearSearch() {
       this.searchKeyword = ''
+      this.activeSuggestion = -1
       this.$refs.searchInput?.focus()
     }
   }
@@ -247,7 +366,8 @@ export default {
 <style scoped>
 .title-bar {
   height: var(--titlebar-height);
-  background: var(--color-background);
+  background: linear-gradient(110deg, color-mix(in srgb, var(--color-primary) 5%, var(--color-background)), var(--color-background) 48%);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
   backdrop-filter: blur(10px);
   display: grid;
   grid-template-columns: minmax(max-content, 1fr) minmax(0, 360px) minmax(max-content, 1fr);
@@ -257,13 +377,14 @@ export default {
   user-select: none;
   position: relative;
   z-index: 9997;
-  transition: all 0.3s ease;
+  transition: background 0.3s ease, border-color 0.3s ease;
 }
 
 /* 歌词模式：完全透明 */
 .title-bar.lyric-mode {
   transition: none;
   background: transparent !important;
+  border-bottom-color: transparent;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
@@ -283,19 +404,19 @@ export default {
   justify-self: start;
   display: flex;
   align-items: center;
-  gap: var(--spacing-sm);
+  gap: 10px;
   padding: 0 var(--spacing-md);
-  -webkit-app-region: no-drag;
+  -webkit-app-region: drag;
   transition: opacity 0.3s ease, scale var(--ui-motion-fast) var(--ui-motion-ease);
   flex-shrink: 0;
   min-width: 200px;
 }
 
 .logo-icon {
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   object-fit: contain;
-  transition: transform 0.3s ease, scale var(--ui-motion-fast) var(--ui-motion-ease);
+  flex-shrink: 0;
 }
 
 .navigation-back {
@@ -304,35 +425,56 @@ export default {
   width: 28px;
   height: 28px;
   flex: 0 0 28px;
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-background);
   color: var(--color-text-secondary);
+  transition: color var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast), scale var(--ui-motion-fast) var(--ui-motion-ease);
   -webkit-app-region: no-drag;
 }
 
 .navigation-back svg { width: 20px; height: 20px; }
-.navigation-back:hover:not(:disabled) { color: var(--color-primary); background: var(--color-background-light); }
+.navigation-back:hover:not(:disabled) { color: var(--color-primary); background: var(--color-primary-light); border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border)); }
 .navigation-back:disabled { opacity: .3; cursor: default; }
 .navigation-back:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 
-.logo-icon:hover {
-  transform: scale(1.05);
+.brand-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  white-space: nowrap;
 }
 
 .app-name {
-  font-size: var(--font-size-sm);
-  font-weight: 700;
+  font-size: 12px;
+  line-height: 1.15;
+  font-weight: 800;
   color: var(--color-text);
-  letter-spacing: 0.5px;
+  letter-spacing: 1px;
   user-select: none;
-  transition: color 0.3s ease, scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
+
+.app-name > span { font-weight: 500; color: var(--color-primary); }
+.brand-caption { font-size: 9px; line-height: 1.2; color: var(--color-text-secondary); letter-spacing: 1.8px; }
 
 /* 搜索容器 */
 .search-container {
+  position: relative;
   grid-column: 2;
   min-width: 0;
   -webkit-app-region: no-drag;
 }
+
+.search-suggestions { position:absolute; top:calc(100% + 10px); left:0; right:0; max-height:min(480px,70vh); overflow:auto; background:var(--color-background); border:1px solid var(--color-border); border-radius:16px; box-shadow:0 12px 38px #0002; padding:12px; font-size:12px; color:var(--color-text); }
+.suggestion-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:3px 5px 10px; color:var(--color-text-secondary); }
+.suggestion-heading strong { font-size:11px; font-weight:500; }
+.search-suggestions button { background:transparent; border:0; color:inherit; cursor:pointer; font:inherit; border-radius:7px; }
+.suggestion-heading button { padding:2px 6px; font-size:18px; }
+.search-suggestions p { padding:10px 5px; color:var(--color-text-secondary); line-height:1.7; }
+.search-suggestions [role=option] { display:flex; gap:13px; align-items:center; width:100%; padding:10px 8px; text-align:left; line-height:1.5; }
+.search-suggestions [role=option] span { color:var(--color-text-secondary); font-size:10px; font-variant-numeric:tabular-nums; }
+.search-suggestions [role=option]:hover,.search-suggestions [aria-selected=true] { color:var(--color-primary); background:var(--color-background-light); }
+.search-suggestions button:focus-visible { outline:2px solid var(--color-primary); outline-offset:1px; }
 
 .search-box {
   display: flex;
@@ -340,15 +482,16 @@ export default {
   gap: var(--spacing-xs);
   width: 100%;
   height: 34px;
-  padding: 0 5px;
-  background: var(--bg-hover-light);
-  border: 1px solid transparent;
+  padding: 0 6px;
+  background: color-mix(in srgb, var(--color-background-light) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
   border-radius: var(--radius-full);
   transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
 
 .search-box:hover {
   background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--color-primary) 24%, var(--color-border));
 }
 
 .search-box:focus-within {
@@ -399,6 +542,8 @@ export default {
   height: 16px;
 }
 
+.search-btn { background: var(--color-primary-light); color: var(--color-primary); }
+
 .search-btn:hover:not(:disabled),
 .search-clear:hover {
   color: var(--color-text);
@@ -417,10 +562,14 @@ export default {
 
 .search-hint {
   flex: 0 0 24px;
+  height: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: var(--color-background);
   text-align: center;
-  color: var(--color-text-tertiary);
+  color: var(--color-text-secondary);
   font-size: var(--font-size-sm);
-  line-height: 1;
+  line-height: 18px;
   pointer-events: none;
 }
 
@@ -428,6 +577,7 @@ export default {
   grid-column: 3;
   justify-self: end;
   display: flex;
+  align-items: center;
   height: 100%;
   -webkit-app-region: no-drag;
   flex-shrink: 0;
@@ -444,8 +594,11 @@ export default {
   justify-content: center;
   color: var(--titlebar-icon-color);
   cursor: pointer;
-  transition: all var(--transition-base);
+  transition: color var(--transition-fast), background var(--transition-fast), scale var(--ui-motion-fast) var(--ui-motion-ease);
 }
+
+.control-btn:hover { background: var(--titlebar-btn-hover); }
+.control-btn:focus-visible, .user-info:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -3px; }
 
 .control-btn svg {
   transition: all var(--transition-base);
@@ -467,6 +620,7 @@ export default {
 
 .control-btn.close:hover {
   color: var(--color-on-primary);
+  background: var(--color-error);
 }
 
 .control-btn.close:hover .icon {
@@ -479,9 +633,14 @@ export default {
   display: flex;
   align-items: center;
   gap: var(--spacing-xs);
-  padding: 0 var(--spacing-md);
+  padding: 0;
+  width: 30px;
+  height: 30px;
+  margin: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 50%;
+  background: var(--color-background-light);
   min-width: auto;
-  width: auto;
 }
 
 .login-btn .icon {
@@ -509,11 +668,14 @@ export default {
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
-  padding: 0 var(--spacing-md);
+  height: 34px;
+  padding: 0 10px 0 4px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: var(--color-background-light);
   cursor: pointer;
   transition: all var(--transition-base);
-  border-radius: var(--radius-sm);
-  margin-right: var(--spacing-xs);
+  border-radius: var(--radius-full);
+  margin-right: 10px;
   -webkit-app-region: no-drag;
 }
 
@@ -522,15 +684,15 @@ export default {
 }
 
 .user-avatar {
-  width: 32px;
-  height: 32px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--color-background-lighter);
-  border: 2px solid var(--color-border);
+  border: 1px solid var(--color-border);
   transition: all var(--transition-base);
 }
 
@@ -575,18 +737,29 @@ export default {
 
 @media (max-width: 900px) {
   .user-name { display: none; }
+  .user-info { padding-right: 4px; }
 }
 
 @media (max-width: 700px) {
   .title-bar { column-gap: var(--spacing-sm); }
   .logo-container { min-width: 0; }
-  .app-name { display: none; }
+  .brand-copy { display: none; }
   .search-hint { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .title-bar,
+  .logo-container,
+  .navigation-back,
+  .control-btn,
+  .control-btn .icon,
+  .control-btn svg,
+  .user-info,
+  .user-avatar,
+  .user-name,
   .search-box,
   .search-btn,
   .search-clear { transition: none; }
+  .control-btn:hover .icon, .user-info:hover .user-avatar { transform: none; }
 }
 </style>

@@ -101,15 +101,7 @@
       <p class="theme-description theme-file-hint">支持 .bk-theme.json 或 .json 文件，最大 {{ maxFileSizeLabel }}。</p>
     </div>
 
-    <Transition name="ui-fade" mode="out-in"><p
-      v-if="message"
-      :key="messageKey"
-      class="theme-message"
-      :class="{ 'is-error': messageType === 'error' }"
-      :role="messageType === 'error' ? 'alert' : 'status'"
-    >
-      {{ message }}
-    </p></Transition>
+    <AppNotice :message="message" :revision="messageKey" :type="messageType === 'error' ? 'error' : 'success'" title="主题包" />
   </div>
 </template>
 
@@ -507,15 +499,4 @@ onBeforeUnmount(() => {
   margin-top: var(--spacing-sm);
 }
 
-.theme-message {
-  margin: 0;
-  color: var(--color-success);
-  font-size: var(--font-size-sm);
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-
-.theme-message.is-error {
-  color: var(--color-error);
-}
 </style>

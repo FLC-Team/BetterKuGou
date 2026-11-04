@@ -11,7 +11,7 @@ function fixture(packaged = false, controls = {}) {
   let options, savedListener, protocolHandler
   const settings = { software: { updates: {} }, download: { offlinePlaylistCacheEnabled: true, offlineCachePath: controls.offlineCachePath || '' }, playback: { quality: '128' } }
   const state = { revision: 1, generation: 1, userId: 'placeholder-account', playlists: [], cacheDirectory: controls.offlineCachePath || path.join('/user-data', 'offline-playlists') }
-  const methods = ['setSession', 'getState', 'readPlaylist', 'putPlaylist', 'cacheSong', 'getSource', 'releaseSource', 'readLyrics', 'putLyrics', 'getArtwork', 'cacheArtwork', 'pause', 'resume', 'retry', 'retryNetwork', 'clear']
+  const methods = ['setSession', 'getState', 'readPlaylist', 'putPlaylist', 'removePlaylist', 'cacheSong', 'getSource', 'releaseSource', 'readLyrics', 'putLyrics', 'getArtwork', 'cacheArtwork', 'pause', 'resume', 'retry', 'retryNetwork', 'clear']
   const service = {
     ...Object.fromEntries(methods.map(method => [method, arg => { calls.push([method, arg]); return state }])),
     configure(value) { calls.push(['configure', value]) },
@@ -58,6 +58,7 @@ function fixture(packaged = false, controls = {}) {
       if (name === './logger') return quiet
       if (name === './services/lyricLibraryService') return { createLyricLibraryService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/playlistCacheService') return { createPlaylistCacheService(value) { options = value; return service } }
+      if (name === './services/musicDownloadService') return { createMusicDownloadService: () => ({ configure: async () => {}, setSession: async () => {}, stop: async () => {} }) }
       if (name === './services/backendService') return { createBackendService: () => ({ stop: async () => {} }) }
       if (name === './services/updateService') return { createUpdateService: () => ({}) }
       if (name === './settingsStore') return {
@@ -89,6 +90,8 @@ test('offline worker paths and media registration cover development and packaged
     assert.equal(f.options().cacheRoot, path.join('/user-data', 'offline-playlists'))
     assert.equal(f.registrations[0][0].scheme, 'bk-cache')
     assert.equal(f.registrations[0][0].privileges.stream, true)
+    assert.equal(f.registrations[0][0].privileges.supportFetchAPI, true)
+    assert.equal(f.registrations[0][0].privileges.corsEnabled, true)
     assert.equal(f.registrations[0][0].privileges.bypassCSP, undefined)
     assert.equal(f.registrations[1], 'bk-cache')
     const request = { url: 'bk-cache://media/opaque' }
@@ -100,7 +103,7 @@ test('offline worker paths and media registration cover development and packaged
 
 test('every offline operation rejects auxiliary windows, frames and calls during shutdown', async () => {
   const f = fixture()
-  const names = ['set-session', 'get-state', 'read-playlist', 'put-playlist', 'cache-song', 'get-source', 'release-source', 'read-lyrics', 'put-lyrics', 'get-artwork', 'cache-artwork', 'pause', 'resume', 'retry', 'retry-network', 'clear']
+  const names = ['set-session', 'get-state', 'read-playlist', 'put-playlist', 'remove-playlist', 'cache-song', 'get-source', 'release-source', 'read-lyrics', 'put-lyrics', 'get-artwork', 'cache-artwork', 'pause', 'resume', 'retry', 'retry-network', 'clear']
   for (const name of names) {
     for (const source of [{ sender: {} }, { sender: f.event.sender, senderFrame: {} }]) {
       assert.throws(() => f.invoke(name, null, source), /主窗口/)
@@ -140,13 +143,27 @@ test('preload provides fixed cache capabilities and detachable state/auth subscr
   const received = []
   const disposeState = cache.onState(value => received.push(value))
   const disposeAuth = cache.onAuthExpired(value => received.push(value))
+  const disposeSource = cache.onSourceReady(value => received.push(value))
   ipc.emit('playlist-cache:state', { privateElectronEvent: true }, 'state')
   ipc.emit('playlist-cache:auth-expired', {}, 'auth')
-  assert.deepEqual(received, ['state', 'auth'])
-  disposeState(); disposeAuth()
+  ipc.emit('playlist-cache:source-ready', { privileged: true }, 'source')
+  assert.deepEqual(received, ['state', 'auth', 'source'])
+  disposeState(); disposeAuth(); disposeSource()
   assert.equal(ipc.listenerCount('playlist-cache:state'), 0)
+  assert.equal(ipc.listenerCount('playlist-cache:source-ready'), 0)
   assert.equal(cache.invoke, undefined)
   assert.equal(cache.download, undefined)
+})
+
+test('completed audio notifications use the fixed main-window source-ready channel', async () => {
+  const f = fixture()
+  const source = { generation: 1, userId: 'placeholder-account', source: 'catalog', hash: 'song-a', quality: '128' }
+  f.options().onSourceReady(source)
+  assert.deepEqual(f.windows[0].sent.at(-1), ['playlist-cache:source-ready', source])
+  await f.api.performApplicationCleanup()
+  const count = f.windows[0].sent.length
+  f.options().onSourceReady(source)
+  assert.equal(f.windows[0].sent.length, count)
 })
 
 test('packaging includes the standalone offline worker', () => {

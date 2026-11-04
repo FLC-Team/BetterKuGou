@@ -1,13 +1,14 @@
 
 import ArtworkCover from '../../components/common/ArtworkCover.vue'
 import SongBadges from '../../components/common/SongBadges.vue'
+import LibraryActions from '../../components/common/LibraryActions.vue'
 import ArtistLinks from '../../components/common/ArtistLinks.vue'
 import { getSongArtists } from '../../utils/songMetadata.js'
 import { logger } from '../../utils/logger.js'
 import { getArtistDetail, getArtistAudios, getArtistAlbums, followArtist, unfollowArtist, findArtistByName, getImagesByHash, getAlbumInfo } from '../../api/music.js'
 
 export default {
-  components: { ArtworkCover, SongBadges, ArtistLinks },
+  components: { ArtworkCover, SongBadges, ArtistLinks, LibraryActions },
   name: 'ArtistView',
   props: {
     artistId: { type: [String, Number], default: null },

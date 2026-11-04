@@ -26,6 +26,18 @@ async function fixture(t, options = {}) {
   audio.write('RIFF', 0)
   audio.writeUInt32LE(audio.length - 8, 4)
   audio.write('WAVE', 8)
+  if (options.validWav) {
+    audio.write('fmt ', 12)
+    audio.writeUInt32LE(16, 16)
+    audio.writeUInt16LE(1, 20)
+    audio.writeUInt16LE(1, 22)
+    audio.writeUInt32LE(8000, 24)
+    audio.writeUInt32LE(16000, 28)
+    audio.writeUInt16LE(2, 32)
+    audio.writeUInt16LE(16, 34)
+    audio.write('data', 36)
+    audio.writeUInt32LE(audio.length - 44, 40)
+  }
   const calls = []
   let origin
   const server = http.createServer((request, response) => {
@@ -42,9 +54,20 @@ async function fixture(t, options = {}) {
   class FixtureWorker extends Worker {
     constructor(workerPath, options) {
       super(workerPath, { ...options, workerData: { ...options.workerData, apiBase: origin, allowLocalTestUrls: true } })
+      this.droppedReplies = new Set()
+      this.messages = []
       workers.push(this)
     }
+    emit(event, message, ...rest) {
+      if (event === 'message' && this.droppedReplies?.has(message.id) && ['result', 'error'].includes(message.type)) {
+        options.replyDropped = true
+        return false
+      }
+      return super.emit(event, message, ...rest)
+    }
     postMessage(message) {
+      this.messages.push(message)
+      if (options.dropReply === message.action) { this.droppedReplies.add(message.id); options.dropReply = null }
       if (options.failCommit && message.action === 'commitMigration') {
         options.failCommit = false
         throw new Error('Simulated lost commit message')
@@ -53,7 +76,9 @@ async function fixture(t, options = {}) {
     }
   }
   const states = []
-  const service = createPlaylistCacheService({ workerPath: path.resolve(__dirname, '../electron/services/playlistCacheWorker.cjs'), cacheRoot: directory, Worker: FixtureWorker, onState: state => states.push(state), logger: { warn() {}, error() {} } })
+  const sourceReady = []
+  const service = createPlaylistCacheService({ workerPath: path.resolve(__dirname, '../electron/services/playlistCacheWorker.cjs'), cacheRoot: directory, Worker: FixtureWorker, onState: state => states.push(state), onSourceReady: source => sourceReady.push(source), logger: { warn() {}, error() {} },
+    rpcTimeoutMs: options.rpcTimeoutMs, shutdownTimeoutMs: options.shutdownTimeoutMs })
   t.after(async () => {
     await service.stop()
     server.closeAllConnections()
@@ -63,7 +88,7 @@ async function fixture(t, options = {}) {
   await service.configure({ download: { offlinePlaylistCacheEnabled: true } })
   await service.setSession({ userId: 'account-a', token: 'placeholder-token' })
   await service.putPlaylist({ id: 'favorite-id', isFavorite: true, name: '我喜欢', songs: [{ hash: 'song-a', name: 'Cached song' }] })
-  return { service, calls, states, directory, audio, workers }
+  return { service, calls, states, sourceReady, directory, audio, workers }
 }
 
 test('single byte ranges cover suffix, end clamping and malformed/unsatisfiable requests', () => {
@@ -76,11 +101,25 @@ test('single byte ranges cover suffix, end clamping and malformed/unsatisfiable 
   for (const range of ['bytes=100-', 'bytes=3-2', 'bytes=-0', 'bytes=1-2,3-4', 'bytes=-', 'bytes=1.5-3', 'items=0-1', 'bytes=9007199254740992-']) assert.equal(parseByteRange(range, 100), false)
 })
 
+test('private download leases keep the old cache file alive until copying releases it after migration', async t => {
+  const f=await fixture(t)
+  await f.service.cacheSong({song:{hash:'song-a'},quality:'128'})
+  const lease=await until(()=>f.service.acquireDownloadSource({hash:'song-a',quality:'128'}))
+  const target=path.join(f.directory,'..',path.basename(f.directory)+'-download-migration')
+  t.after(()=>fs.rm(target,{recursive:true,force:true}))
+  await f.service.changeDirectory(target,async()=>{})
+  assert.deepEqual(await fs.readFile(lease.path),f.audio)
+  await lease.release()
+  await until(async()=>{try{await fs.access(lease.path);return false}catch(error){return error.code==='ENOENT'}})
+  await lease.release()
+})
+
 test('real Worker returns private leases and protocol serves GET, HEAD, seek ranges and rejects path injection', async t => {
   const f = await fixture(t)
   assert.equal(f.calls.length, 0)
   await f.service.cacheSong({ song: { hash: 'song-a', name: 'Cached song' }, quality: '128' })
   const source = await until(() => f.service.getSource({ hash: 'song-a', quality: '128' }))
+  assert.deepEqual(f.sourceReady, [{ generation: 1, userId: 'account-a', hash: 'song-a', quality: '128', source: 'catalog' }])
   assert.match(source.url, /^bk-cache:\/\/media\/[a-f\d]{48}$/)
   assert.equal(source.path, undefined)
   assert.equal(source.file, undefined)
@@ -198,6 +237,30 @@ test('failed migration setting commits roll back, preserve source media, and per
   assert.equal(f.service.getState().migrationError, null)
 })
 
+test('analysis leases preserve their complete content through cache migration, clearing and logout', async t => {
+  const f = await fixture(t, { validWav: true })
+  const target = await migrationTarget(t)
+  await f.service.cacheSong({ song: { hash: 'song-a' }, quality: '128' })
+  const source = await until(() => f.service.getSource({ hash: 'song-a', quality: '128', purpose: 'analysis' }))
+  assert.equal(source.audioMetadata.sampleRate, 8000)
+  assert.equal(source.path, undefined)
+  const oldResponse = await f.service.handleRequest(new Request(source.url))
+  await f.service.changeDirectory(target, async () => {})
+  assert.deepEqual(Buffer.from(await oldResponse.arrayBuffer()), f.audio)
+  const migrated = await f.service.getSource({ hash: 'song-a', quality: '128', purpose: 'analysis' })
+  assert.equal(migrated.sha256, source.sha256)
+  assert.deepEqual(migrated.audioMetadata, source.audioMetadata)
+  await f.service.clear()
+  await f.service.setSession(null)
+  assert.equal(await f.service.getSource({ hash: 'song-a', quality: '128', purpose: 'analysis' }), null)
+  assert.deepEqual(Buffer.from(await (await f.service.handleRequest(new Request(source.url))).arrayBuffer()), f.audio)
+  await f.service.releaseSource(source.leaseId)
+  assert.equal((await f.service.handleRequest(new Request(source.url))).status, 404)
+  assert.deepEqual(Buffer.from(await (await f.service.handleRequest(new Request(migrated.url))).arrayBuffer()), f.audio)
+  await f.service.releaseSource(migrated.leaseId)
+  assert.equal((await f.service.handleRequest(new Request(migrated.url))).status, 404)
+})
+
 test('a lost Worker commit after settings were saved rebuilds from the new root without deleting either copy', async t => {
   const f = await fixture(t, { failCommit: true })
   const target = await migrationTarget(t)
@@ -266,8 +329,8 @@ test('late RPC sources and authentication events cannot cross an account generat
     terminate() { this.emit('exit', 0); return Promise.resolve() }
     result(command, result) { this.emit('message', { id: command.id, type: 'result', result }) }
   }
-  const expired = []
-  const service = createPlaylistCacheService({ workerPath: '/unused', cacheRoot: '/unused', Worker: MockWorker, onAuthExpired: value => expired.push(value) })
+  const expired = [], sourceReady = []
+  const service = createPlaylistCacheService({ workerPath: '/unused', cacheRoot: '/unused', Worker: MockWorker, onAuthExpired: value => expired.push(value), onSourceReady: value => sourceReady.push(value) })
   const loggedIn = service.setSession({ userId: 'first', token: 'placeholder-first' })
   const worker = instances[0]
   worker.result(worker.messages.at(-1), { generation: 1, userId: 'first', playlists: [], revision: 0 })
@@ -275,15 +338,217 @@ test('late RPC sources and authentication events cannot cross an account generat
   const pending = service.getSource({ hash: 'song-a', quality: '128' })
   const request = worker.messages.at(-1)
   const login = service.setSession({ userId: 'second', token: 'placeholder-second' })
+  worker.emit('message', { type: 'sourceReady', generation: 1, userId: 'first', hash: 'song-a', quality: '128' })
+  assert.equal(sourceReady.length, 0, 'changing account invalidates completion notices before the Worker acknowledges it')
   worker.result(worker.messages.at(-1), { generation: 2, userId: 'second', playlists: [], revision: 0 })
   await login
   worker.emit('message', { type: 'authExpired', generation: 1, userId: 'first' })
   assert.equal(expired.length, 0)
+  worker.emit('message', { type: 'sourceReady', generation: 1, userId: 'first', hash: 'song-a', quality: '128' })
+  worker.emit('message', { type: 'sourceReady', generation: 2, userId: 'first', hash: 'song-a', quality: '128' })
+  assert.equal(sourceReady.length, 0)
+  worker.emit('message', { type: 'sourceReady', generation: 2, userId: 'second', hash: 'song-a', quality: '128', url: '/private/file', token: 'placeholder-secret' })
+  assert.deepEqual(sourceReady, [{ generation: 2, userId: 'second', hash: 'song-a', quality: '128', source: 'catalog' }])
   worker.result(request, { leaseId: 'a'.repeat(48), path: '/private/file', account: 'a'.repeat(64), file: 'file' })
   assert.equal(await pending, null)
   assert.equal(worker.messages.at(-1).action, 'releaseSource')
   worker.result(worker.messages.at(-1), true)
+  const returning = service.setSession({ userId: 'first', token: 'placeholder-first-new-session' })
+  worker.result(worker.messages.at(-1), { generation: 3, userId: 'first', playlists: [], revision: 0 })
+  await returning
+  worker.emit('message', { type: 'sourceReady', generation: 1, userId: 'first', hash: 'song-a', quality: '128' })
+  assert.equal(sourceReady.length, 1, 'logging back into the original account cannot revive its old generation')
   const stop = service.stop()
   worker.emit('exit', 0)
   await stop
+})
+
+test('an account change between RPC validation and public lease publication releases the old source', async () => {
+  let worker
+  class MockWorker extends EventEmitter {
+    constructor() { super(); worker = this; this.messages = [] }
+    postMessage(message) { this.messages.push(message) }
+    result(command, result) { this.emit('message', { id: command.id, type: 'result', result }) }
+  }
+  const service = createPlaylistCacheService({ workerPath: '/unused', cacheRoot: '/unused', Worker: MockWorker })
+  const login = service.setSession({ userId: 'first', token: 'placeholder-first' })
+  worker.result(worker.messages.at(-1), { generation: 1, userId: 'first', playlists: [] })
+  await login
+  const pending = service.getSource({ hash: 'song-a', quality: '128', purpose: 'analysis' })
+  worker.result(worker.messages.at(-1), { leaseId: 'a'.repeat(48), path: '/private/file', account: 'a'.repeat(64), file: 'file' })
+  let changing, changeCommand
+  queueMicrotask(() => {
+    changing = service.setSession({ userId: 'second', token: 'placeholder-second' })
+    changeCommand = worker.messages.at(-1)
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  const release = worker.messages.at(-1)
+  assert.equal(release.action, 'releaseSource')
+  assert.equal(release.payload.leaseId, 'a'.repeat(48))
+  worker.result(release, true)
+  assert.equal(await pending, null)
+  worker.result(changeCommand, { generation: 2, userId: 'second', playlists: [] })
+  await changing
+  const stopping = service.stop()
+  worker.emit('exit', 0)
+  await stopping
+})
+
+test('an unresponsive live Worker is retired before retry and retains granted playback leases', async t => {
+  const options = { rpcTimeoutMs: 1000 }
+  const f = await fixture(t, options)
+  await f.service.cacheSong({ song: { hash: 'song-a' } })
+  const source = await until(() => f.service.getSource({ hash: 'song-a', quality: '128' }))
+  options.dropReply = 'readPlaylist'
+  await assert.rejects(f.service.readPlaylist(null), { code: 'CACHE_WORKER_TIMEOUT' })
+  const playlist = await f.service.readPlaylist(null)
+  assert.equal(playlist.id, 'favorite-id')
+  assert.equal(f.workers.length, 2)
+  assert.equal(f.workers[0].threadId, -1)
+  assert.deepEqual(Buffer.from(await (await f.service.handleRequest(new Request(source.url))).arrayBuffer()), f.audio)
+  await f.service.releaseSource(source.leaseId)
+})
+
+test('a lost prepared migration reply preserves both copies and permits a new migration after recovery', async t => {
+  const options = { rpcTimeoutMs: 1000 }
+  const f = await fixture(t, options)
+  const target = await migrationTarget(t)
+  options.dropReply = 'prepareMigration'
+  let settingWrites = 0
+  await assert.rejects(f.service.changeDirectory(target, async () => { settingWrites++ }), { code: 'CACHE_MIGRATION_FAILED' })
+  assert.equal(settingWrites, 0)
+  assert.equal(f.service.getState().cacheDirectory, f.directory)
+  await fs.access(f.directory)
+  await fs.access(target)
+  assert.equal((await f.service.readPlaylist(null)).id, 'favorite-id')
+  const retryTarget = await migrationTarget(t)
+  const result = await f.service.changeDirectory(retryTarget, async () => { settingWrites++ })
+  assert.equal(result.cacheDirectory, retryTarget)
+  assert.equal(settingWrites, 1)
+})
+
+test('a lost commit reply after durable settings publication rebuilds the verified target and preserves URLs', async t => {
+  const options = { rpcTimeoutMs: 1000 }
+  const f = await fixture(t, options)
+  const target = await migrationTarget(t)
+  await f.service.cacheSong({ song: { hash: 'song-a' } })
+  const source = await until(() => f.service.getSource({ hash: 'song-a', quality: '128' }))
+  options.dropReply = 'commitMigration'
+  const result = await f.service.changeDirectory(target, async () => {})
+  assert.equal(result.cacheDirectory, target)
+  assert.equal(result.migrationWarning.code, 'CACHE_MIGRATION_RECOVERED')
+  assert.equal(f.workers[0].threadId, -1)
+  await fs.access(f.directory)
+  await fs.access(target)
+  assert.deepEqual(Buffer.from(await (await f.service.handleRequest(new Request(source.url))).arrayBuffer()), f.audio)
+  const replacement = await f.service.getSource({ hash: 'song-a', quality: '128' })
+  assert.ok(replacement)
+  await f.service.releaseSource(source.leaseId)
+  await f.service.releaseSource(replacement.leaseId)
+})
+
+test('shutdown bounds an unresponsive migration before the ordinary RPC deadline without deleting either copy', async t => {
+  const options = { rpcTimeoutMs: 30_000, shutdownTimeoutMs: 100 }
+  const f = await fixture(t, options)
+  const target = await migrationTarget(t)
+  options.dropReply = 'prepareMigration'
+  const migration = f.service.changeDirectory(target, async () => { assert.fail('a lost prepare reply cannot publish settings') })
+  const rejectedMigration = assert.rejects(migration, { code: 'CACHE_STOPPED' })
+  await until(() => options.replyDropped)
+  const waiting = f.service.readPlaylist(null)
+  const rejectedWaiter = assert.rejects(waiting, { code: 'CACHE_STOPPED' })
+  await f.service.stop()
+  await Promise.all([rejectedMigration, rejectedWaiter])
+  await until(() => f.workers[0].threadId === -1)
+  assert.equal(f.workers.length, 1)
+  await fs.access(f.directory)
+  await fs.access(target)
+})
+
+test('shutdown during an unknown settings commit keeps both copies and late success cannot restart or clean files', async t => {
+  const f = await fixture(t, { shutdownTimeoutMs: 100 })
+  const target = await migrationTarget(t)
+  let releaseSave, saving = false, persistedDirectory
+  const saved = new Promise(resolve => { releaseSave = resolve })
+  const migration = f.service.changeDirectory(target, async directory => { saving = true; await saved; persistedDirectory = directory })
+  await until(() => saving)
+  await f.service.stop()
+  await until(() => f.workers[0].threadId === -1)
+  releaseSave()
+  await migration
+  assert.equal(persistedDirectory, target)
+  assert.equal(f.workers.length, 1)
+  assert.equal(f.workers[0].messages.some(message => ['commitMigration', 'rollbackMigration', 'finalizeMigration'].includes(message.action)), false)
+  await fs.access(f.directory)
+  await fs.access(target)
+})
+
+test('real migration progress renews its response deadline while stale non-progress replies do not settle it', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let worker, prepared, terminated = 0
+  const target = path.resolve('.agent/tools/controlled-target')
+  class ProgressWorker extends EventEmitter {
+    constructor() { super(); worker = this }
+    postMessage(message) {
+      if (message.action === 'prepareMigration') { prepared = message; return }
+      if (message.action === 'stop') { queueMicrotask(() => this.emit('exit', 0)); return }
+      queueMicrotask(() => this.emit('message', { id: message.id, type: 'result', result: {} }))
+    }
+    terminate() { terminated++; this.emit('exit', 0); return Promise.resolve() }
+  }
+  const service = createPlaylistCacheService({ workerPath: '/unused', cacheRoot: path.resolve('.agent/tools/controlled-source'), Worker: ProgressWorker, rpcTimeoutMs: 100,
+    logger: { warn() {}, error() {} } })
+  t.after(() => service.stop())
+  const migration = service.changeDirectory(target, async () => {})
+  t.mock.timers.tick(75)
+  worker.emit('message', { type: 'state', state: { generation: 0, userId: null, migration: { phase: 'copying', copiedBytes: 100, totalBytes: 200 } } })
+  worker.emit('message', { type: 'unrecognized', id: prepared.id })
+  t.mock.timers.tick(75)
+  assert.equal(terminated, 0)
+  worker.emit('message', { type: 'result', id: prepared.id, result: { targetRoot: target } })
+  await migration
+  assert.equal(service.getState().cacheDirectory, target)
+})
+
+test('shutdown also bounds a lost cleanup reply after the verified destination becomes authoritative', async t => {
+  const options = { rpcTimeoutMs: 30_000, shutdownTimeoutMs: 100 }
+  const f = await fixture(t, options)
+  const target = await migrationTarget(t)
+  options.dropReply = 'finalizeMigration'
+  const migration = f.service.changeDirectory(target, async () => {})
+  await until(() => options.replyDropped)
+  await f.service.stop()
+  await migration
+  await until(() => f.workers[0].threadId === -1)
+  assert.equal(f.workers.length, 1)
+  await fs.access(target)
+  assert.equal(f.service.getState().cacheDirectory, target)
+})
+
+test('repeated migration snapshots cannot keep an unresponsive prepare request alive', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let worker, terminated = 0
+  class RepeatedProgressWorker extends EventEmitter {
+    constructor() { super(); worker = this }
+    postMessage(message) {
+      if (message.action === 'prepareMigration') return
+      if (message.action === 'stop') { queueMicrotask(() => this.emit('exit', 0)); return }
+      queueMicrotask(() => this.emit('message', { id: message.id, type: 'result', result: {} }))
+    }
+    terminate() { terminated++; this.emit('exit', 0); return Promise.resolve() }
+  }
+  const service = createPlaylistCacheService({ workerPath: '/unused', cacheRoot: path.resolve('.agent/tools/repeated-source'), Worker: RepeatedProgressWorker, rpcTimeoutMs: 100,
+    logger: { warn() {}, error() {} } })
+  t.after(() => service.stop())
+  const migration = service.changeDirectory(path.resolve('.agent/tools/repeated-target'), async () => { assert.fail('unconfirmed migration cannot save settings') })
+  const failure = assert.rejects(migration, { code: 'CACHE_MIGRATION_FAILED' })
+  const snapshot = { type: 'state', state: { generation: 0, userId: null, migration: { phase: 'copying', copiedBytes: 100, verifiedBytes: 0, totalBytes: 200 } } }
+  t.mock.timers.tick(75)
+  worker.emit('message', snapshot)
+  t.mock.timers.tick(75)
+  worker.emit('message', snapshot)
+  t.mock.timers.tick(26)
+  await failure
+  assert.equal(terminated, 1)
+  assert.equal(service.getState().cacheDirectory, path.resolve('.agent/tools/repeated-source'))
 })

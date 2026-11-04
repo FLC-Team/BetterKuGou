@@ -3,8 +3,8 @@
 
 > 本项目前端与客户端由本仓库维护，后端接口基于 [MakcRe/KuGouMusicApi](https://github.com/MakcRe/KuGouMusicApi) 项目，致谢原作者的开源贡献。
 
-[![GitHub release](https://img.shields.io/github/v/release/YuanXiaCN/BetterKuGou?include_prereleases)](https://github.com/YuanXiaCN/BetterKuGou/releases)
-[![GitHub stars](https://img.shields.io/github/stars/YuanXiaCN/BetterKuGou)](https://github.com/YuanXiaCN/BetterKuGou/stargazers)
+[![GitHub release](https://img.shields.io/github/v/release/FLC-Team/BetterKuGou)](https://github.com/FLC-Team/BetterKuGou/releases)
+[![GitHub stars](https://img.shields.io/github/stars/FLC-Team/BetterKuGou)](https://github.com/FLC-Team/BetterKuGou/stargazers)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > 第三方跨平台酷狗音乐客户端，界面简洁，支持主题与播放行为自定义。
@@ -13,6 +13,7 @@
 - **界面简洁**：极致简约风格，专注音乐体验
 - **高度自定义**：支持多种主题、配色、布局，用户可深度定制
 - **动画全覆盖**：全局动画效果，交互流畅自然
+- **VST3 音频效果**：串联本机效果器、打开原生编辑窗口，自定义聆听音色
 - **无广告**：纯净体验
 - **多平台支持**：Windows、macOS、Linux
 
@@ -23,14 +24,14 @@
 
 ### 下载安装
 
-前往 [Releases](https://github.com/YuanXiaCN/BetterKuGou/releases) 页面，下载适合你系统的安装包：
+前往 [Releases](https://github.com/FLC-Team/BetterKuGou/releases) 页面，下载适合你系统的安装包：
 - Windows: `BetterKuGou-*.exe`
-- macOS: `BetterKuGou-*.dmg` 或 `BetterKuGou-*.zip`
+- macOS: `BetterKuGou-*.dmg`
 - Linux: `BetterKuGou-*.AppImage`、`*.deb`、`*.rpm`
 
 ### 检查与下载更新
 
-桌面客户端中打开“设置 → 启动与应用 → 应用更新”，可手动检查版本、查看更新说明、下载更新包或取消任务。版本与下载分别优先使用 [git.tangbai.cc](https://git.tangbai.cc/) 获取 [FLC-Team/BetterKuGou 发布](https://github.com/FLC-Team/BetterKuGou/releases)，失败后尝试 GitHub 原站，检查和下载在后台进行。
+桌面客户端中打开“设置 → 更新与备份 → 应用更新”，可手动检查版本、查看更新说明、下载更新包或取消任务。版本与下载分别优先使用 [git.tangbai.cc](https://git.tangbai.cc/) 获取 [FLC-Team/BetterKuGou 发布](https://github.com/FLC-Team/BetterKuGou/releases)，失败后尝试 GitHub 原站，检查和下载在后台进行。
 
 默认开启自动检查，启动 10 秒后检查，此后每 24 小时一次；自动下载默认关闭，可在此开启。更新渠道默认“正式版”，会排除版本号含 alpha 等预发布后缀的版本，即使 GitHub 未将其标记为预发布；“测试版”同时包含正式版与预发布。渠道与开关保存成功后生效，应用只提供高于当前版本的更新。
 
@@ -43,6 +44,12 @@
 “设置 → 下载与缓存”可关闭自动缓存、调整容量与并发、查看占用或清理本账号音频与歌词封面缓存。默认开启、2GB 上限、3 个并发，音质跟随播放偏好；容量不足时回收较久未用内容，正在使用的音源保留至释放。清理后保留歌单列表，再次播放才重新积累。
 
 缓存保存在应用用户数据目录的 `offline-playlists` 文件夹。退出账号后停止缓存并隐藏私有内容，原账号重新登录后可继续使用；缓存故障、歌词或封面缺失不阻断正常播放。
+
+### VST3 音频效果
+
+打开“设置 → 聆听 → 音频效果”，扫描已安装的插件或添加自选目录，将效果器加入效果链；可排序、旁路、打开原生编辑窗口及设置置顶。插件参数与效果链自动保存在本机。支持当前歌曲 BPM 自动估算、手动覆盖和倍速/半速修正，供插件节拍同步使用，不改变歌曲播放速度。
+
+仅支持与客户端同平台、同架构的 VST3 立体声效果器；不支持 VST2、MIDI 乐器或跨架构桥接。插件需另行安装并具备有效授权。Linux 原生编辑窗口需要 X11/XWayland。音效增加约 64ms 桥接缓冲及插件自身延迟；插件异常时回退原声，可在设置中重试。
 
 ### 安装与覆盖升级
 
@@ -57,7 +64,7 @@
 
 1. 克隆仓库
    ```bash
-   git clone https://github.com/YuanXiaCN/BetterKuGou.git
+   git clone https://github.com/FLC-Team/BetterKuGou.git
    cd BetterKuGou
    ```
 2. 安装依赖
@@ -65,19 +72,24 @@
    npm install
    ```
    该命令会自动安装根项目以及 `KuGouMusicApi/` 的生产依赖。
-3. 启动开发环境
+3. 构建原生音效宿主
+   ```bash
+   npm run build:audio-effects
+   ```
+   需要 Git、CMake 3.25+ 和 C++17 工具链；Windows 使用 Visual Studio C++ 与 Windows SDK，macOS 使用 Xcode/Clang，Linux 需要 X11 开发库。详情见 [原生音效文档](native/audio-effects/audio-effects.md)。
+4. 启动开发环境
    ```bash
    npm run electron:dev
    ```
    Vite、Electron 和本地 API（`localhost:6500`）会一起启动。
-4. 打包构建
+5. 打包构建
    ```bash
    npm run dist:win   # Windows
    npm run dist:mac   # macOS
    npm run dist:linux # Linux
    ```
 
-仅验证编译时可运行 `npm run build`。最终安装包输出到 `release/`。
+仅验证界面与 Electron 编译时可运行 `npm run build`。打包会自动构建目标架构的原生音效宿主，最终安装包输出到 `release/`。
 
 安装界面维护见 [安装模块速查](installer/installer.md)。Windows 下可使用 `pwsh -NoProfile -File scripts/generate-installer-assets.ps1` 从公共 Logo 重新生成安装图像；macOS/Linux 打包直接使用已提交资源。
 

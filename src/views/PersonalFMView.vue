@@ -1,6 +1,7 @@
 <template>
   <div class="personal-fm-view list-page" :aria-busy="loading">
     <div class="list-content">
+      <AppNotice :message="error" title="私人 FM 加载失败" type="error" :actions="[{ label: '重试', run: loadData, disabled: loading }]" />
       <button type="button" class="back-btn" @click="handleBack">← 返回发现</button>
       <header class="fm-header">
         <p class="eyebrow">PERSONAL RADIO / 私人电台</p>
@@ -15,13 +16,8 @@
         <p>加载中...</p>
       </div>
 
-      <div v-else-if="error" class="error">
-        <svg viewBox="0 0 1024 1024" width="64" height="64" fill="currentColor" opacity="0.3">
-          <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64zm0 820c-205.4 0-372-166.6-372-372s166.6-372 372-372 372 166.6 372 372-166.6 372-372 372z"/>
-          <path d="M464 688a48 48 0 1096 0 48 48 0 10-96 0zm8-336h48c4.4 0 8 3.6 8 8v272c0 4.4-3.6 8-8 8h-48c-4.4 0-8-3.6-8-8V360c0-4.4 3.6-8 8-8z"/>
-        </svg>
-        <p>{{ error }}</p>
-        <button class="retry-btn" @click="loadData">重试</button>
+      <div v-else-if="error" class="empty-state">
+        <button type="button" class="retry-btn" @click="loadData">重新加载</button>
       </div>
 
       <div v-else-if="songs.length === 0" class="empty">
@@ -39,6 +35,7 @@
           </button>
           <button type="button" class="fm-song-title" :title="song.songname || song.filename" @click.stop="$emit('search', song)" @dblclick.stop>{{ song.songname || song.filename }}</button>
           <SongBadges :song="song" />
+          <LibraryActions :song="song" />
           <ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" />
         </article>
       </div>
@@ -50,6 +47,7 @@
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
 import SongBadges from '../components/common/SongBadges.vue'
+import LibraryActions from '../components/common/LibraryActions.vue'
 import ArtistLinks from '../components/common/ArtistLinks.vue'
 import { logger } from '../utils/logger.js'
 
@@ -57,7 +55,7 @@ import { getPersonalFM } from '../api/music.js'
 import { useSettingsStore } from '../stores/settingsStore.js'
 
 export default {
-  components: { ArtworkCover, SongBadges, ArtistLinks },
+  components: { ArtworkCover, SongBadges, ArtistLinks, LibraryActions },
   name: 'PersonalFMView',
   emits: ['navigate', 'play', 'search'],
   props: {

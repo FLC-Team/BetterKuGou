@@ -2,9 +2,9 @@
   <section class="lyric-library" aria-labelledby="lyric-library-title" :aria-busy="busy">
     <header class="library-header"><div><span class="library-eyebrow">LYRIC LIBRARY</span><h4 id="lyric-library-title">已保存的歌词</h4></div><button type="button" :disabled="busy" aria-label="关闭歌词管理" @click="requestClose">关闭</button></header>
     <div class="library-toolbar"><label class="library-search"><span class="sr-only">搜索已保存的曲目</span><input ref="searchInput" v-model="query" type="search" placeholder="搜索歌名或歌手" :disabled="busy"></label><button type="button" :disabled="busy || dirty" @click="refresh">{{ busy && !record ? '读取中…' : '刷新' }}</button></div>
-    <Transition name="ui-fade"><p v-if="refreshNeeded" class="library-note" role="status">歌词库有更新，刷新后可查看最新版本。{{ dirty ? '请先保存或撤销当前编辑。' : '' }}</p></Transition>
-    <Transition name="ui-fade" mode="out-in"><p v-if="error" :key="error" class="library-error" role="alert">{{ error }}</p></Transition>
-    <Transition name="ui-fade" mode="out-in"><p v-if="message" :key="message" class="library-note" role="status">{{ message }}</p></Transition>
+    <AppNotice :message="refreshNeeded ? '歌词库有更新，刷新后可查看最新版本。' + (dirty ? '请先保存或撤销当前编辑。' : '') : ''" title="歌词库" />
+    <AppNotice :message="error" type="error" title="歌词库" />
+    <AppNotice :message="message" type="success" title="歌词库" />
     <p v-if="busy" class="library-working" role="status">{{ busyLabel }}</p>
     <p v-if="!busy && !songs.length && !error" class="library-empty">还没有保存的歌词。播放有可用歌词的歌曲后，符合匹配要求的版本会自动保存。</p>
     <p v-else-if="!busy && songs.length && !filteredSongs.length" class="library-empty">没有找到匹配的曲目。</p>
@@ -227,7 +227,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 input, textarea { transition: border-color .18s ease, opacity .18s ease; }
 input:disabled, textarea:disabled { opacity: .6; }
 .library-primary { color: var(--color-primary); border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border)); }
-.library-error { color: var(--color-error); font-size: 11px; line-height: 1.8; margin: 12px 0; }
 .library-confirm { margin-top: 18px; border-left: 2px solid var(--color-primary); padding-left: 14px; font-size: 11px; line-height: 1.8; }
 .library-confirm p { margin-bottom: 12px; }
 .library-confirm button + button { margin-left: 10px; }

@@ -78,6 +78,7 @@
             </button>
             <button class="song-name" type="button" :title="song.songname || song.filename || song.name" @click.stop="$emit('search', song)" @dblclick.stop>{{ song.songname || song.filename || song.name || '未知歌曲' }}</button>
             <SongBadges :song="song" />
+            <LibraryActions :song="song" />
             <ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" />
           </article>
         </TransitionGroup>
@@ -108,6 +109,7 @@
 <script>
 import { contentSize, freezeGridLeave, clearGridLeave, setContentSizeActive } from './logic/layoutMotion.js'
 import SongBadges from '../components/common/SongBadges.vue'
+import LibraryActions from '../components/common/LibraryActions.vue'
 import ArtistLinks from '../components/common/ArtistLinks.vue'
 import ArtworkCover from '../components/common/ArtworkCover.vue'
 import { logger } from '../utils/logger.js'
@@ -130,7 +132,7 @@ export default {
   name: 'HomeView',
   directives: { contentSize },
   emits: ['navigate', 'play', 'search'],
-  components: { SongBadges, ArtistLinks, ArtworkCover },
+  components: { SongBadges, ArtistLinks, ArtworkCover, LibraryActions },
   props: {
     favoritesRevision: { type: Number, default: 0 }
   },

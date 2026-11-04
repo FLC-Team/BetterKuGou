@@ -13,7 +13,7 @@ function component(file, globals = {}) {
   if (file.endsWith('.vue')) source = parse(source).descriptor.script.content
   source = source.replace(/^import\b[\s\S]*?from\s+['"][^'"]+['"]\s*;?\s*$/gm, '')
     .replace('export default', 'globalThis.component =')
-  const context = vm.createContext({ logger, ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, ...globals })
+  const context = vm.createContext({ logger, ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, LibraryActions: {}, PlaylistOverview: {}, ...globals })
   vm.runInContext(source, context)
   const definition = context.component
   const instance = { ...definition.data.call({ artistId: 7 }), $nextTick: callback => Promise.resolve().then(() => callback?.()) }

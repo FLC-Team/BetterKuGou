@@ -1,13 +1,19 @@
 // 最先导入日志系统
 import { logger } from './utils/logger.js'
 
-import { createApp } from 'vue'
+import { createApp, h } from 'vue'
 import './styles/index.css'
 import App from './App.vue'
 import { initSettings } from './stores/settingsStore.js'
+import NotificationRoot from './components/common/NotificationRoot.vue'
+import AppNotice from './components/common/AppNotice.vue'
 
 async function bootstrap() {
+	let startupFailure = null
 	try {
+		try { startupFailure = await window.electronAPI?.getStartupFailure?.() }
+		catch (error) { logger.warn('main', '读取启动状态失败，继续初始化', error) }
+		if (startupFailure) return
 		// 设置读取与本地服务启动并行；App 挂载后的首批 API 请求不会抢在监听之前。
 		const [settingsResult, backendResult] = await Promise.allSettled([
 			initSettings(),
@@ -20,9 +26,9 @@ async function bootstrap() {
 	} catch (err) {
 		logger.error('main', '初始化设置失败', err)
 	} finally {
-		const app = createApp(App)
+		const app = createApp({ render: () => h(NotificationRoot, { startupFailure }, { default: () => h(App) }) })
+		app.component('AppNotice', AppNotice)
 		app.mount('#app')
-		requestAnimationFrame(() => window.electronAPI?.notifyReady?.())
 	}
 }
 

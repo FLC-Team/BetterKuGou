@@ -226,6 +226,7 @@ test('Electron schema saves the same four ordinary qualities and rejects malform
       if (name === 'fs') return { promises: fileSystem }
       if (name === './logger') return quietLogger
       if (name === './autoLaunch') return { isAutoLaunchSupported: () => false }
+      if (name === './audioEffectsConfig.cjs') return require('../electron/audioEffectsConfig.cjs')
       return require(name)
     }
   }

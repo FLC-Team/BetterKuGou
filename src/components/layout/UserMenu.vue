@@ -1,6 +1,6 @@
 <template>
   <Transition name="user-menu-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
-    <div v-if="visible" class="user-menu-overlay" @keydown.esc.stop.prevent="handleClose">
+    <div v-if="visible" class="user-menu-overlay" @keydown.stop="handleKey">
       <Transition name="user-menu-slide" appear @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">
         <div v-if="visible" ref="menu" class="user-menu" role="group" aria-label="账号菜单" :style="menuStyle" @click.stop>
           <!-- 用户信息头部 -->
@@ -57,6 +57,9 @@ import { logger } from '../../utils/logger.js'
 
 export default {
   name: 'UserMenu',
+  data() {
+    return { clickListenerTimer: null, menuDisposed: false, focusGeneration: 0, returnFocus: null }
+  },
   props: {
     visible: {
       type: Boolean,
@@ -80,29 +83,38 @@ export default {
     }
   },
   watch: {
-    visible(newVal) {
+    visible: { immediate: true, handler(newVal) {
       clearTimeout(this.clickListenerTimer)
+      const generation = ++this.focusGeneration
       if (newVal) {
+        this.returnFocus = document.activeElement
         // 菜单打开时，延迟添加全局点击监听器
         // 延迟是为了避免立即触发关闭
         this.$nextTick(() => {
-          if (!this.visible || this.menuDisposed) return
+          if (!this.visible || this.menuDisposed || generation !== this.focusGeneration) return
+          this.$refs.menu?.querySelector('button:not(:disabled)')?.focus({ preventScroll: true })
           this.clickListenerTimer = setTimeout(() => {
-            if (!this.visible || this.menuDisposed) return
+            if (!this.visible || this.menuDisposed || generation !== this.focusGeneration) return
             document.addEventListener('click', this.handleClickOutside)
+            document.addEventListener('focusin', this.handleFocusOutside)
           }, 100)
         })
       } else {
         // 菜单关闭时，移除监听器
         document.removeEventListener('click', this.handleClickOutside)
+        document.removeEventListener('focusin', this.handleFocusOutside)
+        if (this.$refs.menu?.contains(document.activeElement)) this.restoreFocus()
       }
-    }
+    } }
   },
   beforeUnmount() {
     this.menuDisposed = true
+    this.focusGeneration++
     clearTimeout(this.clickListenerTimer)
     // 组件销毁前移除监听器
     document.removeEventListener('click', this.handleClickOutside)
+    document.removeEventListener('focusin', this.handleFocusOutside)
+    if (this.$refs.menu?.contains(document.activeElement)) this.restoreFocus()
   },
   methods: {
     handleClickOutside(event) {
@@ -110,27 +122,53 @@ export default {
       const menuEl = this.$refs.menu
       if (menuEl && !menuEl.contains(event.target)) {
         logger.trace('UserMenu', 'UserMenu: 点击外部，关闭菜单')
-        this.handleClose()
+        this.handleClose(false)
       }
     },
-    handleClose() {
+    handleClose(restore = true) {
       logger.trace('UserMenu', 'UserMenu: 关闭菜单')
+      this.focusGeneration++
+      clearTimeout(this.clickListenerTimer)
+      document.removeEventListener('click', this.handleClickOutside)
+      document.removeEventListener('focusin', this.handleFocusOutside)
+      if (restore) this.restoreFocus()
       this.$emit('close')
+    },
+    restoreFocus() {
+      const target = this.returnFocus
+      this.returnFocus = null
+      if (target?.isConnected && !target.closest?.('[inert], [hidden]')) target.focus({ preventScroll: true })
+    },
+    handleFocusOutside(event) {
+      if (this.visible && !this.$refs.menu?.contains(event.target)) this.handleClose(false)
+    },
+    /** Account actions use the same keyboard path from either title-bar or sidebar entry. */
+    handleKey(event) {
+      if (event.key === 'Escape') { event.preventDefault(); this.handleClose(); return }
+      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+      const buttons = [...(this.$refs.menu?.querySelectorAll('button:not(:disabled)') || [])]
+      if (!buttons.length) return
+      event.preventDefault()
+      const index = buttons.indexOf(document.activeElement)
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+        : index < 0 ? (event.key === 'ArrowDown' ? 0 : buttons.length - 1)
+          : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length
+      buttons[next].focus({ preventScroll: true })
     },
     handleEditProfile() {
       logger.trace('UserMenu', 'UserMenu: 编辑资料')
-      this.$emit('edit-profile')
       this.handleClose()
+      this.$emit('edit-profile')
     },
     handleSettings() {
       logger.trace('UserMenu', 'UserMenu: 打开设置界面')
-      this.$emit('open-settings')
       this.handleClose()
+      this.$emit('open-settings')
     },
     handleLogout() {
       logger.trace('UserMenu', 'UserMenu: 退出登录')
-      this.$emit('logout')
       this.handleClose()
+      this.$emit('logout')
     }
   }
 }

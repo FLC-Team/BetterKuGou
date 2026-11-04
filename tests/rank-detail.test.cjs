@@ -55,7 +55,7 @@ function createRank(t, respond) {
   const metadata = loadModule('src/utils/songMetadata.js', {}, ['getSongArtists', 'getSongBadges'])
   const failures = []
   const sandbox = {
-    ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, ...metadata,
+    ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, LibraryActions: {}, ...metadata,
     getRankSongs: api.getRankSongs,
     logger: { ...quietLogger, error: (...args) => failures.push(args) }
   }

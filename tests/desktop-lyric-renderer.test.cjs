@@ -68,7 +68,8 @@ function rendererFixture({ reducedMotion = false, actions = {} } = {}) {
   }
   const subscriptions = new Map()
   const calls = []
-  const api = {}
+  const notices = []
+  const api = { reportNotice: notice => notices.push(JSON.parse(JSON.stringify(notice))) }
   for (const name of ['onSongUpdate', 'onLyricUpdate', 'onTimeUpdate', 'onSettingsUpdate', 'onPlaybackUpdate', 'onLockChanged', 'onError']) {
     api[name] = callback => { subscriptions.set(name, callback); return () => subscriptions.delete(name) }
   }
@@ -98,7 +99,7 @@ function rendererFixture({ reducedMotion = false, actions = {} } = {}) {
   vm.runInContext(source, context, { filename: 'desktopLyric.html' })
   document.listeners.get('DOMContentLoaded')()
   return {
-    nodes, calls, animations, media, window, subscriptions, frames, timers, warnings,
+    nodes, calls, notices, animations, media, window, subscriptions, frames, timers, warnings,
     node: id => nodes.get(id),
     emit(name, ...args) { subscriptions.get(name)?.(...args) },
     flush(elapsed = 0) { now += elapsed; const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback(now)) },
@@ -320,7 +321,7 @@ test('controls use actual playback state, persist settings and remain retryable 
   assert.deepEqual(view.calls.filter(call => call.name === 'control').map(call => call.args[0]), ['toggle', 'prev', 'next'])
   await view.node('sizeBtn').click()
   assert.ok(view.node('lyricContainer').classList.contains('size-medium'))
-  assert.equal(view.node('controlFeedback').dataset.error, 'true')
+  assert.equal(view.notices.at(-1).type, 'error')
   assert.equal(view.node('sizeBtn').disabled, false)
   rejectSize = false
   await view.node('sizeBtn').click()
@@ -354,19 +355,19 @@ test('delayed settings acknowledgements do not overwrite a newer authoritative s
   view.dispose()
 })
 
-test('main-process failures are visible as plain status text and unsubscribe on unload', () => {
+test('main-process failures forward plain notification text and unsubscribe on unload', () => {
   const view = rendererFixture()
   view.emit('onError', '窗口位置未能保存，请重试。')
-  assert.equal(view.node('controlFeedback').textContent, '窗口位置未能保存，请重试。')
-  assert.equal(view.node('controlFeedback').dataset.error, 'true')
+  assert.equal(view.notices.at(-1).message, '窗口位置未能保存，请重试。')
+  assert.equal(view.notices.at(-1).type, 'error')
   view.emit('onError', '<controlled-error>')
-  assert.equal(view.node('controlFeedback').textContent, '<controlled-error>')
-  assert.equal(view.node('controlFeedback').children.length, 0)
+  assert.deepEqual(view.notices.at(-1), { title: '桌面歌词', message: '<controlled-error>', type: 'error' })
+  assert.equal(view.node('controlFeedback'), undefined)
   view.dispose()
   assert.equal(view.subscriptions.has('onError'), false)
   assert.equal(view.timers.size, 0)
   view.emit('onError', 'late failure')
-  assert.notEqual(view.node('controlFeedback').textContent, 'late failure')
+  assert.notEqual(view.notices.at(-1).message, 'late failure')
 })
 
 test('pointer/keyboard resizing ends on cancellation, blur, lock and unload', async () => {

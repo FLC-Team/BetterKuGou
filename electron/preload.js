@@ -10,8 +10,32 @@ function subscribe(channel, callback) {
 }
 
 const electronAPI = {
+  audioEffects: {
+    getStatus: () => ipcRenderer.invoke('audio-effects:getStatus'),
+    listPlugins: () => ipcRenderer.invoke('audio-effects:listPlugins'),
+    scan: () => ipcRenderer.invoke('audio-effects:scan'),
+    cancelScan: () => ipcRenderer.invoke('audio-effects:cancelScan'),
+    chooseDirectory: () => ipcRenderer.invoke('audio-effects:chooseDirectory'),
+    addPlugin: id => ipcRenderer.invoke('audio-effects:addPlugin', id),
+    removePlugin: id => ipcRenderer.invoke('audio-effects:removePlugin', id),
+    movePlugin: request => ipcRenderer.invoke('audio-effects:movePlugin', request),
+    setBypass: request => ipcRenderer.invoke('audio-effects:setBypass', request),
+    setEnabled: enabled => ipcRenderer.invoke('audio-effects:setEnabled', enabled),
+    openEditor: request => ipcRenderer.invoke('audio-effects:openEditor', request),
+    closeEditor: id => ipcRenderer.invoke('audio-effects:closeEditor', id),
+    setTempoOverride: request => ipcRenderer.invoke('audio-effects:setTempoOverride', request),
+    retry: () => ipcRenderer.invoke('audio-effects:retry'),
+    retrySave: () => ipcRenderer.invoke('audio-effects:retrySave'),
+    acquireMedia: request => ipcRenderer.invoke('audio-effects:acquireMedia', request),
+    releaseMedia: id => ipcRenderer.invoke('audio-effects:releaseMedia', id),
+    connectAudio: id => ipcRenderer.invoke('audio-effects:connectAudio', id),
+    onStatus: callback => subscribe('audio-effects:status', callback)
+  },
   waitForBackend: () => ipcRenderer.invoke('backend:ready'),
   notifyReady: () => ipcRenderer.send('renderer:ready'),
+  onAppNotice: callback => subscribe('app:notice', callback),
+  getStartupFailure: () => ipcRenderer.invoke('app:get-startup-failure'),
+  quitAfterStartupFailure: () => ipcRenderer.invoke('app:quit-after-startup-failure'),
   minimize: () => ipcRenderer.send('window-minimize'),
   maximize: () => ipcRenderer.send('window-maximize'),
   unmaximize: () => ipcRenderer.send('window-unmaximize'),
@@ -22,6 +46,18 @@ const electronAPI = {
   // 外部链接打开 API
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   writeClipboardText: (text) => ipcRenderer.invoke('clipboard:write-text', text),
+  downloads: {
+    getState: () => ipcRenderer.invoke('downloads:get-state'),
+    enqueue: (request) => ipcRenderer.invoke('downloads:enqueue', request),
+    pause: (id) => ipcRenderer.invoke('downloads:pause', id),
+    resume: (id) => ipcRenderer.invoke('downloads:resume', id),
+    cancel: (id) => ipcRenderer.invoke('downloads:cancel', id),
+    retry: (id) => ipcRenderer.invoke('downloads:retry', id),
+    retryMetadata: (id) => ipcRenderer.invoke('downloads:retry-metadata', id),
+    reveal: (id) => ipcRenderer.invoke('downloads:reveal', id),
+    chooseDirectory: () => ipcRenderer.invoke('downloads:choose-directory'),
+    onState: (callback) => subscribe('downloads:state', callback)
+  },
 
   // 私有离线资源只通过固定操作访问，不暴露文件路径或通用下载能力。
   playlistCache: {
@@ -30,6 +66,7 @@ const electronAPI = {
     chooseDirectory: () => ipcRenderer.invoke('playlist-cache:choose-directory'),
     readPlaylist: (id = null) => ipcRenderer.invoke('playlist-cache:read-playlist', id),
     putPlaylist: (snapshot) => ipcRenderer.invoke('playlist-cache:put-playlist', snapshot),
+    removePlaylist: (id) => ipcRenderer.invoke('playlist-cache:remove-playlist', id),
     cacheSong: (request) => ipcRenderer.invoke('playlist-cache:cache-song', request),
     getSource: (request) => ipcRenderer.invoke('playlist-cache:get-source', request),
     releaseSource: (leaseId) => ipcRenderer.invoke('playlist-cache:release-source', leaseId),
@@ -43,6 +80,7 @@ const electronAPI = {
     retryNetwork: () => ipcRenderer.invoke('playlist-cache:retry-network'),
     clear: () => ipcRenderer.invoke('playlist-cache:clear'),
     onState: (callback) => subscribe('playlist-cache:state', callback),
+    onSourceReady: (callback) => subscribe('playlist-cache:source-ready', callback),
     onAuthExpired: (callback) => subscribe('playlist-cache:auth-expired', callback)
   },
 
@@ -195,11 +233,19 @@ const electronAPI = {
   }
 }
 
+// MessagePorts cannot cross contextBridge as return values. Transfer only this fixed audio capability.
+ipcRenderer.on('audio-effects:port', (event, data) => {
+  const port = event.ports?.[0]
+  if (!port || typeof data?.connectionId !== 'string') { port?.close(); return }
+  window.postMessage({ type: 'bk-audio-effects-port', connectionId: data.connectionId }, '*', [port])
+})
+
 const settingsAPI = {
   get: () => ipcRenderer.invoke('settings:get'),
   getDefaults: () => ipcRenderer.invoke('settings:get-defaults'),
   getDefaultPaths: () => ipcRenderer.invoke('settings:get-default-paths'),
   set: (payload) => ipcRenderer.invoke('settings:set', payload),
+  patch: (payload, removedPaths = []) => ipcRenderer.invoke('settings:patch', payload, removedPaths),
   export: (targetPath) => ipcRenderer.invoke('settings:export', targetPath),
   import: () => ipcRenderer.invoke('settings:import'),
   chooseDirectory: (options) => ipcRenderer.invoke('settings:choose-directory', options),
@@ -219,6 +265,7 @@ contextBridge.exposeInMainWorld('loadingAPI', {
 })
 
 contextBridge.exposeInMainWorld('desktopLyricAPI', {
+  reportNotice: payload => ipcRenderer.send('app:report-notice', payload),
   onSongUpdate: (callback) => subscribe('desktop-lyric:song-update', callback),
   onLyricUpdate: (callback) => subscribe('desktop-lyric:lyric-update', callback),
   onTimeUpdate: (callback) => subscribe('desktop-lyric:time-update', callback),
@@ -256,6 +303,7 @@ contextBridge.exposeInMainWorld('desktopLyricAPI', {
 })
 
 contextBridge.exposeInMainWorld('taskbarLyricAPI', {
+  reportNotice: payload => ipcRenderer.send('app:report-notice', payload),
   onSongUpdate: callback => subscribe('taskbar-lyric:song-update', callback),
   onLyricUpdate: callback => subscribe('taskbar-lyric:lyric-update', callback),
   onTimeUpdate: callback => subscribe('taskbar-lyric:time-update', callback),
@@ -275,6 +323,7 @@ contextBridge.exposeInMainWorld('taskbarLyricAPI', {
 })
 
 contextBridge.exposeInMainWorld('islandLyricAPI', {
+  reportNotice: payload => ipcRenderer.send('app:report-notice', payload),
   beginDrag: () => ipcRenderer.invoke('island-lyric:begin-drag'),
   drag: () => ipcRenderer.send('island-lyric:drag'),
   endDrag: () => ipcRenderer.invoke('island-lyric:end-drag'),

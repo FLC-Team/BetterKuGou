@@ -21,12 +21,9 @@
 .artist-view .tab-indicator { position: absolute; left: 0; bottom: -1px; width: 25%; height: 3px; translate: calc(var(--active-tab) * 100%) 0; transition: translate var(--ui-motion-normal) var(--ui-motion-ease), scale var(--ui-motion-fast) var(--ui-motion-ease); pointer-events: none; }
 .artist-view .tab-indicator::after { bottom: 0; left: 8px; }
 .artist-view .artist-loading { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 70px; }
-.artist-view .albums > .refresh-error { grid-column: 1 / -1; }
 .artist-view .album-cover { transition: scale var(--ui-motion-normal), box-shadow var(--ui-motion-normal); }
 .artist-view .album-item:is(:hover, :focus-visible) .album-cover { scale: 1.035; box-shadow: var(--shadow-cover); }
 .artist-view .album-item:active .album-cover { scale: .985; }
-.artist-view .follow-message { margin-top: 12px; font-size: var(--font-size-xs); color: var(--color-primary); }
-.artist-view .follow-message.is-error { color: var(--color-error); }
 
 /* 首批响应与后续分页均只为新挂载的行/卡片做一次入场。 */
 .artist-view .song-item, .artist-view .album-item { animation: artist-content-reveal var(--ui-motion-normal) var(--ui-motion-ease); }

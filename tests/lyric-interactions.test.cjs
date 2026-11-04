@@ -4,6 +4,7 @@ const path = require('node:path')
 const test = require('node:test')
 const vm = require('node:vm')
 const vue = require('vue')
+const { registerAppNotice } = require('./helpers/noticeHarness.cjs')
 const { compile } = require('@vue/compiler-dom')
 
 const directory = path.join(__dirname, '..', 'src', 'components', 'player')
@@ -67,7 +68,7 @@ function environment(options = {}) {
   const document = { body: { style: { overflow: 'auto' } }, activeElement: null }
   const sandbox = {
     window, document, navigator: options.browser ? { clipboard: { writeText: async text => clipboard.push(text) } } : {},
-    process: { env: { NODE_ENV: 'test' } }, performance, ContextMenu: { render: () => null }, VolumeControl: { render: () => null }, ArtistLinks: { render: () => null }, ArtworkCover: { render: () => null }, contextMenuManager: menuManager,
+    process: { env: { NODE_ENV: 'test' } }, performance, ContextMenu: { render: () => null }, VolumeControl: { render: () => null }, ArtistLinks: { render: () => null }, ArtworkCover: { render: () => null }, LibraryActions: { render: () => null }, contextMenuManager: menuManager,
     useSettingsStore: () => settingsStore, repeatAllIcon: '', repeatOneIcon: '', shuffleIcon: '',
     logger: Object.fromEntries(['trace', 'debug', 'info', 'error', 'warn'].map(level => [level, (...args) => {
       if (level === 'warn') warnings.push(args)
@@ -81,6 +82,8 @@ function environment(options = {}) {
   vm.createContext(sandbox)
   const timeline = fs.readFileSync(path.join(directory, '../../utils/desktopLyrics.js'), 'utf8').replace(/\bexport (?=(?:function|const))/g, '')
   vm.runInContext(timeline, sandbox)
+  const metadata = fs.readFileSync(path.join(directory, '../../utils/songMetadata.js'), 'utf8').replace(/^export /gm, '')
+  vm.runInContext(`(() => { ${metadata}; globalThis.getSongSearchKeyword = getSongSearchKeyword })()`, sandbox)
   vm.runInContext(source, sandbox, { filename: 'LyricView.js' })
   return { ...sandbox, time, frames, listeners, warnings, clipboard, menuManager, settingsStore, component: sandbox.component }
 }
@@ -418,7 +421,10 @@ test('the production template exposes keyboard seek, the return button, copy fee
   const qualities = []
   let qualityRetries = 0
   const container = node('root')
-  const app = renderer.createApp({ ...env.component, render }, {
+  let lyric
+  const component = { ...env.component, render }
+  const app = renderer.createApp({ render: () => vue.h(component, {
+    ref: value => { lyric = value },
     visible: true, lyricsInteractive: true, lyrics: '[00:00.00]first\n[00:10.00]second', duration: 20,
     song: { hash: 'A', name: 'song A' }, onSeek: value => seeks.push(value), onSearch: value => searches.push(value),
     qualityOptions: [
@@ -426,10 +432,13 @@ test('the production template exposes keyboard seek, the return button, copy fee
       { value: '320', label: '高品 320 kbps', name: '高品', detail: '320 kbps', shortLabel: '320K' }
     ], qualityPreference: '320', qualityStatus: '实际音质 · 128 kbps',
     onChangeQuality: value => qualities.push(value), qualityMessage: '音质切换失败', onRetryQuality: () => qualityRetries++
-  })
+  }) })
   app.config.warnHandler = () => {}
-  const lyric = app.mount(container)
-  t.after(() => app.unmount())
+  const notices = registerAppNotice(app)
+  app.mount(container)
+  let mounted = true
+  const unmount = () => { if (mounted) { mounted = false; app.unmount() } }
+  t.after(unmount)
   await vue.nextTick()
   const all = () => {
     const visit = element => [element, ...element.children.flatMap(visit)]
@@ -451,7 +460,10 @@ test('the production template exposes keyboard seek, the return button, copy fee
   assert.equal(searches[0].hash, 'A')
   await lyric.copyLyricText('first')
   await vue.nextTick()
-  assert.equal(all().find(element => element.props.class === 'lyric-copy-feedback').text, '已复制歌词')
+  const text = element => element.text + element.children.map(text).join('')
+  const copyNotice = all().find(element => element.type === 'article' && text(element).includes('复制歌词'))
+  assert.ok(copyNotice)
+  assert.match(text(copyNotice), /已复制歌词/)
   const trigger = all().find(element => element.props['aria-haspopup'] === 'menu')
   assert.equal(trigger.props['aria-expanded'], false)
   assert.match(trigger.props['aria-label'], /高品 320 kbps.*实际音质 · 128 kbps/)
@@ -468,11 +480,18 @@ test('the production template exposes keyboard seek, the return button, copy fee
   lyric.translationMessage = '翻译偏好保存失败'
   lyric.saveTranslationPreference = () => translationRetries++
   await vue.nextTick()
-  const feedbacks = all().filter(element => element.props.class === 'lyric-tool-feedback')
+  const feedbacks = all().filter(element => element.type === 'article' && element.props.role === 'alert')
   assert.equal(feedbacks.length, 2)
-  for (const feedback of feedbacks) feedback.children.find(element => element.type === 'button').props.onClick()
+  assert.match(feedbacks.map(text).join(' '), /音质切换失败/)
+  assert.match(feedbacks.map(text).join(' '), /翻译偏好保存失败/)
+  for (const feedback of feedbacks) {
+    const descendants = element => [element, ...element.children.flatMap(descendants)]
+    await descendants(feedback).find(element => element.type === 'button' && text(element).includes('重试')).props.onClick()
+  }
   assert.equal(qualityRetries, 1)
   assert.equal(translationRetries, 1)
+  unmount()
+  assert.equal(notices.entries.length, 0, 'unmount closes every lyric-owned notification')
 })
 
 test('translation decoding preserves UTF-8 and only mapped nonempty translations enable the switch', t => {

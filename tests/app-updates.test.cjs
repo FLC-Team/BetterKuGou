@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const vue = require('vue')
+const { registerAppNotice } = require('./helpers/noticeHarness.cjs')
 // This host has no CSSOM; keep Vue's real template/events and isolate DOM-only motion hooks.
 const motionVue = { ...vue,
   Transition: { setup(_props, { slots }) { return () => slots.default?.()[0] } },
@@ -112,6 +113,7 @@ function mountUpdates(t, options = {}) {
       onCurrentVersion: version => versions.push(version)
     })
   })
+  registerAppNotice(app)
   app.mount(container)
   let unmounted = false
   const unmount = () => { if (!unmounted) { unmounted = true; app.unmount() } }

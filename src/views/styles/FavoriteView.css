@@ -5,7 +5,6 @@
 .favorite-view .cache-action { color: var(--color-primary); font: inherit; text-decoration: underline; text-underline-offset: 3px; }
 .favorite-view .cache-action:disabled { opacity: .5; }
 .favorite-view .cache-action:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 4px; }
-.favorite-view .playlist-cache-error { margin-top: 8px; color: var(--color-text-secondary); font-size: var(--font-size-xs); overflow-wrap: anywhere; }
 .favorite-view .offline-song-badge { flex-shrink: 0; color: var(--color-text-secondary); font-size: 10px; line-height: 1.4; }
 .favorite-view .sort-button:hover { color: var(--color-primary); }
 .favorite-view .playlist-search { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 18px; margin-bottom: 18px; }
@@ -19,3 +18,10 @@
 .favorite-view .clear-search:hover { color: var(--color-primary); }
 .favorite-view .playlist-search-count { color: var(--color-text-secondary); font-size: calc(var(--font-size-xs) - 1px); }
 @media (prefers-reduced-motion: reduce) { .favorite-view .collection-art { transform: none; } }
+.selection-actions { flex-wrap:wrap; margin:16px 0; color:var(--color-text-secondary); font-size:12px; }
+.selection-actions label { display:flex; align-items:center; gap:8px; }
+.selection-actions .selection-toggle { color:var(--color-primary); }
+.favorite-view input[type=checkbox] { width:15px; height:15px; margin:0; accent-color:var(--color-primary); cursor:pointer; }
+.favorite-view input[type=checkbox]:focus-visible { outline:2px solid var(--color-primary); outline-offset:3px; }
+
+.favorite-view .favorite-binding { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; padding: 14px 0; font-size: var(--font-size-xs); }

@@ -6,7 +6,8 @@ const defaultLogger = require('../logger')
 function copy(value) { return value == null ? value : JSON.parse(JSON.stringify(value)) }
 
 /** Keep credentials and private file descriptors behind a generation-bound Worker bridge. */
-function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {}, onAuthExpired = () => {}, logger = defaultLogger, Worker = NodeWorker }) {
+function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {}, onAuthExpired = () => {}, onSourceReady = () => {}, logger = defaultLogger, Worker = NodeWorker,
+  rpcTimeoutMs = 30_000, shutdownTimeoutMs = 5000 }) {
   let worker = null
   let session = null
   let generation = 0
@@ -22,6 +23,8 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
   let migrationWarning = null
   let cleanupRoot = null
   let cleanupTask = null
+  let retiringWorker = null
+  let unlockMigration = null
   const streams = new Set()
   cacheRoot = path.resolve(cacheRoot)
   let state = { revision: 0, generation: 0, userId: null, enabled: true, usedBytes: 0, limitBytes: 2 * 1024 ** 3, playlists: [], cacheDirectory: cacheRoot, migration: null }
@@ -44,21 +47,64 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
     return emitState(snapshot)
   }
 
-  function failWorker(instance) {
+  function failWorker(instance, error = Object.assign(new Error('缓存服务暂时不可用，请重试'), { code: 'CACHE_WORKER_FAILED' })) {
     if (instance !== worker) return
     worker = null
-    for (const task of pending.values()) task.reject(Object.assign(new Error('缓存服务暂时不可用，请重试'), { code: 'CACHE_WORKER_FAILED' }))
+    for (const task of pending.values()) { clearTimeout(task.timer); task.reject(error) }
     pending.clear()
     publish({ ...state, error: { code: 'CACHE_WORKER_FAILED', message: '缓存服务暂时不可用，请重试' } })
   }
 
+  /** Retire the old writer before rebuilding; never roll back or delete files on an unknown RPC outcome. */
+  function retireWorker(instance, error) {
+    if (!instance || instance !== worker) return retiringWorker
+    failWorker(instance, error)
+    try { retiringWorker = Promise.resolve(instance.terminate()) }
+    catch (failure) { retiringWorker = Promise.reject(failure) }
+    const retirement = retiringWorker
+    retirement.then(() => { if (retiringWorker === retirement) retiringWorker = null },
+      failure => logger.warn('playlistCacheService', '结束无响应缓存线程失败', { name: failure?.name, code: failure?.code }))
+    return retirement
+  }
+
+  function armRequest(task, instance) {
+    clearTimeout(task.timer)
+    task.timer = setTimeout(() => {
+      if (pending.get(task.id) !== task || instance !== worker) return
+      retireWorker(instance, Object.assign(new Error('缓存服务响应超时，已有缓存已保留，请重试'), { code: 'CACHE_WORKER_TIMEOUT' }))
+    }, rpcTimeoutMs)
+    task.timer.unref?.()
+  }
+
   function ensureWorker() {
     if (worker) return worker
-    const instance = new Worker(workerPath, { workerData: { cacheRoot, protectedFiles: [...resources.values()].map(item => item.resource) } })
+    const instance = new Worker(workerPath, { workerData: { cacheRoot, taglibPath: require.resolve('node-taglib-sharp'), protectedFiles: [...resources.values()].map(item => item.resource) } })
     worker = instance
     instance.on('message', message => {
       if (instance !== worker || stopped) return
-      if (message.type === 'state') { publish(message.state); return }
+      if (message.type === 'state') {
+        // Large copies can take minutes. Only real migration progress renews the pending migration deadline.
+        if (message.state?.migration) for (const task of pending.values()) {
+          const progress = message.state.migration
+          const progressKey = JSON.stringify([progress.phase, progress.copiedBytes, progress.verifiedBytes, progress.totalBytes])
+          if (task.action === 'prepareMigration' && task.progressKey !== progressKey) {
+            task.progressKey = progressKey
+            armRequest(task, instance)
+          }
+        }
+        publish(message.state); return
+      }
+      if (message.type === 'sourceReady') {
+        if (!closing && message.generation === generation && message.userId === session?.userId) {
+          const source = { generation, userId: session.userId, hash: message.hash, quality: message.quality,
+            source: message.source === 'cloud' ? 'cloud' : 'catalog',
+            ...(message.source === 'cloud' ? { sourceUserId: String(message.sourceUserId) } : {}) }
+          try { onSourceReady(source) } catch (error) {
+            logger.warn('playlistCacheService', '已缓存音源通知失败', { name: error?.name, code: error?.code })
+          }
+        }
+        return
+      }
       if (message.type === 'authExpired') {
         if (message.generation === generation && message.userId === session?.userId) {
           try { onAuthExpired({ generation, userId: session.userId }) } catch (error) {
@@ -67,9 +113,11 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
         }
         return
       }
+      if (!['result', 'error'].includes(message.type)) return
       const task = pending.get(message.id)
       if (!task) return
       pending.delete(message.id)
+      clearTimeout(task.timer)
       if (message.type === 'error') {
         task.reject(Object.assign(new Error(message.error?.message || '缓存操作失败'), { code: message.error?.code || 'CACHE_FAILED' }))
       } else if (message.type === 'result') task.resolve(message.result)
@@ -77,8 +125,7 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
     instance.on('error', error => {
       if (instance !== worker || stopped) return
       logger.error('playlistCacheService', '离线缓存线程异常', error)
-      failWorker(instance)
-      Promise.resolve(instance.terminate()).catch(() => logger.warn('playlistCacheService', '结束异常缓存线程失败'))
+      retireWorker(instance)
     })
     instance.on('exit', code => {
       if (stopped || instance !== worker) return
@@ -92,14 +139,22 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
 
   function sendRpc(action, payload, taskGeneration = generation) {
     if (stopped) return Promise.reject(Object.assign(new Error('缓存服务已停止'), { code: 'CACHE_STOPPED' }))
-    return new Promise((resolve, reject) => {
+    const send = () => new Promise((resolve, reject) => {
+      if (stopped) { reject(Object.assign(new Error('缓存服务已停止'), { code: 'CACHE_STOPPED' })); return }
       const id = ++nextId
-      pending.set(id, { resolve, reject })
-      try { ensureWorker().postMessage({ id, action, generation: taskGeneration, payload }) } catch (error) {
+      const task = { id, action, resolve, reject, timer: null }
+      pending.set(id, task)
+      try {
+        const instance = ensureWorker()
+        armRequest(task, instance)
+        instance.postMessage({ id, action, generation: taskGeneration, payload })
+      } catch (error) {
+        clearTimeout(task.timer)
         pending.delete(id)
         reject(error)
       }
     })
+    return retiringWorker ? retiringWorker.then(send) : send()
   }
 
   function rpc(action, payload, taskGeneration = generation) {
@@ -139,6 +194,7 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
     if (path.resolve(targetRoot) === cacheRoot) return Promise.resolve(getState())
     let unlock
     migrationGate = new Promise(resolve => { unlock = resolve })
+    unlockMigration = unlock
     migrationStatus = { phase: 'copying', copiedBytes: 0, totalBytes: 0 }
     migrationError = null
     migrationWarning = null
@@ -158,6 +214,9 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
         for (const item of resources.values()) {
           if (inside(sourceRoot, item.resource.path)) item.resource.path = path.join(destination, path.relative(sourceRoot, item.resource.path))
         }
+        // A shutdown deadline may have expired while the atomic settings commit was in flight.
+        // Its eventual success makes the verified target authoritative; retain both copies and do no more IO.
+        if (stopped) return getState()
         try {
           publish(await sendRpc('commitMigration'))
           cleanupRoot = sourceRoot
@@ -165,6 +224,7 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
           emitState()
           await finishMigrationCleanup()
         } catch (error) {
+          if (stopped) return getState()
           // 磁盘路径已提交，目标完整；丢失 commit 回执时以目标重建并保留源副本。
           const failed = worker
           if (failed) {
@@ -178,6 +238,7 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
         }
         return getState()
       } catch (error) {
+        if (stopped) throw Object.assign(new Error('缓存服务已停止，迁移文件已保留'), { code: 'CACHE_STOPPED', cause: error })
         if (!saved) {
           try { await sendRpc('rollbackMigration') } catch (rollbackError) {
             logger.warn('playlistCacheService', '恢复原缓存目录失败', { name: rollbackError?.name, code: rollbackError?.code })
@@ -194,6 +255,7 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
       } finally {
         migrationGate = null
         migrationTask = null
+        unlockMigration = null
         unlock()
       }
     })()
@@ -229,8 +291,14 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
   }
 
   async function acquire(action, payload) {
+    const identity = generation
     const result = await call(action, payload)
     if (!result?.leaseId || !result.path) return null
+    if (identity !== generation || closing || stopped) {
+      // Account changes may occur after call() validates its result but before this continuation.
+      await rpc('releaseSource', { leaseId: result.leaseId }).catch(() => {})
+      return null
+    }
     resources.set(result.leaseId, { resource: result, active: 0, releasing: false })
     const { path, account, file, ...publicResult } = result
     return { ...publicResult, url: `bk-cache://media/${result.leaseId}` }
@@ -244,6 +312,25 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
     resources.delete(leaseId)
     await rpc('releaseSource', { leaseId }).catch(() => {})
     return true
+  }
+
+  /** Only the main-process download service may receive a private path, protected by the existing lease. */
+  async function acquireDownloadSource(payload) {
+    const result = await call('getSource', payload)
+    if (!result?.leaseId || !result.path) return null
+    const item = { resource: result, active: 1, releasing: false }
+    const stream = { path: result.path }
+    resources.set(result.leaseId, item)
+    streams.add(stream)
+    let released = false
+    return { path: result.path, async release() {
+      if (released) return
+      released = true
+      item.active--
+      streams.delete(stream)
+      await releaseSource(result.leaseId)
+      finishMigrationCleanup()
+    } }
   }
 
   async function handleRequest(request) {
@@ -277,9 +364,23 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
   function stop() {
     if (stopPromise) return stopPromise
     closing = true
-    if (migrationTask || cleanupTask) {
-      stopPromise = Promise.allSettled([migrationTask, cleanupTask].filter(Boolean)).then(stopWorker)
-    } else stopPromise = stopWorker()
+    stopPromise = new Promise(resolve => {
+      const deadline = setTimeout(() => {
+        // An unresolved settings commit may still finish later. Preserve source and verified target,
+        // reject waiters, and prevent late continuations from restarting a Worker or removing either copy.
+        stopped = true
+        logger.warn('playlistCacheService', '缓存退出等待超时，迁移副本已保留', { code: 'CACHE_SHUTDOWN_TIMEOUT' })
+        retireWorker(worker, Object.assign(new Error('缓存退出等待超时，文件已保留'), { code: 'CACHE_STOPPED' }))
+        resources.clear()
+        unlockMigration?.()
+        resolve()
+      }, shutdownTimeoutMs)
+      Promise.allSettled([migrationTask, cleanupTask].filter(Boolean))
+        .then(() => retiringWorker).then(stopWorker)
+        .then(() => { clearTimeout(deadline); resolve() }, error => {
+          logger.warn('playlistCacheService', '缓存线程清理未完成，保留文件并等待退出期限', { name: error?.name, code: error?.code })
+        })
+    })
     return stopPromise
   }
 
@@ -295,7 +396,7 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
         clearTimeout(timer)
         worker = null
         resources.clear()
-        for (const task of pending.values()) task.reject(Object.assign(new Error('缓存服务已停止'), { code: 'CACHE_STOPPED' }))
+        for (const task of pending.values()) { clearTimeout(task.timer); task.reject(Object.assign(new Error('缓存服务已停止'), { code: 'CACHE_STOPPED' })) }
         pending.clear()
         resolve()
       }
@@ -308,8 +409,8 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
   }
 
   return {
-    configure, setSession, getState, stop, handleRequest, releaseSource, changeDirectory,
-    readPlaylist: id => call('readPlaylist', { id }), putPlaylist: value => call('putPlaylist', value),
+    configure, setSession, getState, stop, handleRequest, releaseSource, changeDirectory, acquireDownloadSource,
+    readPlaylist: id => call('readPlaylist', { id }), putPlaylist: value => call('putPlaylist', value), removePlaylist: id => call('removePlaylist', { id }),
     cacheSong: value => call('cacheSong', value), getSource: value => acquire('getSource', value),
     readLyrics: hash => call('readLyrics', { hash }), putLyrics: value => call('putLyrics', value),
     getArtwork: url => acquire('getArtwork', { url }), cacheArtwork: url => call('cacheArtwork', { url }),

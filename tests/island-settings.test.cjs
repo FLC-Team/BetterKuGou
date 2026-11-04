@@ -4,6 +4,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const vm = require('node:vm')
 const vue = require('vue')
+const { registerAppNotice } = require('./helpers/noticeHarness.cjs')
 const { parse, compileTemplate, compileScript } = require('@vue/compiler-sfc')
 
 const root = path.join(__dirname, '..')
@@ -35,6 +36,7 @@ function loadMainSchema() {
     require(name) {
       if (name === './logger') return logger
       if (name === './autoLaunch') return {}
+      if (name === './audioEffectsConfig.cjs') return require('../electron/audioEffectsConfig.cjs')
       return require(name)
     }
   })
@@ -154,6 +156,7 @@ function mountControls(t, options = {}) {
     // Replacing Teleport with an ordinary test component produces this Vue-only slot diagnostic.
     if (!warning.startsWith('Non-function value encountered for default slot')) throw new Error(warning)
   }
+  registerAppNotice(app)
   app.mount(container)
   const unmount = () => { if (!unmounted) { unmounted = true; app.unmount() } }
   t.after(unmount)

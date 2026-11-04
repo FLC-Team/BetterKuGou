@@ -21,6 +21,9 @@ function cacheError(code, message) { return Object.assign(new Error(message), { 
 function normalizeHash(value) { return typeof value === 'string' && /^[a-z\d_-]{1,128}$/i.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value.toLowerCase()) ? value.toLowerCase() : null }
 function normalizeQuality(value) { return QUALITY.has(value) ? value : '128' }
 function songHash(song) { return normalizeHash(song?.hash ?? song?.Hash ?? song?.FileHash ?? song?.filehash) }
+function isCloud(song) { return song?.source === 'cloud' }
+function songIdentity(song) { return `${isCloud(song) ? `cloud:${String(song.sourceUserId || '')}:` : 'catalog:'}${songHash(song)}` }
+function songKey(song, quality) { return `${isCloud(song) ? 'cloud:' : ''}${songHash(song)}:${isCloud(song) ? 'original' : normalizeQuality(quality)}` }
 
 /** Retain public song metadata without persisting transient playback URLs or credentials. */
 function publicData(value, depth = 0, maxString = 100_000) {
@@ -143,9 +146,10 @@ function requestStream(rawUrl, { signal, localApi = false, artwork = false, allo
 }
 
 /** All disk state and downloads live in one Worker; the main process only holds opaque leases. */
-function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls = false, limitBytesOverride, protectedFiles = [], retryBaseDelayMs = 1000, onState = () => {}, onAuthExpired = () => {} }) {
+function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls = false, limitBytesOverride, protectedFiles = [], retryBaseDelayMs = 1000, taglibPath, onState = () => {}, onAuthExpired = () => {}, onSourceReady = () => {} }) {
   let root = path.resolve(cacheRoot)
   const accounts = new Map()
+  const removedPlaylists = new Map()
   const active = new Map()
   const leases = new Map()
   const deferredDeletes = new Map()
@@ -260,7 +264,9 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
       index.playlists = index.playlists.filter(item => item && typeof item === 'object' && item.id != null && Array.isArray(item.songs))
         .map(item => ({ ...publicData(item), id: String(item.id), songs: publicData(item.songs.filter(song => song && typeof song === 'object')), name: String(item.name || '歌单'), isFavorite: item.isFavorite === true }))
       for (const [key, record] of Object.entries(index.songs)) {
-        if (!record || typeof record !== 'object' || !normalizeHash(record.hash) || !QUALITY.has(record.quality) || key !== `${record.hash}:${record.quality}` || !record.song || typeof record.song !== 'object') { delete index.songs[key]; continue }
+        if (!record || typeof record !== 'object' || !normalizeHash(record.hash) || !record.song || typeof record.song !== 'object' ||
+            (isCloud(record.song) ? record.quality !== 'original' || !record.song.sourceUserId || digest(String(record.song.sourceUserId)) !== index.account : !QUALITY.has(record.quality)) ||
+            key !== songKey(record.song, record.quality)) { delete index.songs[key]; continue }
         record.kind = 'song'
         record.key = key
         record.song = publicData(record.song)
@@ -309,18 +315,20 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
       cacheDirectory: root,
       migration: migration ? { phase: migration.phase, copiedBytes: migration.copiedBytes, verifiedBytes: migration.verifiedBytes, totalBytes: migration.totalBytes, targetDirectory: migration.targetRoot } : null,
       migrationWarning,
-      cachedSongCount: new Set(Object.values(current?.songs || {}).filter(record => record.status === 'complete' && record.file).map(record => record.hash)).size,
+      cachedSongCount: new Set(Object.values(current?.songs || {}).filter(record => record.status === 'complete' && record.file).map(record => songIdentity(record.song))).size,
       playlists: (current?.playlists || []).map(playlist => {
         const allHashes = playlist.songs.map(songHash)
-        const matching = Object.values(current.songs).filter(record => allHashes.includes(record.hash))
+        const identities = new Set(playlist.songs.map(songIdentity))
+        const matching = Object.values(current.songs).filter(record => identities.has(songIdentity(record.song)))
         const hashes = [...new Set(matching.filter(record => record.status === 'complete' && record.file).map(record => record.hash))]
+        const cachedIdentities = new Set(matching.filter(record => record.status === 'complete' && record.file).map(record => songIdentity(record.song)))
         const statuses = matching.map(record => record.status)
         const status = !enabled || current.paused || playlist.paused ? 'paused'
           : statuses.includes('downloading') || statuses.includes('queued') ? 'caching'
             : statuses.includes('space') ? 'space'
               : statuses.includes('waiting-network') ? 'waiting-network'
                 : statuses.includes('failed') ? 'failed' : 'idle'
-        return { id: playlist.id, name: playlist.name, isFavorite: playlist.isFavorite, total: allHashes.length, cached: allHashes.filter(hash => hashes.includes(hash)).length, hashes, status, error: matching.find(record => record.error)?.error || null }
+        return { id: playlist.id, name: playlist.name, isFavorite: playlist.isFavorite, total: allHashes.length, cached: playlist.songs.filter(song => cachedIdentities.has(songIdentity(song))).length, hashes, status, error: matching.find(record => record.error)?.error || null }
       })
     }
   }
@@ -331,12 +339,12 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
   function recordsFor(id) {
     if (!current) return []
     if (id == null) return Object.values(current.songs)
-    const hashes = new Set(selectedPlaylist(id)?.songs.map(songHash) || [])
-    return Object.values(current.songs).filter(record => hashes.has(record.hash))
+    const identities = new Set(selectedPlaylist(id)?.songs.map(songIdentity) || [])
+    return Object.values(current.songs).filter(record => identities.has(songIdentity(record.song)))
   }
   function recordAllowed(record) {
     if (!current || current.paused || current.suppressed) return false
-    const playlists = current.playlists.filter(item => item.songs.some(song => songHash(song) === record.hash))
+    const playlists = current.playlists.filter(item => item.songs.some(song => songIdentity(song) === songIdentity(record.song)))
     return !playlists.length || playlists.some(item => !item.paused)
   }
 
@@ -446,11 +454,17 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
       if (task.artwork) result = await download(task, record.url, true)
       else {
         let detail = record.song
-        if (!detail.album_audio_id) {
+        if (!isCloud(detail) && !detail.album_audio_id) {
           const response = await api('/audio', { hash: record.hash }, task)
           if (Number(response.status) === 1 && response.data?.length) detail = { ...detail, ...publicData(response.data[0]), hash: record.hash }
         }
-        const response = await api('/song/url', { hash: record.hash, album_id: detail.album_id || 0, album_audio_id: detail.album_audio_id || 0, quality: record.quality }, task)
+        if (isCloud(detail) && String(detail.sourceUserId) !== String(session?.userId)) throw cacheError('PERMISSION', '云盘歌曲不属于当前账号')
+        let response = isCloud(detail)
+          ? await api('/user/cloud/url', { hash: record.hash, audio_id: detail.audio_id || 0,
+            album_audio_id: detail.album_audio_id || 0, name: detail.originalName || detail.name || '' }, task)
+          : await api('/song/url', { hash: record.hash, album_id: detail.album_id || 0, album_audio_id: detail.album_audio_id || 0, quality: record.quality }, task)
+        if (isCloud(detail)) response = { ...response, ...(response.data && !Array.isArray(response.data) ? response.data : {}),
+          status: response.status, url: response.url ?? response.play_url ?? response.data?.url ?? response.data?.play_url }
         if (Number(response.status) !== 1 || isPreview(response)) throw cacheError('PERMISSION', '没有完整歌曲的缓存权限')
         const url = Array.isArray(response.url) ? response.url[0] : response.url
         if (typeof url !== 'string' || !url) throw cacheError('PERMISSION', '没有完整歌曲的缓存权限')
@@ -460,6 +474,15 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
       if (!isCurrent(task)) return
       Object.assign(record, result, { status: 'complete', error: null, attempts: 0, lastUsed: Date.now() })
       await persist(index)
+      if (!task.artwork && isCurrent(task)) {
+        try {
+          onSourceReady({ generation, userId: session.userId,
+            hash: record.hash, quality: record.quality, source: isCloud(record.song) ? 'cloud' : 'catalog',
+            ...(isCloud(record.song) ? { sourceUserId: String(record.song.sourceUserId) } : {}) })
+        } catch {
+          // Analysis notification is optional; its failure must not remove a complete playable file.
+        }
+      }
     } catch (error) {
       if (!isCurrent(task) || task.controller.signal.aborted) return
       // Publication can succeed before an index write fails; do not leave unusable quota behind.
@@ -814,6 +837,7 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
     if (!current) return null
     if (!payload || !Array.isArray(payload.songs) || payload.songs.length > 20_000 || payload.id == null || String(payload.id).length > 128 || Buffer.byteLength(JSON.stringify(payload)) > 16 * 1024 ** 2) throw cacheError('INVALID_PLAYLIST', '歌单缓存参数无效')
     const index = current
+    if (removedPlaylists.get(index.account)?.has(String(payload.id))) return null
     const favorite = payload.isFavorite === true
     const previous = selectedPlaylist(payload.id)
     const item = { id: String(payload.id), name: String(payload.name || (favorite ? '我喜欢' : '歌单')).slice(0, 500), isFavorite: favorite || previous?.isFavorite === true, songs: publicData(payload.songs), openedAt: Date.now(), paused: previous?.paused === true }
@@ -834,8 +858,9 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
     const hash = songHash(payload?.song)
     if (!hash) throw cacheError('INVALID_SONG', '歌曲缓存参数无效')
     if (Buffer.byteLength(JSON.stringify(payload.song)) > 2 * 1024 ** 2) throw cacheError('INVALID_SONG', '歌曲缓存参数过大')
-    const quality = normalizeQuality(payload.quality ?? qualityPreference)
-    const key = `${hash}:${quality}`
+    if (isCloud(payload.song) && (!payload.song.sourceUserId || String(payload.song.sourceUserId) !== String(session?.userId))) throw cacheError('PERMISSION', '云盘歌曲不属于当前账号')
+    const quality = isCloud(payload.song) ? 'original' : normalizeQuality(payload.quality ?? qualityPreference)
+    const key = songKey(payload.song, quality)
     const existing = current.songs[key]
     if (existing?.status === 'complete' || active.has(`${current.account}:${key}`)) return snapshot()
     current.suppressed = false
@@ -843,6 +868,21 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
     current.songs[key] = record
     await persist(current)
     schedule()
+    publish()
+    return snapshot()
+  }
+
+  /** Remove only this account's directory snapshot; audio records and active leases remain valid. */
+  async function removePlaylist(payload) {
+    if (!current) return null
+    if (payload?.id == null || !String(payload.id) || String(payload.id).length > 128) throw cacheError('INVALID_PLAYLIST', '歌单标识无效')
+    const index = current
+    const previous = index.playlists
+    index.playlists = previous.filter(playlist => String(playlist.id) !== String(payload.id))
+    try { await persist(index) } catch (error) { index.playlists = previous; throw error }
+    if (!removedPlaylists.has(index.account)) removedPlaylists.set(index.account, new Set())
+    removedPlaylists.get(index.account).add(String(payload.id))
+    usedBytes = await diskUsage()
     publish()
     return snapshot()
   }
@@ -860,11 +900,35 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
     } catch { return false }
   }
 
-  async function acquire(record) {
+  /** Analysis metadata is read only on demand; ordinary playback never loads the tag reader. */
+  function readAnalysisMetadata(record, target) {
+    if (!Number.isSafeInteger(record.size) || record.size <= 0 || record.size > 64 * 1024 ** 2) return null
+    let file
+    try {
+      const library = require(taglibPath || 'node-taglib-sharp')
+      file = library.File.createFromPath(target)
+      const properties = file.properties
+      const audio = { duration: properties.durationMilliseconds / 1000,
+        channels: properties.audioChannels, sampleRate: properties.audioSampleRate }
+      if (!Number.isFinite(audio.duration) || audio.duration <= 0 || audio.duration > 600 ||
+          !Number.isInteger(audio.channels) || audio.channels < 1 || audio.channels > 8 ||
+          !Number.isInteger(audio.sampleRate) || audio.sampleRate < 8000 || audio.sampleRate > 96000 ||
+          Math.ceil(audio.duration * audio.sampleRate) * audio.channels * 4 > 128 * 1024 ** 2) return null
+      return audio
+    } catch {
+      // Unsupported or unreadable headers disable this optional analysis, never normal playback.
+      return null
+    } finally { file?.dispose() }
+  }
+
+  async function acquire(record, analysis = false) {
     const index = current
     if (!index || !record?.file || record.status !== 'complete') return null
+    const audioMetadata = analysis ? readAnalysisMetadata(record, filePath(index.account, record.file)) : null
+    if (analysis && !audioMetadata) return null
     const leaseId = crypto.randomBytes(24).toString('hex')
     const resource = { leaseId, account: index.account, file: record.file, path: filePath(index.account, record.file), size: record.size, mime: record.mime, extname: record.extname, bitrate: record.bitrate, requestedQuality: record.quality, detail: record.detail || record.song || null, status: 1 }
+    if (analysis) Object.assign(resource, { sha256: record.sha256, audioMetadata })
     leases.set(leaseId, resource)
     if (!(await verify(index, record))) {
       leases.delete(leaseId)
@@ -891,11 +955,16 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
   async function getSource(payload) {
     const hash = normalizeHash(payload?.hash)
     if (!hash || !current) return null
-    const quality = normalizeQuality(payload.quality)
-    const preferred = current.songs[`${hash}:${quality}`]
-    const exact = await acquire(preferred)
-    if (exact || !payload.allowFallback) return exact
-    for (const record of Object.values(current.songs)) if (record.hash === hash && record !== preferred) { const source = await acquire(record); if (source) return source }
+    const cloud = isCloud(payload)
+    if (cloud && (!payload.sourceUserId || String(payload.sourceUserId) !== String(session?.userId))) return null
+    const analysis = payload.purpose === 'analysis'
+    if (analysis && !cloud && !QUALITY.has(payload.quality)) return null
+    const quality = cloud ? 'original' : normalizeQuality(payload.quality)
+    const key = songKey({ ...payload, hash }, quality)
+    const preferred = current.songs[key]
+    const exact = await acquire(preferred, analysis)
+    if (exact || analysis || cloud || !payload.allowFallback) return exact
+    for (const record of Object.values(current.songs)) if (!isCloud(record.song) && record.hash === hash && record !== preferred) { const source = await acquire(record); if (source) return source }
     return null
   }
 
@@ -1036,6 +1105,7 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
       case 'getState': return snapshot()
       case 'readPlaylist': return readPlaylist(payload?.id)
       case 'putPlaylist': return putPlaylist(payload)
+      case 'removePlaylist': return removePlaylist(payload)
       case 'cacheSong': return cacheSong(payload)
       case 'getSource': return getSource(payload)
       case 'readLyrics': return copy(current?.lyrics[normalizeHash(payload?.hash)] || null)
@@ -1053,7 +1123,9 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
 }
 
 if (!isMainThread && parentPort) {
-  const engine = createCacheEngine({ ...workerData, onState: state => parentPort.postMessage({ type: 'state', state }), onAuthExpired: identity => parentPort.postMessage({ type: 'authExpired', ...identity }) })
+  const engine = createCacheEngine({ ...workerData, onState: state => parentPort.postMessage({ type: 'state', state }),
+    onAuthExpired: identity => parentPort.postMessage({ type: 'authExpired', ...identity }),
+    onSourceReady: source => parentPort.postMessage({ type: 'sourceReady', ...source }) })
   let commands = Promise.resolve()
   parentPort.on('message', message => {
     commands = commands.then(async () => {

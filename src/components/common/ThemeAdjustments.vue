@@ -18,7 +18,7 @@
       </TransitionGroup>
     </AnimatedDetails>
     </TransitionGroup>
-    <Transition name="ui-fade" mode="out-in"><p v-if="message" :key="messageKey + ':' + message" :class="['adjustment-message', { 'is-error': error }]" :role="error ? 'alert' : 'status'">{{ message }}</p></Transition>
+    <AppNotice :message="message" :revision="messageKey" :type="error ? 'error' : 'success'" title="界面精调" />
   </div>
 </template>
 
@@ -83,7 +83,5 @@ input { min-width: 0; width: 100%; background: var(--color-background-light); co
 code { display: block; color: var(--color-text-tertiary); font: 10px/1.6 monospace; overflow-wrap: anywhere; }
 .token-value { display: flex; gap: 8px; align-items: center; }
 input[type=color] { width: 38px; padding: 3px; flex-shrink: 0; }
-.adjustment-message { color: var(--color-text-secondary); font-size: 12px; line-height: 1.8; }
-.adjustment-message.is-error { color: var(--color-error); }
 input:focus-visible, summary:focus-visible, button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
 </style>

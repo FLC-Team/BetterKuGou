@@ -19,7 +19,9 @@ const props = defineProps({
   imageOnly: { type: Boolean, default: false }
 })
 const emit = defineEmits(['error'])
-const source = computed(() => typeof props.src === 'string' ? props.src.replace('{size}', '400') : '')
+// Keep lookup and persistence on the same concrete URL, including protocol-relative artist avatars.
+const source = computed(() => typeof props.src === 'string'
+  ? props.src.trim().replace(/\{size\}/g, '400').replace(/^\/\//, 'https://') : '')
 const failed = ref(false)
 const loaded = ref(false)
 const displaySource = ref('')

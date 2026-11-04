@@ -116,6 +116,7 @@ function fixture(t, platform = 'win32') {
       if (name === './services/backendService') return { createBackendService: () => ({ stop: async () => { backendStops++ } }) }
       if (name === './services/updateService') return { createUpdateService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/playlistCacheService') return { createPlaylistCacheService: () => ({ configure() {}, stop: async () => {} }) }
+      if (name === './services/musicDownloadService') return { createMusicDownloadService: () => ({ configure: async () => {}, setSession: async () => {}, stop: async () => {} }) }
       if (name.startsWith('./services/')) return require(path.resolve(__dirname, '../electron', name))
       return require(name)
     }

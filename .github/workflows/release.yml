@@ -27,7 +27,11 @@ jobs:
           node-version: 20
           cache: 'npm'
       - run: npm ci
+      - name: Install Linux native plugin window dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxcb1-dev libxkbcommon-x11-dev
       - run: npm run check
+      - run: npm run build:audio-effects
       - run: npm test
       - run: |
           if [ "${{ runner.os }}" = "Windows" ]; then

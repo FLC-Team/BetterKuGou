@@ -7,10 +7,11 @@
         <input ref="searchInput" v-model="searchQuery" type="search" aria-label="搜索设置" placeholder="搜索设置，如音质、字体、缓存" autocomplete="off" @focus="stopEditingShortcut" @keydown.esc.prevent="clearSearch" />
         <button v-if="searchQuery" type="button" aria-label="清空设置搜索" @click="clearSearch">×</button>
       </div>
-      <span class="save-status" :class="'is-' + saveState" role="status" aria-live="polite"><Transition name="ui-fade" mode="out-in"><span :key="saveState">{{ saveStatusText }}</span></Transition></span>
+      <span v-if="saveState === 'pending' || saveState === 'saving'" class="save-status" :class="'is-' + saveState" role="status" aria-live="polite"><Transition name="ui-fade" mode="out-in"><span :key="saveState">{{ saveStatusText }}</span></Transition></span>
     </header>
-    <Transition name="ui-fade" @before-leave="$event.inert = true" @before-enter="$event.inert = false" @leave-cancelled="$event.inert = false"><div v-if="settingsSaveError" class="settings-notice is-error" role="alert"><span>{{ settingsSaveError }}</span><button type="button" class="outline-btn" @click="flushEditableSettings">重试保存</button></div></Transition>
-    <Transition name="ui-fade" mode="out-in"><p v-if="actionMessage" :key="actionMessage" class="settings-notice" role="status">{{ actionMessage }}</p></Transition>
+    <AppNotice :message="settingsSaveError" title="设置保存失败" type="error" :actions="[{ label: '重试保存', run: flushEditableSettings, disabled: saveState === 'saving' }]" />
+    <AppNotice :message="saveState === 'saved' && settingsSaveRevision ? '所有更改已保存' : ''" type="success" :revision="settingsSaveRevision" />
+    <AppNotice :message="actionMessage" :type="actionMessageType" :revision="actionMessageRevision" @close="actionMessage = ''" />
     <div class="settings-body">
       <aside class="settings-sidebar">
         <nav class="sidebar-nav" aria-label="设置分组">
@@ -40,6 +41,11 @@
             <div class="setting-info"><label class="setting-label" :for="'playback-' + option.id">{{ option.label }}</label><p class="setting-desc" :id="'playback-' + option.id + '-desc'">{{ option.description }}</p></div>
             <label class="setting-switch"><input :id="'playback-' + option.id" type="checkbox" v-model="localSettings.playback[option.id]" :aria-describedby="'playback-' + option.id + '-desc'"><span class="slider"></span></label>
           </div>
+        </section>
+
+        <section class="settings-section" id="audioEffects-section" :ref="sectionRefs.audioEffects" data-section="audioEffects" :hidden="!isSectionVisible('audioEffects')" :inert="!isSectionVisible('audioEffects')" :class="{ 'is-active': isSectionVisible('audioEffects') }" aria-labelledby="audioEffects-heading">
+          <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="audioEffects-heading" tabindex="-1">音频效果</h2><p>用 VST3 效果器和分析工具调整你的聆听体验。</p></div></header>
+          <AudioEffectsSettings :before-action="flushEditableSettings" :inert="isImporting" />
         </section>
 
         <section class="settings-section" id="lyrics-section" :ref="sectionRefs.lyrics" data-section="lyrics" :hidden="!isSectionVisible('lyrics')" :inert="!isSectionVisible('lyrics')" :class="{ 'is-active': isSectionVisible('lyrics') }" aria-labelledby="lyrics-heading">
@@ -73,18 +79,20 @@
         <section class="settings-section" id="shortcuts-section" :ref="sectionRefs.shortcuts" data-section="shortcuts" :hidden="!isSectionVisible('shortcuts')" :inert="!isSectionVisible('shortcuts')" :class="{ 'is-active': isSectionVisible('shortcuts') }" aria-labelledby="shortcuts-heading">
           <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="shortcuts-heading" tabindex="-1">快捷键</h2><p>用熟悉的按键，快速控制音乐。</p></div></header>
           <div class="setting-item"><div class="setting-info"><label class="setting-label" for="enable-global">启用全局快捷键</label><p class="setting-desc" id="enable-global-desc">切换到其他应用后，也能控制音乐播放。</p></div><label class="setting-switch"><input id="enable-global" type="checkbox" v-model="localSettings.shortcuts.enableGlobal" aria-describedby="enable-global-desc"><span class="slider"></span></label></div>
-          <div class="shortcut-grid"><div v-for="shortcut in shortcutList" :key="shortcut.id" class="shortcut-card" :class="{ 'is-editing': editingShortcut === shortcut.id, 'has-error': shortcutErrors[shortcut.id] }"><div class="shortcut-info"><div class="shortcut-label">{{ shortcut.label }}</div><div class="shortcut-desc">{{ shortcut.description }}</div></div><div class="shortcut-key-wrapper"><button type="button" class="shortcut-key" :aria-label="shortcut.label + '快捷键：' + formatShortcutKey(localSettings.shortcuts.keys[shortcut.id])" :aria-pressed="editingShortcut === shortcut.id" @click="startEditingShortcut(shortcut.id)"><Transition name="ui-fade" mode="out-in"><span v-if="editingShortcut === shortcut.id" key="recording" class="recording">按下按键…</span><span v-else :key="localSettings.shortcuts.keys[shortcut.id]">{{ formatShortcutKey(localSettings.shortcuts.keys[shortcut.id]) }}</span></Transition></button><Transition name="ui-pop"><button v-if="localSettings.shortcuts.keys[shortcut.id] && localSettings.shortcuts.keys[shortcut.id] !== 'Escape'" type="button" class="clear-shortcut-btn" :aria-label="'清除' + shortcut.label + '快捷键'" @click="clearShortcut(shortcut.id)">×</button></Transition></div><Transition name="ui-fade"><p v-if="shortcutErrors[shortcut.id]" class="shortcut-error" role="alert">{{ shortcutErrors[shortcut.id] }}</p></Transition></div></div>
+          <div class="shortcut-grid"><div v-for="shortcut in shortcutList" :key="shortcut.id" class="shortcut-card" :class="{ 'is-editing': editingShortcut === shortcut.id, 'has-error': shortcutErrors[shortcut.id] }"><div class="shortcut-info"><div class="shortcut-label">{{ shortcut.label }}</div><div class="shortcut-desc">{{ shortcut.description }}</div></div><div class="shortcut-key-wrapper"><button type="button" class="shortcut-key" :aria-label="shortcut.label + '快捷键：' + formatShortcutKey(localSettings.shortcuts.keys[shortcut.id])" :aria-pressed="editingShortcut === shortcut.id" @click="startEditingShortcut(shortcut.id)"><Transition name="ui-fade" mode="out-in"><span v-if="editingShortcut === shortcut.id" key="recording" class="recording">按下按键…</span><span v-else :key="localSettings.shortcuts.keys[shortcut.id]">{{ formatShortcutKey(localSettings.shortcuts.keys[shortcut.id]) }}</span></Transition></button><Transition name="ui-pop"><button v-if="localSettings.shortcuts.keys[shortcut.id] && localSettings.shortcuts.keys[shortcut.id] !== 'Escape'" type="button" class="clear-shortcut-btn" :aria-label="'清除' + shortcut.label + '快捷键'" @click="clearShortcut(shortcut.id)">×</button></Transition></div><AppNotice :message="shortcutErrors[shortcut.id]" :title="shortcut.label + '快捷键'" type="error" :revision="shortcutErrorRevision" /></div></div>
           <p class="note-text">点击按键后输入新组合；按 Esc 清除绑定。相同组合不能重复绑定。</p>
         </section>
 
         <section class="settings-section" id="download-section" :ref="sectionRefs.download" data-section="download" :hidden="!isSectionVisible('download')" :inert="!isSectionVisible('download')" :class="{ 'is-active': isSectionVisible('download') }" aria-labelledby="download-heading">
           <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="download-heading" tabindex="-1">下载与缓存</h2><p>管理听过的音乐、存储空间与缓存位置。</p></div></header>
           <PlaylistCacheSettings v-model="localSettings.download" :before-action="flushEditableSettings" />
-          <div class="setting-group"><h3>歌曲下载</h3><p class="setting-desc">导出音乐文件的下载服务尚未开放。</p><fieldset disabled class="unavailable-settings" aria-label="尚未开放的下载设置"><div class="setting-item"><div class="setting-info"><label class="setting-label" for="download-path">下载目录</label><p class="setting-desc">保留已保存的目录偏好。</p></div><input id="download-path" class="path-input" type="text" :value="localSettings.download.downloadPath || '尚未设置'" readonly></div></fieldset></div>
+          <div class="setting-group"><MusicDownloadSettings v-model="localSettings.download" :before-action="flushEditableSettings" /></div>
         </section>
 
         <section class="settings-section" id="software-section" :ref="sectionRefs.software" data-section="software" :hidden="!isSectionVisible('software')" :inert="!isSectionVisible('software')" :class="{ 'is-active': isSectionVisible('software') }" aria-labelledby="software-heading">
           <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="software-heading" tabindex="-1">启动与应用</h2><p>启动页面、系统托盘与播放恢复。</p></div></header>
+          <div class="setting-item"><div class="setting-info"><label class="setting-label" for="close-action">关闭窗口时</label><p class="setting-desc" id="close-action-desc">最小化到托盘会继续在后台播放；退出程序会停止播放并关闭应用。</p></div><AnimatedSelect id="close-action" class="setting-select" v-model="localSettings.software.minimizeToTray" label="关闭窗口时" :options="closeActionOptions" aria-describedby="close-action-desc" /></div>
+          <div class="setting-item"><div class="setting-info"><label class="setting-label" for="prompt-before-close">关闭前询问</label><p class="setting-desc" id="prompt-before-close-desc">开启后，每次关闭都可选择处理方式；关闭后直接执行上方选择。也可在关闭提示中勾选“不再提示”。</p></div><label class="setting-switch"><input id="prompt-before-close" type="checkbox" v-model="localSettings.software.promptBeforeClose" aria-describedby="prompt-before-close-desc"><span class="slider"></span></label></div>
           <div v-for="option in softwareOptions" :key="option.id" class="setting-item"><div class="setting-info"><label class="setting-label" :for="'software-' + option.id">{{ option.label }}</label><p class="setting-desc" :id="'software-' + option.id + '-desc'">{{ option.description }}</p></div><label class="setting-switch"><input :id="'software-' + option.id" type="checkbox" v-model="localSettings.software[option.id]" :aria-describedby="'software-' + option.id + '-desc'"><span class="slider"></span></label></div>
           <div class="setting-item"><div class="setting-info"><label class="setting-label" for="default-page">启动页面</label><p class="setting-desc">默认打开推荐；收藏页需要登录账号。</p></div><AnimatedSelect id="default-page" class="setting-select" v-model="localSettings.software.defaultPage" label="启动页面" :options="defaultPageOptions" /></div>
         </section>
@@ -110,6 +118,8 @@ import ThemePackages from '../components/common/ThemePackages.vue'
 import ThemeAdjustments from '../components/common/ThemeAdjustments.vue'
 import AppUpdates from '../components/common/AppUpdates.vue'
 import PlaylistCacheSettings from '../components/common/PlaylistCacheSettings.vue'
+import MusicDownloadSettings from '../components/common/MusicDownloadSettings.vue'
+import AudioEffectsSettings from '../components/common/AudioEffectsSettings.vue'
 import LyricSettings from '../components/common/LyricSettings.vue'
 import DesktopLyricSettings from '../components/common/DesktopLyricSettings.vue'
 import IslandLyricSettings from '../components/common/IslandLyricSettings.vue'
@@ -131,6 +141,8 @@ const appVersion = ref(typeof packageInfo === 'object' ? packageInfo.version : '
 const sections = [
   { id: 'playback', label: '播放', description: '音质、播放队列与聆听习惯。', group: '聆听',
     icon: 'M9 5v14l11-7z' },
+  { id: 'audioEffects', label: '音频效果', description: 'VST3 插件、串联效果链、分析窗口与自动 BPM。', group: '聆听',
+    icon: 'M4 4v16M12 4v16M20 4v16M1 9h6M9 15h6M17 7h6' },
   { id: 'lyrics', label: '歌词内容', description: '翻译、文字偏好与已保存的歌词。', group: '聆听',
     icon: 'M4 5h16M4 10h12M4 15h16M4 20h8' },
   { id: 'desktop', label: '桌面歌词', description: '在桌面上跟随每一句，自由调整显示方式。', group: '歌词窗口',
@@ -163,14 +175,18 @@ const qualityOptions = [
   { value: 'high', label: '无损 HIGH' }
 ]
 const defaultPageOptions = [{ value: 'home', label: '推荐首页' }, { value: 'favorites', label: '我的收藏' }]
+const closeActionOptions = [{ value: true, label: '最小化到托盘' }, { value: false, label: '退出程序' }]
 const playbackOptions = [
+  { id: 'smoothTrackSwitch', label: '切歌声音平滑过渡', description: '手动切歌采用约 150 毫秒的交叉淡化，自然续播约 600 毫秒；新歌准备好后立即衔接。' },
+  { id: 'preloadNextTrack', label: '提前准备下一首歌曲', description: '只提前准备当前队列的下一首，减少切歌等待；预加载不写入离线缓存。' },
+  { id: 'skipTrailingSilence', label: '智能跳过歌曲结尾无声', description: '仅在当前歌曲已有可分析的完整缓存、确认结尾无声后提前续播；不确定时保留原曲尾部。' },
+  { id: 'syncPlayHistory', label: '同步听歌记录到酷狗账号', description: '登录后，将实际聆听达到 30 秒（短曲达到一半）的歌曲同步到账号；暂停、跳转和加载失败不计入。' },
   { id: 'fullscreenLyrics', label: '播放时自动打开全屏歌词', description: '每次开始播放，自动进入全屏歌词界面。' },
   { id: 'enqueueFullPlaylist', label: '播放时加入整个歌单', description: '点播歌单中的歌曲时，将同歌单的全部曲目加入播放列表。' },
   { id: 'restartOnPreviousNearEnd', label: '歌曲即将结束时，上一首从头播放', description: '开启后，歌曲剩余不超过 10 秒时点击上一首，将从头播放当前歌曲；关闭时正常切换到上一首。' }
 ]
 const softwareOptions = [
   { id: 'autoLaunch', label: '开机自启动', description: '登录系统时自动运行 BetterKuGou。' },
-  { id: 'minimizeToTray', label: '关闭窗口时保留在托盘', description: '继续在后台播放；可从托盘菜单退出应用。' },
   { id: 'restorePlaylist', label: '恢复上次的播放列表与位置', description: '再次打开时，找回上一次的队列和歌曲进度。' },
   { id: 'restorePlaybackState', label: '恢复上次的播放状态', description: '记住播放或暂停、音量和循环模式。' }
 ]
@@ -271,10 +287,12 @@ const shortcutList = ref([
 
 const editingShortcut = ref(null)
 const shortcutErrors = ref({})
+const shortcutErrorRevision = ref(0)
 const shortcutErrorTimers = new Map()
 function showShortcutError(id, message) {
   clearTimeout(shortcutErrorTimers.get(id))
   shortcutErrors.value[id] = message
+  shortcutErrorRevision.value++
   shortcutErrorTimers.set(id, setTimeout(() => { delete shortcutErrors.value[id]; shortcutErrorTimers.delete(id) }, 3000))
 }
 
@@ -310,7 +328,10 @@ const isExporting = ref(false)
 const isImporting = ref(false)
 const isChoosingPath = ref(false)
 const settingsSaveError = ref('')
+const settingsSaveRevision = ref(0)
 const actionMessage = ref('')
+const actionMessageType = ref('success')
+const actionMessageRevision = ref(0)
 const saveState = ref('saved')
 let saveTask = null
 let recoveringAppearance = false
@@ -389,6 +410,7 @@ async function persistEditableSettings() {
       isSyncingFromStore.value = false
       settingsSaveError.value = ''
       saveState.value = Object.keys(laterEdits).length ? 'pending' : 'saved'
+      if (saveState.value === 'saved') settingsSaveRevision.value++
       emit('settings-changed', cloneDeep(localSettings))
       return true
     } catch (err) {
@@ -497,8 +519,12 @@ async function handleExportSettings() {
     if (result?.error) throw result.error
     if (result?.reason === 'unsupported') throw new Error('Export is unavailable')
     if (result?.canceled) return
+    actionMessageType.value = 'success'
+    actionMessageRevision.value++
     actionMessage.value = '设置已导出。'
   } catch (err) {
+    actionMessageType.value = 'error'
+    actionMessageRevision.value++
     actionMessage.value = '导出失败，请稍后重试。'
     logger.error('SettingsView', '[SettingsView] 导出设置失败:', err)
   } finally {
@@ -523,9 +549,13 @@ async function handleImportSettings() {
     isSyncingFromStore.value = false
     settingsSaveError.value = ''
     saveState.value = 'saved'
+    actionMessageType.value = 'success'
+    actionMessageRevision.value++
     actionMessage.value = '设置已导入并应用。'
     logger.info('SettingsView', '[SettingsView] 设置导入成功')
   } catch (err) {
+    actionMessageType.value = 'error'
+    actionMessageRevision.value++
     actionMessage.value = '导入失败，原设置已保留。请检查文件格式。'
     logger.error('SettingsView', '[SettingsView] 导入设置失败:', err)
   } finally {

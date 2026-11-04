@@ -60,7 +60,7 @@ test('preload exposes only a fixed clipboard write bridge', async () => {
   const calls = []
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../electron/preload.js'), 'utf8'), {
     require: () => ({
-      ipcRenderer: { invoke: async (...args) => { calls.push(args); return true } },
+      ipcRenderer: { on() {}, invoke: async (...args) => { calls.push(args); return true } },
       contextBridge: { exposeInMainWorld: (name, api) => { exposed[name] = api } }
     }),
     window: {}, console

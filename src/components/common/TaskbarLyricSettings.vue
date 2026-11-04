@@ -6,7 +6,7 @@
     </div>
     <p v-if="!available || (capabilitiesLoaded && !supported)" class="taskbar-note">任务栏歌词仅在 Windows 桌面客户端中可用。</p>
     <p v-else-if="!capabilitiesLoaded" class="taskbar-note" role="status">正在检查任务栏支持…</p>
-    <Transition name="ui-fade"><p v-if="preferences.enabled && stateMessage" class="taskbar-note" role="status">{{ stateMessage }}</p></Transition>
+    <AppNotice :message="preferences.enabled ? stateMessage : ''" :type="state?.error ? 'error' : state?.warning ? 'warning' : 'info'" title="任务栏歌词" />
     <fieldset class="taskbar-controls" :disabled="!canOperate || busy">
       <div class="taskbar-row">
         <div><label for="taskbar-enabled">启用任务栏歌词</label><p>保存后生效，下次启动恢复。自动隐藏后仍可从这里重新显示。</p></div>
@@ -83,8 +83,8 @@
       </AnimatedDetails>
 
     </fieldset>
-    <Transition name="ui-fade"><p v-if="environmentError" class="taskbar-feedback is-error" role="alert">{{ environmentError }} <button type="button" class="taskbar-button" :disabled="loadingEnvironment" @click="loadEnvironment">重试读取</button></p></Transition>
-    <Transition name="ui-fade" mode="out-in"><p v-if="actionError || message" :key="actionError || message" class="taskbar-feedback" :class="{ 'is-error': actionError }" :role="actionError ? 'alert' : 'status'">{{ actionError || message }} <button v-if="actionError" type="button" class="taskbar-button" :disabled="!canOperate || busy" @click="runAction(lastAction)">重试</button></p></Transition>
+    <AppNotice :message="environmentError" type="error" title="任务栏歌词" :actions="[{ label: '重试读取', run: loadEnvironment, disabled: loadingEnvironment }]" />
+    <AppNotice :message="actionError || message" :type="actionError ? 'error' : 'success'" title="任务栏歌词" :actions="actionError ? [{ label: '重试', run: () => runAction(lastAction), disabled: !canOperate || busy }] : []" />
   </div>
 </template>
 
@@ -239,9 +239,6 @@ p { color: var(--color-text-secondary); line-height: 1.7; margin: 6px 0 0; }
 .taskbar-button:hover:not(:disabled) { border-color: var(--color-primary); color: var(--color-primary); }
 .taskbar-button:disabled { opacity: .5; cursor: default; }
 .taskbar-actions { display: flex; justify-content: flex-end; padding-top: 16px; }
-.taskbar-feedback { margin: 14px 0 0; padding: 12px 14px; border-radius: 8px; background: var(--color-background-light); }
-.is-error { color: var(--color-danger, #cf5c65); }
-.taskbar-feedback .taskbar-button { margin-left: 8px; }
 .taskbar-switch { position: relative; display: inline-flex; width: 38px; height: 22px; flex: 0 0 38px; }
 .taskbar-switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; z-index: 1; }
 .taskbar-switch span { position: absolute; inset: 0; border-radius: 20px; background: var(--color-background-lighter); border: 1px solid var(--color-border); transition: background .2s, border-color .2s; }

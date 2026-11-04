@@ -23,7 +23,7 @@
         >
           <div 
             v-for="(song, index) in validPlaylist" 
-            :key="song.hash || song.name || `song-${index}`"
+            :key="`${librarySongKey(song) || song.name || 'song'}:${index}`"
             class="playlist-item"
             :class="{ 'active': isCurrentSong(song) }"
             @dblclick="playSong(song)"
@@ -43,6 +43,7 @@
             <div class="song-title-line">
               <button type="button" class="song-name" :title="getSongName(song)" @click.stop="$emit('search', song)" @dblclick.stop>{{ getSongName(song) }}</button>
               <SongBadges :song="song" />
+              <LibraryActions :song="song" more-only />
             </div>
             <div class="song-artist"><ArtistLinks :song="song" @select="$emit('artist', $event)" /></div>
           </div>
@@ -107,10 +108,13 @@
 
 <script>
 import { logger } from '../../utils/logger.js'
+import { librarySongKey } from '../../utils/libraryMetadata.js'
+import { getSongSearchKeyword } from '../../utils/songMetadata.js'
 
 import { TransitionGroup } from 'vue'
 import ContextMenu from '../common/ContextMenu.vue'
 import SongBadges from '../common/SongBadges.vue'
+import LibraryActions from '../common/LibraryActions.vue'
 import ArtistLinks from '../common/ArtistLinks.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 
@@ -120,6 +124,7 @@ export default {
   components: {
     ContextMenu,
     SongBadges,
+    LibraryActions,
     ArtistLinks,
     TransitionGroup
   },
@@ -232,6 +237,7 @@ export default {
     contextMenuManager.unregisterMenu(this.closeContextMenu)
   },
   methods: {
+    librarySongKey,
     closeDrawer() {
       this.closeContextMenu()
       this.showClearConfirm = false
@@ -355,7 +361,7 @@ export default {
         
         // 如果两个对象都有 hash，优先用 hash 比较
         if (this.currentSong.hash && song.hash) {
-          const result = this.currentSong.hash === song.hash
+          const result = librarySongKey(this.currentSong) === librarySongKey(song)
           if (result) {
             logger.trace('PlaylistDrawer', '🎵 [PlaylistDrawer] Hash匹配成功:', {
               currentHash: this.currentSong.hash,
@@ -386,37 +392,17 @@ export default {
     
     // 提取歌曲名称
     getSongName(song) {
-      if (!song || typeof song !== 'object') {
-        return '未知歌曲'
-      }
-      
-      // 优先使用 name 字段
-      if (song.name && typeof song.name === 'string') {
-        return song.name
-      }
-      
-      // 备用字段
-      if (song.filename && typeof song.filename === 'string') {
-        return song.filename
-      }
-      
-      // 如果都没有，显示调试信息但不频繁打印
-      if (Math.random() < 0.1) { // 只有10%的概率打印，减少日志噪音
-        logger.warn('PlaylistDrawer', '🎵 [PlaylistDrawer] 歌曲名称字段为空，歌曲对象:', song)
-      }
-      
-      return '未知歌曲'
+      return getSongSearchKeyword(song) || '未知歌曲'
     },
     
     // 格式化时长
-    formatDuration(duration) {
-      if (!duration || duration <= 0) {
-        logger.warn('PlaylistDrawer', '🎵 [PlaylistDrawer] 时长字段为空或无效，歌曲对象:', this.song)
-        return '0:00'
-      }
-      const minutes = Math.floor(duration / 60)
-      const seconds = duration % 60
-      return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`
+    formatDuration(song) {
+      const milliseconds = song?.timelen ?? song?.timelength ?? song?.duration_ms
+      const duration = milliseconds != null ? Number(milliseconds) / 1000
+        : Number(song?.Duration ?? song?.duration ?? song?.time_length ?? song?.TimeLength)
+      if (!Number.isFinite(duration) || duration <= 0) return '0:00'
+      const wholeSeconds = Math.floor(duration)
+      return `${Math.floor(wholeSeconds / 60)}:${String(wholeSeconds % 60).padStart(2, '0')}`
     }
   }
 }

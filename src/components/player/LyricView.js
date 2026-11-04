@@ -3,10 +3,12 @@ import { logger } from '../../utils/logger.js'
 import { useSettingsStore } from '../../stores/settingsStore.js'
 import { readLyricRomanization } from '../../utils/lyricProcessing.js'
 import { parseDesktopLyrics } from '../../utils/desktopLyrics.js'
+import { getSongSearchKeyword } from '../../utils/songMetadata.js'
 import ContextMenu from '../common/ContextMenu.vue'
 import ArtistLinks from '../common/ArtistLinks.vue'
 import ArtworkCover from '../common/ArtworkCover.vue'
 import VolumeControl from './VolumeControl.vue'
+import LibraryActions from '../common/LibraryActions.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import repeatAllIcon from '../../assets/icons/repeat_all.svg'
 import repeatOneIcon from '../../assets/icons/repeat_one.svg'
@@ -20,8 +22,10 @@ const lyricSegmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter
 
 export default {
   name: 'LyricView',
-  components: { ContextMenu, ArtistLinks, ArtworkCover, VolumeControl },
+  components: { ContextMenu, ArtistLinks, ArtworkCover, VolumeControl, LibraryActions },
   props: {
+    favoritePending: { type: Boolean, default: false },
+    qualitySwitchAvailable: { type: Boolean, default: true },
     volume: { type: Number, default: 80 },
     isMuted: { type: Boolean, default: false },
     visible: {
@@ -36,6 +40,10 @@ export default {
       type: String,
       default: 'select'
     },
+    switchingTrackName: {
+      type: String,
+      default: ''
+    },
     lyrics: {
       type: String,
       default: ''
@@ -48,6 +56,7 @@ export default {
       type: Boolean,
       default: false
     },
+    seekEnabled: { type: Boolean, default: true },
     currentPlayTime: {
       type: Number,
       default: 0
@@ -346,6 +355,7 @@ export default {
 
   },
   watch: {
+    qualitySwitchAvailable(value) { if (!value) this.closeQualityMenu() },
     parsedLyrics() {
       // 同一首歌的 ready 层可能复用 DOM；等 Vue 补齐新字节点后再缓存。
       this.$nextTick(() => {
@@ -487,6 +497,7 @@ export default {
   methods: {
     /** 菜单只修改音质偏好；勾选项与当前有效音源状态独立呈现。 */
     openQualityMenu() {
+      if (!this.qualitySwitchAvailable) return
       if (this.isDisposed) return
       contextMenuManager.registerMenu(this.closeQualityMenu)
       this.qualityMenuPosition = { x: 0, y: 0 }
@@ -538,6 +549,7 @@ export default {
       options[next]?.focus()
     },
     selectQuality(value) {
+      if (!this.qualitySwitchAvailable) return
       this.closeQualityMenu(true)
       this.$emit('change-quality', value)
     },
@@ -1061,22 +1073,7 @@ export default {
     
     // 获取歌曲名称
     getSongName(song) {
-      if (!song) return '未知歌曲'
-      // 取可用的原始标题
-      const raw = (song.name || song.songname || song.audio_name || song.filename || '').toString()
-
-      if (!raw) return '未知歌曲'
-
-      // 常见格式："歌手 - 歌名"，也可能使用不同的破折号
-      // 如果包含分隔符，则优先取最后一段作为歌名，避免将歌手名带入标题
-      const parts = raw.split(/\s[-—–]\s/)
-      let title = parts.length >= 2 ? parts[parts.length - 1].trim() : raw.trim()
-
-      // 去掉常见音频扩展名
-      title = title.replace(/\.(mp3|flac|wav|m4a|aac)$/i, '')
-
-      // 兜底
-      return title || '未知歌曲'
+      return getSongSearchKeyword(song) || '未知歌曲'
     },
     
     // 获取歌手名称
@@ -1691,6 +1688,7 @@ export default {
     },
 
     toggleFavorite() {
+      if (this.favoritePending) return
       this.$emit('toggle-favorite')
     },
 
@@ -1740,6 +1738,7 @@ export default {
       else this.closeLyricView()
     },
     seekTo(time) {
+      if (this.seekEnabled === false) return
       if (this.isDisposed || this.pauseUpdates || !Number.isFinite(time) || !Number.isFinite(this.duration) || this.duration <= 0) return
       const target = Math.max(0, Math.min(this.duration, time))
       this.resetLyricInteractions()

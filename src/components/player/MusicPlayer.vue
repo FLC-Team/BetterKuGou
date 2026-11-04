@@ -28,7 +28,7 @@
           @click="showLyrics"
           :disabled="barSongIsUnconfirmed"
           title="点击查看歌词"
-          :aria-label="`查看 ${getSongName(barSong.name || barSong.filename || barSong.songname || barSong.audio_name)} 的歌词`"
+          :aria-label="`查看 ${getSongName(barSong)} 的歌词`"
         >
           <Transition name="song-meta">
             <span :key="barSong.hash" class="song-cover-frame">
@@ -40,7 +40,7 @@
         <div class="song-details">
           <div class="song-text-viewport song-title-viewport">
             <Transition name="song-meta" @before-enter="setSongTitleInteractivity($event, true)" @before-leave="setSongTitleInteractivity($event, false)">
-              <button :key="barSong.hash" type="button" class="song-name" :title="`搜索 ${getSongName(barSong.name || barSong.filename || barSong.songname || barSong.audio_name)}`" :aria-label="`搜索 ${getSongName(barSong.name || barSong.filename || barSong.songname || barSong.audio_name)}`" @click.stop="searchSong(barSong)">{{ getSongName(barSong.name || barSong.filename || barSong.songname || barSong.audio_name) }}</button>
+              <button :key="barSong.hash" type="button" class="song-name" :title="`搜索 ${getSongName(barSong)}`" :aria-label="`搜索 ${getSongName(barSong)}`" @click.stop="searchSong(barSong)">{{ getSongName(barSong) }}</button>
             </Transition>
           </div>
           <div class="song-text-viewport song-artist-viewport">
@@ -50,7 +50,7 @@
           </div>
           <div v-if="isSongPending" class="song-load-status" role="status" aria-live="polite">{{ songLoadingText }}</div>
         </div>
-        <button class="icon-btn favorite-btn" :class="{ active: !barSongIsUnconfirmed && isFavorite }" :disabled="barSongIsUnconfirmed" @click="toggleFavorite">
+        <button class="icon-btn favorite-btn" :class="{ active: !barSongIsUnconfirmed && isFavorite }" :disabled="barSongIsUnconfirmed || favoritePending" :aria-busy="favoritePending" @click="toggleFavorite">
           <svg viewBox="0 0 1024 1024" width="18" height="18" fill="currentColor">
             <path d="M923 283.6a260.04 260.04 0 00-56.9-82.8 264.4 264.4 0 00-84-55.5A265.34 265.34 0 00679.7 125c-49.3 0-97.4 13.5-139.2 39-10 6.1-19.5 12.8-28.5 20.1-9-7.3-18.5-14-28.5-20.1-41.8-25.5-89.9-39-139.2-39-35.5 0-69.9 6.8-102.4 20.3-31.4 13-59.7 31.7-84 55.5a258.44 258.44 0 00-56.9 82.8c-13.9 32.3-21 66.6-21 101.9 0 33.3 6.8 68 20.3 103.3 11.3 29.5 27.5 60.1 48.2 91 32.8 48.9 77.9 99.9 133.9 151.6 92.8 85.7 184.7 144.9 188.6 147.3l23.7 15.2c10.5 6.7 24 6.7 34.5 0l23.7-15.2c3.9-2.5 95.7-61.6 188.6-147.3 56-51.7 101.1-102.7 133.9-151.6 20.7-30.9 37-61.5 48.2-91 13.5-35.3 20.3-70 20.3-103.3.1-35.3-7-69.6-20.9-101.9z"/>
           </svg>
@@ -67,7 +67,7 @@
       <div class="player-controls-section">
         <!-- 网易云样式：收藏和播放模式按钮与控制按钮在一起 -->
         <div v-if="playerStyle === 'netease'" class="control-buttons netease-controls">
-          <button class="icon-btn favorite-btn" :class="{ active: !barSongIsUnconfirmed && isFavorite }" :disabled="barSongIsUnconfirmed" @click="toggleFavorite">
+          <button class="icon-btn favorite-btn" :class="{ active: !barSongIsUnconfirmed && isFavorite }" :disabled="barSongIsUnconfirmed || favoritePending" :aria-busy="favoritePending" @click="toggleFavorite">
             <svg viewBox="0 0 1024 1024" width="18" height="18" fill="currentColor">
               <path d="M923 283.6a260.04 260.04 0 00-56.9-82.8 264.4 264.4 0 00-84-55.5A265.34 265.34 0 00679.7 125c-49.3 0-97.4 13.5-139.2 39-10 6.1-19.5 12.8-28.5 20.1-9-7.3-18.5-14-28.5-20.1-41.8-25.5-89.9-39-139.2-39-35.5 0-69.9 6.8-102.4 20.3-31.4 13-59.7 31.7-84 55.5a258.44 258.44 0 00-56.9 82.8c-13.9 32.3-21 66.6-21 101.9 0 33.3 6.8 68 20.3 103.3 11.3 29.5 27.5 60.1 48.2 91 32.8 48.9 77.9 99.9 133.9 151.6 92.8 85.7 184.7 144.9 188.6 147.3l23.7 15.2c10.5 6.7 24 6.7 34.5 0l23.7-15.2c3.9-2.5 95.7-61.6 188.6-147.3 56-51.7 101.1-102.7 133.9-151.6 20.7-30.9 37-61.5 48.2-91 13.5-35.3 20.3-70 20.3-103.3.1-35.3-7-69.6-20.9-101.9z"/>
             </svg>
@@ -158,10 +158,10 @@
         <div class="quality-control" :title="`音质偏好，${qualityStatus}；可用音质取决于歌曲与账号权限`">
           <AnimatedSelect class="quality-select" :model-value="qualityPreference"
                           :options="qualityDropdownOptions" label="音质偏好" placement="top"
+                          :disabled="!qualitySwitchAvailable"
                           :busy="loadingQualityChange || Boolean(pendingSongOptions?.qualityChange)"
                           :status="qualityStatus" note="可用音质取决于歌曲与账号权限；同档重选可重试"
                           @change="changeQuality" />
-          <span class="quality-current" role="status">{{ qualityStatus }}</span>
         </div>
         <!-- 默认样式：显示播放模式按钮 -->
         <button 
@@ -178,6 +178,11 @@
 
         <VolumeControl :volume="volume" :is-muted="isMuted" :active="!showLyricView"
                        @change="handleVolumeChange" @toggle-mute="toggleMute" />
+        <button v-if="audioEffectsAvailable" class="icon-btn" :class="{ active: audioEffectsStatus?.enabled }"
+                :title="audioEffectsError || 'VST3 音频效果'" aria-label="打开音频效果设置" @click="openAudioEffects">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M5 3v6m0 4v8M12 3v10m0 4v4M19 3v2m0 4v12M2 9h6m1 4h6m1-8h6"/></svg>
+        </button>
+        <LibraryActions v-if="currentSong" :song="currentSong" more-only />
 
         <button class="icon-btn" @click="togglePlaylist" title="播放列表">
           <img :src="playlistIcon" alt="播放列表" width="18" height="18" />
@@ -185,36 +190,43 @@
       </div>
     </div>
 
-    <Transition name="player-feedback" @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')"><div v-if="qualityFeedback && !songLoadError" class="quality-feedback" role="status" :aria-busy="loadingQualityChange || Boolean(pendingSongOptions?.qualityChange)">
-      <span>{{ qualityFeedback }}</span>
-      <button type="button" :disabled="loadingQualityChange || Boolean(pendingSongOptions?.qualityChange)" @click="retryQualityChange">{{ loadingQualityChange || pendingSongOptions?.qualityChange ? '切换中…' : '重试' }}</button>
-      <button type="button" aria-label="关闭音质提示" @click="qualityMessage = ''; qualitySaveMessage = ''">×</button>
-    </div></Transition>
+    <AppNotice :message="!songLoadError && !showLyricView ? qualityFeedback : ''" type="error" title="音质切换"
+      :busy="loadingQualityChange || Boolean(pendingSongOptions?.qualityChange)"
+      :actions="[{ label: loadingQualityChange || pendingSongOptions?.qualityChange ? '切换中…' : '重试', run: retryQualityChange }]"
+      @close="qualityMessage = ''; qualitySaveMessage = ''" />
+    <AppNotice :message="songLoadError" type="error" title="歌曲加载失败" :busy="isSongPending"
+      :actions="[{ label: isSongPending ? '加载中…' : '重试', run: retrySongLoad }]" @close="songLoadError = ''" />
+    <AppNotice :message="!songLoadError && !qualityFeedback ? audioEffectsError : ''" type="error" title="音频效果"
+      :actions="[{ label: '音效设置', run: openAudioEffects }]" @close="audioEffectsError = ''" />
 
-    <Transition name="player-feedback" @before-enter="$event.inert = false; $event.removeAttribute('aria-hidden')" @before-leave="$event.inert = true; $event.setAttribute('aria-hidden', 'true')">
-      <div v-if="songLoadError" class="quality-feedback song-load-error" role="alert">
-        <span>{{ songLoadError }}</span>
-        <button type="button" :disabled="isSongPending" @click="retrySongLoad">{{ isSongPending ? '加载中…' : '重试' }}</button>
-        <button type="button" aria-label="关闭加载提示" @click="songLoadError = ''">×</button>
-      </div>
-    </Transition>
-
-    <!-- 音频元素 -->
-    <audio 
-      ref="audioPlayer" 
-      @loadedmetadata="handleLoadedMetadata"
-      @ended="handleEnded"
-      @play="handlePlay"
-      @pause="handlePause"
-      @timeupdate="handleTimeUpdate"
-      @waiting="handleDesktopClockChange"
-      @playing="handleDesktopClockChange"
-      @seeking="handleDesktopClockChange"
-      @ratechange="handleDesktopClockChange"
-      @seeked="handleSeeked"
-      @error="handleAudioError"
+    <!-- Stable decks alternate roles; only the confirmed deck may publish player state. -->
+    <audio ref="audioPlayer" preload="auto"
+      @loadedmetadata="handleDeckEvent"
+      @ended="handleDeckEvent"
+      @play="handleDeckEvent"
+      @pause="handleDeckEvent"
+      @timeupdate="handleDeckEvent"
+      @waiting="handleDeckEvent"
+      @playing="handleDeckEvent"
+      @seeking="handleDeckEvent"
+      @ratechange="handleDeckEvent"
+      @seeked="handleDeckEvent"
+      @error="handleDeckEvent"
     ></audio>
-    
+    <audio ref="audioStandby" preload="auto"
+      @loadedmetadata="handleDeckEvent"
+      @ended="handleDeckEvent"
+      @play="handleDeckEvent"
+      @pause="handleDeckEvent"
+      @timeupdate="handleDeckEvent"
+      @waiting="handleDeckEvent"
+      @playing="handleDeckEvent"
+      @seeking="handleDeckEvent"
+      @ratechange="handleDeckEvent"
+      @seeked="handleDeckEvent"
+      @error="handleDeckEvent"
+    ></audio>
+
     <!-- 播放列表抽屉 -->
     <Teleport to="body">
       <PlaylistDrawer
@@ -244,25 +256,29 @@
         <LyricView
           v-if="showLyricView"
           :visible="showLyricView"
-          :song="currentSong"
-          :track-transition="trackTransition"
+          :song="presentedSong"
+          :track-transition="presentedTrackTransition"
           :lyrics="displayLyric.content"
-          :lyrics-interactive="!isLyricPlaceholder"
+          :lyrics-interactive="!presentedLyricPlaceholder && !presentedPlaybackSnapshot"
           :lyric-data="displayLyric.rawData"
-          :current-play-time="currentTime"
+          :current-play-time="presentedTime"
           :read-playback-time="getAnimationPlaybackTime"
           :preview-time="seekPreviewTime"
-          :duration="duration"
+          :duration="presentedDuration"
+          :seek-enabled="!presentedPlaybackSnapshot"
           :is-playing="isPlaying"
           :volume="volume"
           :is-muted="isMuted"
           :play-mode="playMode"
-          :is-favorite="isFavorite"
-          :pause-updates="isLoadingSong || isSwitchingSong"
+          :is-favorite="presentedPlaybackSnapshot ? Boolean(musicLibrary?.isFavorite(presentedSong)) : isFavorite"
+          :favorite-pending="favoritePending || Boolean(presentedPlaybackSnapshot)"
+          :quality-switch-available="qualitySwitchAvailable"
+          :pause-updates="false"
+          :switching-track-name="isSongPending && barSongIsUnconfirmed ? getSongName(barSong) : ''"
           :quality-options="qualityOptions"
           :quality-preference="qualityPreference"
           :quality-status="qualityStatus"
-          :quality-message="qualityFeedback"
+          :quality-message="songLoadError ? '' : qualityFeedback"
           :quality-switching="loadingQualityChange || Boolean(pendingSongOptions?.qualityChange)"
           @close="closeLyrics"
           @toggle-play="togglePlay"
