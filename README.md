@@ -140,10 +140,3 @@ npm run build # Vue 与 Electron 构建
 - **白砂**：参与多种主题配色编写。
 - **[MakcRe/KuGouMusicApi](https://github.com/MakcRe/KuGouMusicApi)**：项目后端接口来源，感谢原作者开源。
 
----
-
-> 作者：鸢夏 <1925019494@qq.com> 
-> 反馈Q群：[点击加入](https://qm.qq.com/q/H9g8tVztKg)
-> 作者：鸢夏 <1925019494@qq.com>
-> 
-> 项目主页：[https://github.com/YuanXiaCN/BetterKuGou](https://github.com/YuanXiaCN/BetterKuGou)
