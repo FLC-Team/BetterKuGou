@@ -18,6 +18,7 @@ Vue 3 渲染界面与播放器，Electron 主进程提供窗口、托盘、桌�
 - [tests/](./tests/tests.md)：Node 回归测试及 Vue/HTTP 集成边界验证。
 - [vendor/](./vendor/vendor.md)：固定版本的 Fue 原始组件库分发包，供 npm 相对路径依赖使用。
 - `.github/`：开发提示和多平台自动构建工作流；针对 `master` 的 PR 和手动触发执行检查、测试及构建，推送 `v*` 标签时执行发布构建并创建 Release，避免发布时因同时推送 `master` 和版本标签而重复构建。无预发布后缀的版本发布为最新正式版，带 `-` 后缀的标签标记为预发布。各平台打包明确传入 `--publish never` 禁用 electron-builder 自动上传，统一由发布步骤从 `updata_log.md` 读取本版升级日志，只上传 Windows 安装程序、Linux 安装包和 macOS DMG，不包含便携版、ZIP、更新元数据或 blockmap。
+  Linux 发布构建固定使用 Ubuntu 24.04，保持现有 FPM 与系统 RPM 的构建目录约定兼容；Windows/macOS 继续使用对应平台执行器。
 - `.vscode/`：编辑器建议配置。
 - `.agent/`：删除文件恢复区、临时诊断工具和截图；不提交。
 - `.agents/`：已有 Agent 配置目录；不作为应用入口。
