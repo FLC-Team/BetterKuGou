@@ -84,8 +84,8 @@ export const getAudioRelated = (albumAudioId, params = {}, options = {}) =>
 export const getOwnPlaylistTracks = (listId, page = 1, pagesize = 100, options = {}) =>
   libraryRequest('/playlist/track/all/new', { listid: numericId(listId), page, pagesize }, { ...options, authenticated: true })
 
-/** Read every page atomically, adapting to server page-size caps and refusing stalled or partial results. */
-async function collectPages(request, options = {}, keys = []) {
+/** Read every page atomically; directory short pages may end the read without changing track pagination. */
+async function collectPages(request, options = {}, { endpoint, shortPageEnds = false } = {}) {
   const account = identity()
   let pageSize = Math.min(300, Math.max(1, Number(options.pagesize) || 100))
   let expectedTotal = null
@@ -94,8 +94,17 @@ async function collectPages(request, options = {}, keys = []) {
   for (let page = 1; page <= 1000; page += 1) {
     if (!sameIdentity(account) || options.signal?.aborted) throw cancelled()
     const response = await request(page, pageSize)
-    const batch = findLibraryList(response, keys)
-    if (!batch) throw new Error('列表响应格式无效，请刷新重试')
+    const batch = findLibraryList(response)
+    if (!batch) {
+      const typeOf = value => value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value
+      throw Object.assign(new Error('列表响应格式无效，请刷新重试'), {
+        code: 'INVALID_LIBRARY_PAGE',
+        // The logger preserves cause; record structural context only, never account or playlist contents.
+        cause: { endpoint, page, pagesize: pageSize, received: items.length, expectedTotal,
+          dataType: typeOf(response.data),
+          listTypes: Object.fromEntries(['info', 'list', 'lists', 'songs'].map(key => [key, typeOf(response.data?.[key])])) }
+      })
+    }
     const rawTotal = response.data?.total ?? response.data?.count ?? response.total ?? response.count
     const reportedTotal = rawTotal != null && Number.isFinite(Number(rawTotal)) && Number(rawTotal) >= 0 ? Number(rawTotal) : null
     if (expectedTotal == null) expectedTotal = reportedTotal
@@ -113,6 +122,7 @@ async function collectPages(request, options = {}, keys = []) {
       if (total != null && items.length < total) throw new Error('列表未加载完整，请刷新重试')
       return items
     }
+    if (shortPageEnds && total == null && batch.length < pageSize) return items
     if (page === 1 && batch.length < pageSize) pageSize = batch.length
     else if (total == null && batch.length < pageSize) return items
     if (total != null && batch.length < pageSize && items.length < total) throw new Error('列表未加载完整，请刷新重试')
@@ -120,19 +130,22 @@ async function collectPages(request, options = {}, keys = []) {
   throw new Error('列表分页超过限制，请重试')
 }
 
+/** Use the directory endpoint's documented default size; its first short page is not a track-page size cap. */
 export async function getAllUserPlaylists(options = {}) {
   const account = identity()
+  const pagesize = Math.min(30, Math.max(1, Math.floor(Number(options.pagesize)) || 30))
   const items = await collectPages((page, pagesize) => libraryRequest('/user/playlist', { page, pagesize },
-    { ...options, authenticated: true }), options)
+    { ...options, authenticated: true }), { ...options, pagesize }, { endpoint: '/user/playlist', shortPageEnds: true })
   return items.map(item => normalizePlaylistResource(item, { userId: account.userId, source: 'owned' }))
 }
 
 export async function getAllPlaylistTracks(resource, options = {}) {
   const playlist = normalizePlaylistResource(resource)
   const ownEntries = playlist.source === 'owned' || playlist.isOwned || playlist.isFavorite
+  const endpoint = ownEntries && playlist.listId != null ? '/playlist/track/all/new' : '/playlist/track/all'
   const items = await collectPages((page, pagesize) => ownEntries && playlist.listId != null
     ? getOwnPlaylistTracks(playlist.listId, page, pagesize, options)
-    : libraryRequest('/playlist/track/all', { id: id(playlist.globalCollectionId ?? playlist.id), page, pagesize }, options), options)
+    : libraryRequest('/playlist/track/all', { id: id(playlist.globalCollectionId ?? playlist.id), page, pagesize }, options), options, { endpoint })
   return items.map(item => normalizeLibrarySong(item))
 }
 

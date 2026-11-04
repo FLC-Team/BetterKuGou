@@ -134,11 +134,38 @@ test('complete user directory adapts to capped pages and retains list IDs distin
     info: rows.slice((params.page - 1) * Math.min(params.pagesize, 3), params.page * Math.min(params.pagesize, 3)) } }))
   const lists = await f.api.getAllUserPlaylists()
   assert.equal(lists.length, 7)
-  assert.deepEqual(f.requests.map(request => request.params.pagesize), [100, 3, 3])
+  assert.deepEqual(f.requests.map(request => request.params.pagesize), [30, 3, 3])
   assert.equal(lists[0].listId, 1)
   assert.equal(lists[0].globalCollectionId, 'collection_1')
   assert.equal(lists[0].source, 'owned')
   assert.equal(lists[0].isOwned, false)
+})
+
+test('directories without totals keep a stable default page size through full and empty pages', async () => {
+  for (const count of [0, 30, 31, 60]) {
+    const rows = Array.from({ length: count }, (_, i) => ({ listid: i + 1 }))
+    const f = fixture(({ params }) => ({ status: 1, error_code: 0, data: {
+      info: rows.slice((params.page - 1) * params.pagesize, params.page * params.pagesize),
+      list_count: count, collect_count: 0, album_count: 0
+    } }))
+    const lists = await f.api.getAllUserPlaylists({ pagesize: 100 })
+    assert.equal(lists.length, count)
+    assert.deepEqual(plain(lists.map(item => item.listId)), rows.map(item => item.listid))
+    assert.equal(f.requests.length, Math.floor(count / 30) + 1)
+    assert.ok(f.requests.every(request => request.params.pagesize === 30))
+  }
+})
+
+test('directory pagination rejects repeated full pages and changed explicit totals', async () => {
+  const rows = Array.from({ length: 30 }, (_, i) => ({ listid: i + 1 }))
+  const repeated = fixture(() => ({ status: 1, data: { info: rows } }))
+  await assert.rejects(repeated.api.getAllUserPlaylists(), /分页未前进/)
+  assert.equal(repeated.requests.length, 2)
+  const changed = fixture(({ params }) => ({ status: 1, data: {
+    total: params.page === 1 ? 40 : 41,
+    info: params.page === 1 ? rows : [{ listid: 31 }]
+  } }))
+  await assert.rejects(changed.api.getAllUserPlaylists(), /列表内容已改变/)
 })
 
 test('own playlist pagination preserves duplicate songs with different fileids and rejects stalled pages', async () => {
@@ -151,6 +178,35 @@ test('own playlist pagination preserves duplicate songs with different fileids a
   assert.ok(f.requests.every(request => request.route === '/playlist/track/all/new' && request.params.listid === '9'))
   const stalled = fixture(() => ({ status: 1, data: { songs: [{ hash: 'a', name: 'Same', fileid: 10 }] } }))
   await assert.rejects(stalled.api.getAllPlaylistTracks({ listId: 9, source: 'owned' }), /分页未前进/)
+})
+
+test('track pagination without totals still adapts to a capped first page', async () => {
+  for (const resource of [{ listId: 9, source: 'owned' }, { globalCollectionId: 'fixture-public' }]) {
+    const rows = Array.from({ length: 5 }, (_, i) => ({ hash: `fixture-${i}`, fileid: i + 1 }))
+    const f = fixture(({ params }) => {
+      const size = Math.min(params.pagesize, 2)
+      return { status: 1, data: { songs: rows.slice((params.page - 1) * size, params.page * size) } }
+    })
+    const tracks = await f.api.getAllPlaylistTracks(resource)
+    assert.deepEqual(plain(tracks.map(song => song.fileid)), [1, 2, 3, 4, 5])
+    assert.deepEqual(f.requests.map(request => request.params.pagesize), [100, 2, 2])
+  }
+})
+
+test('invalid directory pages expose safe pagination context without response contents', async () => {
+  const rows = Array.from({ length: 30 }, (_, i) => ({ listid: i + 1 }))
+  const f = fixture(({ params }) => ({ status: 1, data: params.page === 1 ? { info: rows } : {
+    info: { token: 'private-response-token', name: 'private-playlist-name' }, userid: 'private-account'
+  } }))
+  await assert.rejects(f.api.getAllUserPlaylists(), error => {
+    assert.equal(error.code, 'INVALID_LIBRARY_PAGE')
+    assert.deepEqual(plain(error.cause), {
+      endpoint: '/user/playlist', page: 2, pagesize: 30, received: 30, expectedTotal: null,
+      dataType: 'object', listTypes: { info: 'object', list: 'undefined', lists: 'undefined', songs: 'undefined' }
+    })
+    assert.doesNotMatch(JSON.stringify(error), /private-|placeholder-token/)
+    return true
+  })
 })
 
 test('public discovery listid belongs to the creator and never selects the private account endpoint', async () => {
