@@ -80,7 +80,7 @@
         <section class="settings-section" id="download-section" :ref="sectionRefs.download" data-section="download" :hidden="!isSectionVisible('download')" :inert="!isSectionVisible('download')" :class="{ 'is-active': isSectionVisible('download') }" aria-labelledby="download-heading">
           <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="download-heading" tabindex="-1">下载与缓存</h2><p>管理听过的音乐、存储空间与缓存位置。</p></div></header>
           <PlaylistCacheSettings v-model="localSettings.download" :before-action="flushEditableSettings" />
-          <div class="setting-group"><h3>歌曲下载</h3><p class="setting-desc">导出音乐文件的下载服务尚未开放。</p><fieldset disabled class="unavailable-settings" aria-label="尚未开放的下载设置"><div class="setting-item"><div class="setting-info"><label class="setting-label" for="download-path">下载目录</label><p class="setting-desc">保留已保存的目录偏好。</p></div><input id="download-path" class="path-input" type="text" :value="localSettings.download.downloadPath || '尚未设置'" readonly></div></fieldset></div>
+          <div class="setting-group"><MusicDownloadSettings v-model="localSettings.download" :before-action="flushEditableSettings" /></div>
         </section>
 
         <section class="settings-section" id="software-section" :ref="sectionRefs.software" data-section="software" :hidden="!isSectionVisible('software')" :inert="!isSectionVisible('software')" :class="{ 'is-active': isSectionVisible('software') }" aria-labelledby="software-heading">
@@ -110,6 +110,7 @@ import ThemePackages from '../components/common/ThemePackages.vue'
 import ThemeAdjustments from '../components/common/ThemeAdjustments.vue'
 import AppUpdates from '../components/common/AppUpdates.vue'
 import PlaylistCacheSettings from '../components/common/PlaylistCacheSettings.vue'
+import MusicDownloadSettings from '../components/common/MusicDownloadSettings.vue'
 import LyricSettings from '../components/common/LyricSettings.vue'
 import DesktopLyricSettings from '../components/common/DesktopLyricSettings.vue'
 import IslandLyricSettings from '../components/common/IslandLyricSettings.vue'
@@ -164,6 +165,7 @@ const qualityOptions = [
 ]
 const defaultPageOptions = [{ value: 'home', label: '推荐首页' }, { value: 'favorites', label: '我的收藏' }]
 const playbackOptions = [
+  { id: 'syncPlayHistory', label: '同步听歌记录到酷狗账号', description: '登录后，将实际聆听达到 30 秒（短曲达到一半）的歌曲同步到账号；暂停、跳转和加载失败不计入。' },
   { id: 'fullscreenLyrics', label: '播放时自动打开全屏歌词', description: '每次开始播放，自动进入全屏歌词界面。' },
   { id: 'enqueueFullPlaylist', label: '播放时加入整个歌单', description: '点播歌单中的歌曲时，将同歌单的全部曲目加入播放列表。' },
   { id: 'restartOnPreviousNearEnd', label: '歌曲即将结束时，上一首从头播放', description: '开启后，歌曲剩余不超过 10 秒时点击上一首，将从头播放当前歌曲；关闭时正常切换到上一首。' }

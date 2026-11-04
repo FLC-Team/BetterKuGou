@@ -11,7 +11,7 @@ function createArtist(t, hotRequest = () => Promise.reject(new Error('temporary 
   const requests = []
   const failures = []
   const sandbox = { listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},
-    ArtworkCover: {},
+    ArtworkCover: {}, LibraryActions: {},
     SongBadges: {},
     ArtistLinks: {},
     process: { env: { NODE_ENV: 'test' } },
@@ -117,7 +117,7 @@ function createHome(t, songs = []) {
   }
   const sandbox = { listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},
     SongBadges: {},
-    ArtworkCover: {},
+    ArtworkCover: {}, LibraryActions: {},
     ArtistLinks: {},
     logger: { trace() {}, error() {} },
     Date: class { toDateString() { return currentDay } },

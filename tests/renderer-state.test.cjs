@@ -234,6 +234,25 @@ function loadApp(electronAPI = {}, overrides = {}) {
   }
   const cacheHelpers = loadModule('src/utils/playlistCache.js', { window: appWindow },
     ['initializePlaylistCacheSession', 'getPlaylistCacheAPI', 'callPlaylistCache'])
+  const localStorage = overrides.localStorage || { getItem: () => null }
+  const songMetadata = loadModule('src/utils/songMetadata.js', {}, ['getSongSearchKeyword', 'getSongArtists'])
+  const libraryMetadata = loadModule('src/utils/libraryMetadata.js', songMetadata,
+    ['extractLibraryList', 'normalizePlaylistResource', 'librarySongKey'])
+  const unexpectedLibraryCall = async () => { throw new Error('This test must provide an explicit library API response') }
+  // Keep the real account controller; only HTTP boundaries are supplied by each scenario.
+  const libraryApi = {
+    async getAllUserPlaylists() {
+      const response = await (overrides.getUserPlaylists || (async () => ({ status: 1, data: { info: [] } })))(1, 100)
+      if (response.status !== 1 || !response.data) throw new Error('获取用户歌单失败')
+      return libraryMetadata.extractLibraryList(response).map(item => libraryMetadata.normalizePlaylistResource(item,
+        { userId: localStorage.getItem('kugou_userid'), source: 'owned' }))
+    },
+    getAllPlaylistTracks: unexpectedLibraryCall,
+    addPlaylistSongs: unexpectedLibraryCall,
+    removePlaylistSongs: unexpectedLibraryCall,
+    ...overrides.libraryApi,
+  }
+  const provided = new Map()
   const sandbox = vm.createContext({
     PageLoadingView: { name: 'PageLoadingView', render: () => vue.h('div', 'loading') },
     ...vue,
@@ -241,12 +260,18 @@ function loadApp(electronAPI = {}, overrides = {}) {
     console: quietConsole,
     logger: quietLogger,
     process: { env: { NODE_ENV: 'production' } },
-    ...loadModule('src/utils/songMetadata.js', {}, ['getSongSearchKeyword', 'getSongArtists']),
+    ...songMetadata,
+    ...loadModule('src/utils/musicLibrary.js', { AbortController }, ['createMusicLibrary']),
+    libraryApi,
+    librarySongKey: libraryMetadata.librarySongKey,
+    ...loadModule('src/utils/musicSharing.js', { ...songMetadata, URL }, ['buildSongShareText']),
+    navigator: { onLine: true },
+    AbortController,
+    provide: (key, value) => provided.set(key, value),
     window: appWindow,
     ...cacheHelpers,
     document: { addEventListener() {}, removeEventListener() {}, querySelectorAll: () => [] },
-    localStorage: overrides.localStorage || { getItem: () => null },
-    getUserPlaylists: overrides.getUserPlaylists || (async () => ({ status: 1, data: { info: [] } })),
+    localStorage,
     setTimeout: overrides.setTimeout || setTimeout,
     clearTimeout: overrides.clearTimeout || clearTimeout,
     onMounted: callback => mounted.push(callback),
@@ -280,10 +305,13 @@ function loadApp(electronAPI = {}, overrides = {}) {
     handleGoBack, handleBackToMain, handleShowSettings, handleCloseSettings,
     navigationHistory, navigationPending, canGoBack, artistData, albumData, rankData,
     selectedPlaylistData, getPageKey, rememberPageScroll, restorePageScroll, setInstallPreparation,
-    playlistCacheState, cacheTask: () => playlistCacheTask
+    playlistCacheState, musicLibrary, cacheTask: () => playlistCacheTask,
+    handlePlay, handleShareSong, libraryNotice, handleSongDetails, detailsVisible, detailsSong,
+    handlePlaylistDirectoryChanged
   })`, sandbox))
   return {
     ...app,
+    provided,
     dispatchWindowEvent: name => [...(windowListeners.get(name) || [])].forEach(callback => callback()),
     mount: () => mounted.forEach(callback => callback()),
     async dispose() {
@@ -869,7 +897,7 @@ test('artist pagination failures are diagnosed and release the loading guard', a
     .replace('export default', 'module.exports =')
   const diagnostics = []
   const sandbox = vm.createContext({
-    module: { exports: {} }, ContextMenu: {}, ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, nextplayIcon: '',
+    module: { exports: {} }, ContextMenu: {}, ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, LibraryActions: {}, nextplayIcon: '',
     ...loadModule('src/utils/songMetadata.js', {}, ['getSongArtists']),
     logger: { error: (...args) => diagnostics.push(args) },
     getArtistAudios: async () => { throw new Error('Network unavailable') }
@@ -1515,6 +1543,7 @@ test('out-of-order search responses and errors cannot replace newer results', as
     ArtworkCover: {},
     SongBadges: {},
     ArtistLinks: {},
+    LibraryActions: {},
     ...loadModule('src/utils/songMetadata.js', {}, ['getSongArtists']),
     nextplayIcon: '',
     searchMusic: () => {
@@ -2270,4 +2299,49 @@ test('settings drain waits for queued commits and exposes a failed write until a
   await retry
   await fixture.store.flushPendingSettings()
   assert.equal(fixture.store.error.value, null)
+})
+
+
+test('App queue selection preserves distinct cloud and catalogue entries sharing one hash', async t => {
+  const app = loadApp(); t.after(() => app.dispose())
+  const catalog = { hash: 'shared', name: 'Catalog' }
+  const cloud = { hash: 'shared', name: 'Cloud', source: 'cloud', sourceUserId: 'owner' }
+  await app.handlePlayAll([catalog, cloud])
+  app.handlePlay(cloud)
+  assert.equal(app.playlist.value.length, 2)
+  assert.equal(app.playlistIndex.value, 1)
+  app.handleSongChanged(catalog)
+  assert.equal(app.currentSong.value.source, undefined)
+  assert.equal(app.playlistIndex.value, 0)
+  app.handleSongChanged(cloud)
+  app.handlePlaylistUpdated([cloud, catalog])
+  assert.equal(app.playlistIndex.value, 0)
+  assert.equal(app.currentSong.value.source, 'cloud')
+})
+
+test('opening song details closes playback overlays without replacing the audio or queue', async t => {
+  const app = loadApp(); t.after(() => app.dispose())
+  const song = { hash: 'playing' }; await app.handlePlayAll([song])
+  const queue = app.playlist.value, current = app.currentSong.value
+  let closed = 0
+  app.musicPlayerRef.value = { closeLyrics() { closed++ }, showPlaylist: true }
+  app.handleSongDetails({ hash: 'other' })
+  assert.equal(closed, 1)
+  assert.equal(app.musicPlayerRef.value.showPlaylist, false)
+  assert.equal(app.detailsVisible.value, true)
+  assert.equal(app.detailsSong.value.hash, 'other')
+  assert.equal(app.currentSong.value, current)
+  assert.equal(app.playlist.value, queue)
+})
+
+test('sharing reports success only after the clipboard confirms its write', async t => {
+  const pending = deferred(); const copied = []
+  const app = loadApp({ writeClipboardText(text) { copied.push(text); return pending.promise } })
+  t.after(() => app.dispose())
+  const operation = app.handleShareSong({ name: 'Song', singername: 'Artist' })
+  assert.equal(app.libraryNotice.value, '')
+  assert.equal(copied.length, 1)
+  pending.reject(new Error('clipboard unavailable'))
+  await operation
+  assert.match(app.libraryNotice.value, /复制失败/)
 })

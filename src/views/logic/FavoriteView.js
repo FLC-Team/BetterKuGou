@@ -2,8 +2,11 @@ import { listMotion, setListMotionActive } from './listMotion.js'
 
 import { logger } from '../../utils/logger.js'
 import { getUserPlaylists, getPlaylistTracks } from '../../api/music.js'
+import { getAllPlaylistTracks } from '../../api/library.js'
 import ArtworkCover from '../../components/common/ArtworkCover.vue'
 import SongBadges from '../../components/common/SongBadges.vue'
+import LibraryActions from '../../components/common/LibraryActions.vue'
+import PlaylistOverview from '../../components/common/PlaylistOverview.vue'
 import ArtistLinks from '../../components/common/ArtistLinks.vue'
 import ContextMenu from '../../components/common/ContextMenu.vue'
 import WindowedList from '../../components/common/WindowedList.vue'
@@ -18,11 +21,14 @@ import nextplayIcon from '../../assets/icons/nextplay.svg'
 
 export default {
   name: 'FavoriteView',
+  inject: { musicLibrary: { default: null } },
   directives: { listMotion },
-  emits: ['play', 'play-all', 'play-next', 'remove-from-playlist', 'search', 'navigate', 'favorites-changed'],
+  emits: ['play', 'play-all', 'play-next', 'remove-from-playlist', 'search', 'navigate', 'favorites-changed', 'download', 'share', 'add-to-playlist', 'show-details', 'manage-playlist'],
   components: {
     ArtworkCover,
     SongBadges,
+    LibraryActions,
+    PlaylistOverview,
     ArtistLinks,
     ContextMenu,
     WindowedList
@@ -34,6 +40,7 @@ export default {
     },
     playlistId: { type: [String, Number], default: null },
     playlistName: { type: String, default: '' },
+    playlistResource: { type: Object, default: null },
     userPlaylists: { type: Array, default: null },
     playlistsLoaded: { type: Boolean, default: true },
     playlistCacheState: { type: Object, default: null }
@@ -60,6 +67,7 @@ export default {
       hasOfflineSnapshot: false,
       cacheWriteFailed: false,
       favoriteList: [],
+      selectedIndices: [],
       searchQuery: '',
       favoritePlaylistId: null, // 收藏歌单的 ID
       contextMenuVisible: false,
@@ -72,6 +80,7 @@ export default {
   },
   computed: {
     isPlaylistView() { return this.playlistId != null },
+    isPublicPlaylist() { return this.isPlaylistView && this.playlistResource?.source !== 'owned' && this.playlistResource?.source !== 'favorite' },
     pageTitle() { return this.isPlaylistView ? this.playlistName || '歌单' : '我喜欢的音乐' },
     currentPlayingHash() {
       return this.currentSong?.hash || null
@@ -96,9 +105,10 @@ export default {
     filteredFavoriteList() {
       return filterSongs(this.sortedFavoriteList, this.searchQuery)
     },
+    selectedSongs() { return this.favoriteList.filter(song => this.selectedIndices.includes(song.index)) },
     hasSearchQuery() { return this.searchQuery.trim().length > 0 },
     offlineCacheAvailable() {
-      return typeof window !== 'undefined' && !!window.electronAPI?.playlistCache
+      return typeof window !== 'undefined' && !!window.electronAPI?.playlistCache && !!localStorage.getItem('kugou_userid')
     },
     offlineCacheEntry() {
       if (!this.offlineCacheAvailable) return null
@@ -127,7 +137,7 @@ export default {
     contextMenuItems() {
       if (!this.currentContextSong) return []
       
-      const isFavorite = this.favoriteList.some(s => s.hash === this.currentContextSong.hash)
+      const isFavorite = this.musicLibrary?.isFavorite(this.currentContextSong) || false
       
       return [
         {
@@ -141,6 +151,8 @@ export default {
           action: () => this.playNext(this.currentContextSong)
         },
         { divider: true },
+        { label: '添加到歌单', action: () => this.addToPlaylist(this.currentContextSong) },
+        { label: '评论与其他版本', action: () => this.$emit('show-details', this.currentContextSong) },
         {
           label: isFavorite ? '取消收藏' : '收藏',
           favoriteAction: true,
@@ -168,10 +180,18 @@ export default {
           icon: 'M909.6 854.5L649.9 594.8C690.2 542.7 712 479 712 412c0-80.2-31.3-155.4-87.9-212.1-56.6-56.7-132-87.9-212.1-87.9s-155.5 31.3-212.1 87.9C143.2 256.5 112 331.8 112 412c0 80.1 31.3 155.5 87.9 212.1C256.5 680.8 331.8 712 412 712c67 0 130.6-21.8 182.7-62l259.7 259.6a8.2 8.2 0 0011.6 0l43.6-43.5a8.2 8.2 0 000-11.6zM570.4 570.4C528 612.7 471.8 636 412 636s-116-23.3-158.4-65.6C211.3 528 188 471.8 188 412s23.3-116.1 65.6-158.4C296 211.3 352.2 188 412 188s116.1 23.2 158.4 65.6S636 352.2 636 412s-23.3 116.1-65.6 158.4z',
           action: () => this.searchSong(this.currentContextSong)
         }
-      ].filter(item => !this.isPlaylistView || !item.favoriteAction)
+      ]
     }
   },
   watch: {
+    favoriteList() { this.selectedIndices = [] },
+    'musicLibrary.state.revision'() {
+      if (!this.isPlaylistView && this.musicLibrary?.state.loaded) this.applyCloudFavorites()
+    },
+    'musicLibrary.state.playlistRevisions': {
+      deep: true,
+      handler() { if (this.isPlaylistView && this.isActive) this.loadFavorites(true) }
+    },
     playlistId() { this.loadFavorites() },
     playlistsLoaded(ready) {
       if (ready && !this.loaded) this.loadFavorites()
@@ -216,7 +236,7 @@ export default {
     playlistKey() { return this.playlistId == null ? 'favorites' : `playlist:${this.playlistId}` },
     hasCurrentScope(scope) {
       const identity = this.readIdentity()
-      return !!scope.userid && !!scope.token && scope.userid === identity.userid &&
+      return (this.isPublicPlaylist || (!!scope.userid && !!scope.token)) && scope.userid === identity.userid &&
         scope.token === identity.token && scope.playlistKey === this.playlistKey()
     },
     isCurrentRequest(generation, scope) {
@@ -245,7 +265,7 @@ export default {
         this.cacheWriteFailed = false
         this.closeContextMenu()
       }
-      if (!identity.userid || !identity.token) return Promise.resolve()
+      if ((!identity.userid || !identity.token) && !this.isPublicPlaylist) return Promise.resolve()
       if (this.loadPromise) return this.loadPromise
       if (this.loaded && force !== true) return Promise.resolve()
       if (!this.isPlaylistView && this.userPlaylists !== null && !this.playlistsLoaded &&
@@ -275,6 +295,22 @@ export default {
           this.cacheSnapshotRead = true
           await this.restorePlaylistSnapshot(generation, scope)
           if (!this.isCurrentRequest(generation, scope)) return
+        }
+        if (this.musicLibrary) {
+          if (!this.isPlaylistView) {
+            if (force || !this.musicLibrary.state.loaded) await this.musicLibrary.refreshFavorites()
+            if (!this.isCurrentRequest(generation, scope)) return
+            this.applyCloudFavorites()
+          } else {
+            const resource = this.playlistResource || { id: this.playlistId, globalCollectionId: this.playlistId }
+            const songs = await getAllPlaylistTracks(resource)
+            if (!this.isCurrentRequest(generation, scope)) return
+            this.favoritePlaylistId = resource.id
+            this.favoriteList = songs.map((song, index) => ({ ...song, index: index + 1 }))
+            this.loaded = true
+            this.persistPlaylistSnapshot(scope)
+          }
+          return
         }
         let playlistId = this.isPlaylistView ? this.playlistId : this.favoritePlaylistId
         if (playlistId == null) {
@@ -363,6 +399,7 @@ export default {
         if (!snapshot || !Array.isArray(snapshot.songs) || !this.isCurrentRequest(generation, scope)) return
         this.favoritePlaylistId = snapshot.id
         this.favoriteList = snapshot.songs.map((song, index) => ({ ...song, index: index + 1 }))
+        if (!this.isPlaylistView) this.musicLibrary?.hydrateFavorites?.(snapshot.songs, snapshot, { userId: scope.userid })
         this.hasOfflineSnapshot = true
         this.loaded = true
       } catch (error) {
@@ -456,6 +493,7 @@ export default {
         const songs = JSON.parse(localStorage.getItem('favorite_songs') || 'null')
         if (Array.isArray(songs) && this.hasCurrentScope(scope) && !this.isDisposed) {
           this.favoriteList = songs.map((song, index) => ({ ...song, index: index + 1 }))
+          this.musicLibrary?.hydrateFavorites?.(songs, null, { userId: scope.userid })
         }
       } catch (error) {
         logger.warn('FavoriteView', '读取本地收藏缓存失败', { name: error?.name })
@@ -477,18 +515,29 @@ export default {
       }
     },
 
-    /** 本地编辑只修改相关行，并使尚未返回的刷新失效，避免覆盖用户刚作的选择。 */
-    commitLocalFavorites() {
-      this.requestGeneration += 1
-      this.loadPromise = null
-      this.loading = false
-      this.loaded = true
-      this.persistFavorites()
-      this.persistPlaylistSnapshot()
-      this.$emit('favorites-changed', this.favoriteList)
-    },
     canEditFavorites() {
-      return !this.isPlaylistView && !this.isDisposed && !!this.requestScope && this.hasCurrentScope(this.requestScope)
+      return !!this.musicLibrary?.canWrite && !this.isDisposed && !!this.requestScope && this.hasCurrentScope(this.requestScope)
+    },
+    applyCloudFavorites() {
+      if (this.isDisposed || this.isPlaylistView || !this.musicLibrary?.state.loaded) return
+      this.favoriteList = this.musicLibrary.state.favorites.map((song, index) => ({ ...song, index: index + 1 }))
+      this.favoritePlaylistId = this.musicLibrary.state.resource?.id ?? null
+      this.loaded = true
+      this.errorMessage = this.musicLibrary.state.error || ''
+    },
+    async bindFavoritePlaylist(resource) {
+      if (!confirm(`确认将“${resource.name}”作为本账号的我喜欢歌单？之后的收藏操作会同步到此歌单。`)) return
+      try { await this.musicLibrary.bindFavorites(resource); this.applyCloudFavorites() }
+      catch (error) { this.errorMessage = error.message || '绑定失败，请重试' }
+    },
+    toggleSelected(song, checked) {
+      this.selectedIndices = checked ? [...new Set([...this.selectedIndices, song.index])] : this.selectedIndices.filter(index => index !== song.index)
+    },
+    async removeSelectedSongs(songs = this.selectedSongs) {
+      const resource = this.isPlaylistView ? this.playlistResource : this.musicLibrary?.state.resource
+      if (!resource || !songs.length || !confirm(`确定从“${resource.name || this.pageTitle}”移除 ${songs.length} 首歌曲？此操作会同步到酷狗账号。`)) return
+      try { await this.musicLibrary.removeSongs(resource, songs); if (this.isPlaylistView) await this.loadFavorites(true) }
+      catch (error) { this.errorMessage = error.message || '移除失败，请刷新后重试' }
     },
     // 格式化时长
     formatDuration(milliseconds) {
@@ -592,24 +641,15 @@ export default {
     },
     
     // 切换收藏状态
-    toggleFavorite(song) {
-      if (!this.canEditFavorites() || !song?.hash) return
-      const isFavorite = this.favoriteList.some(s => s.hash === song.hash)
-      if (isFavorite) {
-        this.removeFavorite(song)
-      } else {
-        this.addFavorite(song)
-      }
+    async toggleFavorite(song) {
+      if (!this.musicLibrary || !song?.hash) return
+      try { await this.musicLibrary.toggleFavorite(song) }
+      catch (error) { if (error.code !== 'STALE_ACCOUNT') this.errorMessage = error.message || '收藏修改失败，请重试' }
     },
     
     // 添加收藏
     addFavorite(song) {
-      if (!this.canEditFavorites() || !song?.hash) return
-      if (!this.favoriteList.some(s => s.hash === song.hash)) {
-        const index = this.favoriteList.reduce((largest, item) => Math.max(largest, item.index || 0), 0) + 1
-        this.favoriteList.push({ ...song, index })
-        this.commitLocalFavorites()
-      }
+      if (!this.musicLibrary?.isFavorite(song)) return this.toggleFavorite(song)
     },
     
     // 从播放列表移除
@@ -619,9 +659,7 @@ export default {
     
     // 分享歌曲
     shareSong(song) {
-      logger.trace('FavoriteView', '分享歌曲:', song)
-      // TODO: 实现分享功能
-      alert('分享功能开发中...')
+      this.$emit('share', song)
     },
     
     // 搜索歌曲
@@ -639,33 +677,25 @@ export default {
     },
     
     // 清空列表
-    clearAll() {
-      if (this.canEditFavorites() && confirm('确定要清空所有收藏吗？') && this.canEditFavorites()) {
-        this.favoriteList.splice(0)
-        this.commitLocalFavorites()
-      }
+    async clearAll() {
+      if (!this.canEditFavorites() || !confirm(`确定从酷狗账号移除全部 ${this.favoriteList.length} 首收藏吗？此操作会同步到其他设备。`)) return
+      try { await this.musicLibrary.clearFavorites() }
+      catch (error) { this.errorMessage = error.message || '清空失败，请重试' }
     },
     
     // 移除收藏
     removeFavorite(song) {
-      if (!this.canEditFavorites() || !song?.hash) return
-      const index = this.favoriteList.findIndex(s => s.hash === song.hash)
-      if (index > -1) {
-        this.favoriteList.splice(index, 1)
-        this.commitLocalFavorites()
-      }
+      if (this.musicLibrary?.isFavorite(song)) return this.toggleFavorite(song)
     },
     
     // 添加到歌单
     addToPlaylist(song) {
-      logger.trace('FavoriteView', '添加到歌单:', song)
-      // TODO: 实现添加到歌单功能
+      this.$emit('add-to-playlist', song)
     },
     
     // 下载歌曲
     downloadSong(song) {
-      logger.trace('FavoriteView', '下载歌曲:', song)
-      // TODO: 实现下载功能
+      this.$emit('download', song)
     },
     
     // 去发现页面

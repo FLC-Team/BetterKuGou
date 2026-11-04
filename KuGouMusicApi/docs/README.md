@@ -675,6 +675,12 @@ listid: 用户歌单 listid
 data: 歌曲数据, 格式为 歌曲名称|歌曲 hash|专辑 id|(mixsongid/album_audio_id)，最少需要 歌曲名称以及歌曲 hash(若返回错误则需要全部参数)， 支持多个，每
 个以逗号分隔
 
+也可使用 JSON POST 传入 `songs` 数组代替 `data`，保留歌名中的英文逗号和竖线。每项包含 `name`、`hash`，可选 `album_id`、`mixsongid`（或 `album_audio_id`）；每次 1–1000 项。提供 `songs` 时优先使用结构化数据，非法数组直接返回 HTTP 400，不向上游写入。旧 `data` 格式继续兼容。
+
+```json
+{"listid": "123", "songs": [{"name": "Example, Part 2 | Live", "hash": "00000000000000000000000000000000", "album_id": "456", "mixsongid": "789"}]}
+```
+
 **接口地址：** `/playlist/tracks/add`
 
 **调用例子：** `/playlist/tracks/add?listid=1&data=我们应该算爱过吧|8E10D8825DDE03BCABBDE13E5A4150D2`
@@ -1037,7 +1043,7 @@ fileids: 歌单中歌曲的 fileid，可多个,用逗号隔开
 
 **必选参数：**
 
-`lisdid`: 歌单中的 `listid`
+`listid`: 歌单中的 `listid`，与公开歌单 `global_collection_id` 分开保存。移除歌曲使用该歌单返回的真实 `fileid`，不可用歌曲 hash 替代。
 
 **可选参数：**
 
@@ -2112,7 +2118,7 @@ fields: 支持多个，每个以逗号分隔，支持的值有：mkv,tags,h264,h
 
 **可选参数：**
 
-`ot`：当前时间戳, 秒级，不要传入毫秒级，否者会返回错误，或者从 [`获取服务器时间`](#获取服务器时间) 中获取
+`time`：当前时间戳，秒级，不要传入毫秒级；模块将其转为上游字段 `ot`。也可以从 [`获取服务器时间`](#获取服务器时间) 中获取。
 
 `pc`: 当前播放次数，更新播放次数，当服务器的值大于传入值时，将维持服务最大值，否则更新
 

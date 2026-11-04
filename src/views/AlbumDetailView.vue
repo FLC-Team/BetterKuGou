@@ -9,6 +9,8 @@
           <h1 class="page-title">{{ album?.album_name || album?.name || albumName || '专辑' }}</h1>
           <p class="collection-description">一张专辑，一段完整的音乐叙事。</p>
           <div class="collection-meta"><span><ArtistLinks :song="album" @select="$emit('navigate', 'artist', $event)" /></span><span v-if="album?.publish_date || album?.pub_time">{{ album.publish_date || album.pub_time }}</span><span>{{ songs.length }} 首歌曲</span></div>
+          <div class="collection-actions"><button type="button" class="action-btn" @click="songActions?.['show-details']?.({ name: album?.album_name || albumName }, { type: 'album', id: albumId })">专辑评论</button>
+            <button type="button" class="action-btn" :disabled="!songs.length" @click="songActions?.['download']?.(songs)">下载专辑</button></div>
 
         </div>
       </header>
@@ -30,6 +32,7 @@
               <div class="song-title-line">
                 <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="getSongName(song.name)">{{ getSongName(song.name) }}</button>
                 <SongBadges :song="song" />
+                <LibraryActions :song="song" />
               </div>
               <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />
             </div>
@@ -52,6 +55,7 @@
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
 import SongBadges from '../components/common/SongBadges.vue'
+import LibraryActions from '../components/common/LibraryActions.vue'
 import ArtistLinks from '../components/common/ArtistLinks.vue'
 import { getSongArtists } from '../utils/songMetadata.js'
 import { logger } from '../utils/logger.js'
@@ -59,7 +63,8 @@ import { logger } from '../utils/logger.js'
 import { getAlbumDetail, getAlbumSongs, getImagesByHash } from '../api/music.js'
 
 export default {
-  components: { ArtworkCover, SongBadges, ArtistLinks },
+  inject: { songActions: { default: null } },
+  components: { ArtworkCover, SongBadges, ArtistLinks, LibraryActions },
   name: 'AlbumDetailView',
   props: {
     albumId: { type: [String, Number], required: false },

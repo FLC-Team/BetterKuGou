@@ -26,6 +26,8 @@
 - `playback.quality` 默认字符串 128；双端仅接收 128/320/flac/high，补全旧配置，非法导入值回退 128。它表示所选音质偏好，当前音源的真实格式和码率由播放器独立维护。
 - `software.updates` 默认 `{ autoCheck: true, autoDownload: false, channel: 'stable' }`；双端补全旧配置，布尔开关严格校验、渠道限定 stable/beta，移除未知字段及任何自动安装开关。更新服务只消费保存成功的设置，检查结果、进度和本机安装包路径不进入本 store。
 - 离线缓存复用 download 分组：offlinePlaylistCacheEnabled 默认 true；cacheSizeIndex 默认 0，限定 0–5；concurrentDownloads 默认 3，限定 1–10。双端按同一规则补全与校验，不将缓存资源、凭证或进度存入设置。
+- 歌曲文件下载复用 downloadPath/concurrentDownloads，quality 默认 follow，限定 follow/128/320/flac/high；embedMetadata/embedCover/saveLyrics 默认 true 且严格校验布尔值。原生选目录只修改父级草稿，成功保存才配置后台任务，已建任务保留创建时选项。
+- `playback.syncPlayHistory` 默认 true，双端非法值回退 true，关闭后不向酷狗账号写听歌记录，已有播放列表恢复快照仍独立保存。
 - `download.offlineCachePath` 默认空，表示沿用主进程默认缓存目录；非空值由主进程完成目录迁移后专用提交并广播。渲染草稿不直接编辑此字段，普通保存、导入和重置不能改变已提交目录；旧 `downloadPath/cachePath` 继续保留兼容。
 - `updateSettings()` 默认合并，`overwriteSettings()` 替换，均保留响应式对象引用。
 - `saveSessionSnapshot()` 合并队列、当前歌曲、索引及播放时间、音量和模式。
@@ -68,7 +70,8 @@
 | software.updates.autoCheck / autoDownload / channel | 主进程更新服务的自动检查、自动下载及正式/测试渠道；设置“更新与备份 → 应用更新”，保存成功后生效。 |
 | download.offlinePlaylistCacheEnabled / cacheSizeIndex / concurrentDownloads | 独立离线缓存服务消费已提交偏好；设置“下载与缓存”，默认启用、2GB 和 3 并发。 |
 | download.offlineCachePath | 离线缓存实际根目录，空值使用 userData/offline-playlists；设置“下载与缓存 → 更改位置”迁移全部账号后由主进程提交。 |
-| download.downloadPath / cachePath | 保留旧配置兼容，普通文件下载尚未开放；这两个字段不控制离线缓存目录。 |
+| download.downloadPath / quality / embedMetadata / embedCover / saveLyrics | 歌曲文件下载目录、音质、标签、封面及配套歌词；设置“下载与缓存”，建任务时冻结。cachePath 保留旧配置兼容，不控制离线缓存目录。 |
+| playback.syncPlayHistory | 登录账号真实播放达到阈值后同步听歌记录，默认开启；设置“播放设置”。 |
 | session.* | 播放器实时队列、进度、音量和模式；由播放会话维护，不在偏好设置重复编辑。 |
 
 ## 运行

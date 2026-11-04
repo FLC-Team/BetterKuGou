@@ -12,6 +12,7 @@
           <div class="collection-actions"><button type="button" class="play-all-btn" :disabled="songs.length === 0" @click="handlePlayAll"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>播放全部</button></div>
         </div>
       </header>
+      <div class="period-toolbar"><button type="button" class="action-btn" @click="openPeriods">{{ periodsLoading ? '正在读取往期…' : '往期榜单' }}</button><label v-if="periodsOpen">榜单期数 <select v-model="selectedRankCid" @change="changePeriod"><option value="">最新一期</option><option v-for="period in periods" :key="periodId(period)" :value="String(periodId(period))">{{ periodName(period) }}</option></select></label><span v-if="periodsOpen && !periodsLoading && !periods.length && !periodsError">这个榜单暂无往期内容</span><span v-if="periodsError" role="alert">{{ periodsError }} <button type="button" @click="loadPeriods">重试</button></span></div>
       <div class="section-heading"><h2>曲目</h2><span>跟随音乐的热度</span></div>
 
       <Transition name="ui-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')">      <div v-if="error && songs.length > 0" class="refresh-error" role="alert"><span>{{ error }}</span><button type="button" class="retry-btn" @click="loadData">重试</button></div></Transition>
@@ -85,6 +86,7 @@
                   <path d="M719.4 499.1l-296.1-215A15.9 15.9 0 00398 297v430c0 13.1 14.8 20.5 25.3 12.9l296.1-215a15.9 15.9 0 000-25.8z"/>
                 </svg>
               </button>
+              <LibraryActions :song="song" />
             </div>
         </div>
       </div>
@@ -97,15 +99,19 @@
 import ArtworkCover from '../components/common/ArtworkCover.vue'
 import SongBadges from '../components/common/SongBadges.vue'
 import ArtistLinks from '../components/common/ArtistLinks.vue'
+import LibraryActions from '../components/common/LibraryActions.vue'
 import { logger } from '../utils/logger.js'
 
 import { getRankSongs } from '../api/music.js'
+import { getRankPeriods } from '../api/library.js'
+import { extractLibraryList } from '../utils/libraryMetadata.js'
 import { getSongArtists } from '../utils/songMetadata.js'
 import { useSettingsStore } from '../stores/settingsStore.js'
 
 export default {
-  components: { ArtworkCover, SongBadges, ArtistLinks },
+  components: { ArtworkCover, SongBadges, ArtistLinks, LibraryActions },
   name: 'RankDetailView',
+  inject: { library: { from: 'musicLibrary', default: null } },
   props: {
     rankData: {
       type: Object,
@@ -116,7 +122,7 @@ export default {
       default: null
     }
   },
-  emits: ['navigate', 'play', 'play-all', 'search'],
+  emits: ['navigate', 'play', 'play-all', 'search', 'play-next', 'toggle-favorite', 'add-to-playlist', 'download', 'share', 'show-details'],
   setup() {
     const { settings } = useSettingsStore()
     return { settings }
@@ -127,21 +133,27 @@ export default {
       error: null,
       songs: [],
       rankInfo: null,
-      isDisposed: false
+      isDisposed: false,
+      selectedRankCid: '', periods: [], periodsOpen: false, periodsLoading: false, periodsLoaded: false, periodsError: '', periodCache: {}, requestId: 0, requestController: null, periodsController: null
     }
   },
   mounted() {
     this.rankInfo = this.rankData
+    this.selectedRankCid = this.rankData.rank_cid ? String(this.rankData.rank_cid) : ''
     this.loadData()
   },
   beforeUnmount() {
     this.isDisposed = true
+    this.requestId++; this.requestController?.abort(); this.periodsController?.abort()
   },
   methods: {
     /** 按接口总数读取完整榜单，成功后一次替换，失败保留上次可用曲目。 */
     async loadData() {
       if (this.loading || this.isDisposed) return
       const rankid = this.rankData.rankid
+      const requestId = ++this.requestId
+      const controller = typeof AbortController === 'undefined' ? null : new AbortController()
+      this.requestController = controller
       let page = 1
       try {
         this.loading = true
@@ -149,8 +161,8 @@ export default {
         const songs = []
         const seenPages = new Set()
         while (!this.isDisposed) {
-          const response = await getRankSongs(rankid, page, 100)
-          if (this.isDisposed) return
+          const response = await getRankSongs(rankid, page, 100, { rankCid: this.selectedRankCid || undefined, signal: controller?.signal })
+          if (this.isDisposed || requestId !== this.requestId) return
           const list = response?.data?.songlist
           if (Number(response?.status) !== 1 || !Array.isArray(list)) {
             throw new Error('排行榜曲目响应无效')
@@ -170,14 +182,29 @@ export default {
           if (hasTotal && songs.length >= total) break
           page += 1
         }
-        if (!this.isDisposed) this.songs = songs
+        if (!this.isDisposed && requestId === this.requestId) { this.songs = songs; this.periodCache[this.selectedRankCid || 'latest'] = songs }
       } catch (error) {
-        if (this.isDisposed) return
+        if (this.isDisposed || requestId !== this.requestId) return
         logger.error('RankDetailView', '加载排行榜曲目失败:', { rankid, page }, error)
         this.error = '加载失败，请重试'
       } finally {
-        if (!this.isDisposed) this.loading = false
+        if (!this.isDisposed && requestId === this.requestId) this.loading = false
       }
+    },
+    periodId(period) { return period.rank_cid ?? period.cid ?? period.volid ?? period.id },
+    periodName(period) { return period.name || period.rank_name || period.rankname || period.vol_name || period.voltitle || period.voltime || period.volname || period.date || period.update_date || `第 ${period.vol || this.periodId(period)} 期` },
+    openPeriods() { this.periodsOpen = !this.periodsOpen; if (this.periodsOpen && !this.periodsLoaded) this.loadPeriods() },
+    async loadPeriods() {
+      if (this.periodsLoading || this.isDisposed) return
+      this.periodsLoading = true; this.periodsError = ''; const controller = this.periodsController = new AbortController()
+      try { const response = await getRankPeriods({ rankid: this.rankData.rankid }, { signal: controller.signal }); if (!this.isDisposed) { this.periods = extractLibraryList(response, ['vol_list', 'vols']).flatMap(item => Array.isArray(item.vols) ? item.vols.map(period => ({ ...period, year: item.year })) : [item]).filter(item => this.periodId(item) != null); this.periodsLoaded = true } }
+      catch (error) { if (!this.isDisposed && !controller.signal.aborted) { this.periodsError = error?.message || '往期榜单加载失败'; logger.error('RankDetailView', '读取往期列表失败', error) } }
+      finally { if (!this.isDisposed) this.periodsLoading = false }
+    },
+    changePeriod() {
+      this.requestId++; this.requestController?.abort(); this.loading = false; this.error = null
+      const cached = this.periodCache[this.selectedRankCid || 'latest']; this.songs = cached || []
+      if (!cached) this.loadData()
     },
     /** 将排行曲目的嵌套音频/专辑字段转为列表和播放器约定，保留权限与歌手身份。 */
     normalizeRankSong(song) {
@@ -277,3 +304,6 @@ export default {
 </script>
 
 <style src="./styles/ListPage.css" scoped></style>
+<style scoped>
+.period-toolbar{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin:20px 0;font-size:13px;color:var(--color-text-secondary)}.period-toolbar select{background:var(--color-background);color:var(--color-text);border:1px solid var(--color-border);padding:8px;border-radius:8px;margin-left:8px}
+</style>

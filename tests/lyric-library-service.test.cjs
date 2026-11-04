@@ -204,6 +204,8 @@ test('editing timed row structure removes inherited translation and reading meta
 test('main IPC restricts library operations to the main top frame and fixes the private root', async () => {
   const source = await fs.readFile(path.join(__dirname, '../electron/main.js'), 'utf8')
   const start = source.indexOf('function initializeLyricLibraryService()')
+  const initializeEnd = source.indexOf('/** Music file exports', start)
+  const handlersStart = source.indexOf('function getLyricLibraryForSender(event)', initializeEnd)
   const end = source.indexOf('/** 离线资源 IPC', start)
   const senderStart = source.indexOf('function isMainWindowSender(event)')
   const senderEnd = source.indexOf('\n}', senderStart) + 2
@@ -218,7 +220,8 @@ test('main IPC restricts library operations to the main top frame and fixes the 
     getSettings: () => policy(), createLyricLibraryService: value => { options = value; return service },
     ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) }
   })
-  vm.runInContext(source.slice(senderStart, senderEnd) + '\n' + source.slice(start, end), context)
+  assert.ok(initializeEnd > start && handlersStart > initializeEnd && end > handlersStart)
+  vm.runInContext(source.slice(senderStart, senderEnd) + '\n' + source.slice(start, initializeEnd) + '\n' + source.slice(handlersStart, end), context)
   vm.runInContext('initializeLyricLibraryService()', context)
   assert.equal(options.root, path.join('/user-data', 'lyric-library'))
   const event = { sender: mainWindow.webContents, senderFrame: mainWindow.webContents.mainFrame }

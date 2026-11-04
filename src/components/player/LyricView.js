@@ -7,6 +7,7 @@ import ContextMenu from '../common/ContextMenu.vue'
 import ArtistLinks from '../common/ArtistLinks.vue'
 import ArtworkCover from '../common/ArtworkCover.vue'
 import VolumeControl from './VolumeControl.vue'
+import LibraryActions from '../common/LibraryActions.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import repeatAllIcon from '../../assets/icons/repeat_all.svg'
 import repeatOneIcon from '../../assets/icons/repeat_one.svg'
@@ -20,8 +21,10 @@ const lyricSegmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter
 
 export default {
   name: 'LyricView',
-  components: { ContextMenu, ArtistLinks, ArtworkCover, VolumeControl },
+  components: { ContextMenu, ArtistLinks, ArtworkCover, VolumeControl, LibraryActions },
   props: {
+    favoritePending: { type: Boolean, default: false },
+    qualitySwitchAvailable: { type: Boolean, default: true },
     volume: { type: Number, default: 80 },
     isMuted: { type: Boolean, default: false },
     visible: {
@@ -346,6 +349,7 @@ export default {
 
   },
   watch: {
+    qualitySwitchAvailable(value) { if (!value) this.closeQualityMenu() },
     parsedLyrics() {
       // 同一首歌的 ready 层可能复用 DOM；等 Vue 补齐新字节点后再缓存。
       this.$nextTick(() => {
@@ -487,6 +491,7 @@ export default {
   methods: {
     /** 菜单只修改音质偏好；勾选项与当前有效音源状态独立呈现。 */
     openQualityMenu() {
+      if (!this.qualitySwitchAvailable) return
       if (this.isDisposed) return
       contextMenuManager.registerMenu(this.closeQualityMenu)
       this.qualityMenuPosition = { x: 0, y: 0 }
@@ -538,6 +543,7 @@ export default {
       options[next]?.focus()
     },
     selectQuality(value) {
+      if (!this.qualitySwitchAvailable) return
       this.closeQualityMenu(true)
       this.$emit('change-quality', value)
     },
@@ -1691,6 +1697,7 @@ export default {
     },
 
     toggleFavorite() {
+      if (this.favoritePending) return
       this.$emit('toggle-favorite')
     },
 

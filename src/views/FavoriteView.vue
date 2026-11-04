@@ -4,12 +4,16 @@
       <header class="collection-hero">
         <ArtworkCover :src="favoriteList.find(song => song.cover)?.cover || ''" class="collection-art" mark="♥" />
         <div class="collection-copy">
-          <p class="eyebrow">{{ isPlaylistView ? 'PLAYLIST / 我的歌单' : 'MY COLLECTION / 音乐收藏' }}</p>
+          <p class="eyebrow">{{ isPlaylistView ? (isPublicPlaylist ? 'PLAYLIST / 公开歌单' : 'PLAYLIST / 我的歌单') : 'MY COLLECTION / 音乐收藏' }}</p>
           <h1 class="page-title">{{ pageTitle }}</h1>
           <p class="collection-description">{{ isPlaylistView ? '把此刻的心情，留在这一张歌单里。' : '反复聆听的旋律，组成属于你的音乐收藏。' }}</p>
-          <div class="collection-meta"><span>{{ favoriteList.length }} 首歌曲</span><span>{{ isPlaylistView ? '我的歌单' : '我喜欢' }}</span></div>
+          <div class="collection-meta"><span>{{ favoriteList.length }} 首歌曲</span><span>{{ isPlaylistView ? (isPublicPlaylist ? '公开歌单' : '我的歌单') : '我喜欢' }}</span></div>
           <div class="collection-actions"><button type="button" class="play-all-btn" :disabled="favoriteList.length === 0" @click="playAll"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>播放全部</button>
-            <button type="button" class="action-btn" :disabled="loading" @click="loadFavorites(true)">{{ loading ? '刷新中…' : '刷新歌单' }}</button></div>
+            <button type="button" class="action-btn" :disabled="loading" @click="loadFavorites(true)">{{ loading ? '刷新中…' : '刷新歌单' }}</button>
+            <button type="button" class="action-btn" :disabled="!favoriteList.length" @click="$emit('download', favoriteList)">下载歌单</button>
+            <button type="button" v-if="isPlaylistView" class="action-btn" @click="$emit('manage-playlist', playlistResource || { id: playlistId, globalCollectionId: playlistId, source: 'public', name: playlistName })">{{ playlistResource?.source === 'owned' ? '管理歌单' : '收藏歌单' }}</button>
+            <button type="button" v-else class="action-btn" :disabled="!favoriteList.length || !musicLibrary?.canWrite" @click="clearAll">清空收藏</button>
+          </div>
           <div v-if="offlineCacheAvailable" class="playlist-cache" aria-live="polite">
             <span>{{ playlistCacheState?.enabled === false ? '离线缓存已关闭' : `已听缓存 ${offlineCacheEntry?.cached || 0} / ${favoriteList.length} 首` }}</span>
             <span class="playlist-cache-hint">{{ offlineCacheStatusText }}</span>
@@ -22,7 +26,12 @@
         </div>
       </header>
 
+      <PlaylistOverview v-if="isPlaylistView" :resource="playlistResource || { id: playlistId, name: playlistName }" @navigate="(view, data) => $emit('navigate', view, data)" />
       <div class="section-heading"><h2>曲目</h2><span>每一首，都是喜欢的理由</span></div>
+      <div v-if="!isPlaylistView && !musicLibrary?.state.loaded && musicLibrary?.state.favoriteCandidates.length" class="refresh-error" role="status">
+        <span>请确认酷狗账号的收藏歌单。此选择只绑定目标，不会修改任何歌曲。</span>
+        <button v-for="candidate in musicLibrary.state.favoriteCandidates" :key="candidate.listId" type="button" class="action-btn" @click="bindFavoritePlaylist(candidate)">{{ candidate.name }} · {{ candidate.listId }}</button>
+      </div>
 
       <div class="playlist-search" role="search" aria-label="歌单内搜索">
         <div class="playlist-search-field">
@@ -31,6 +40,13 @@
           <Transition name="ui-pop" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><button v-if="searchQuery" type="button" class="clear-search" aria-label="清空歌单搜索" @click="searchQuery = ''; $refs.playlistSearch?.focus()">×</button></Transition>
         </div>
         <p class="playlist-search-count" role="status" aria-live="polite">{{ hasSearchQuery ? `找到 ${filteredFavoriteList.length} 首 / 共 ${favoriteList.length} 首` : `共 ${favoriteList.length} 首歌曲` }}</p>
+      </div>
+      <div v-if="favoriteList.length" class="collection-actions selection-actions">
+        <label><input type="checkbox" :checked="selectedSongs.length === filteredFavoriteList.length && selectedSongs.length > 0" @change="selectedIndices = $event.target.checked ? filteredFavoriteList.map(song => song.index) : []" />选择搜索结果</label>
+        <span v-if="selectedSongs.length">已选择 {{ selectedSongs.length }} 首</span>
+        <button v-if="selectedSongs.length" type="button" class="action-btn" @click="$emit('add-to-playlist', selectedSongs)">添加到歌单</button>
+        <button v-if="selectedSongs.length" type="button" class="action-btn" @click="$emit('download', selectedSongs)">下载所选</button>
+        <button v-if="selectedSongs.length && (!isPlaylistView || playlistResource?.isOwned)" type="button" class="action-btn" :disabled="!musicLibrary?.canWrite" @click="removeSelectedSongs()">从云端歌单移除</button>
       </div>
 
       <div v-if="errorMessage && favoriteList.length > 0" class="refresh-error" role="alert">
@@ -100,6 +116,7 @@
           @contextmenu.prevent.stop="showContextMenu($event, song)"
         >
           <div class="col-index">
+            <input type="checkbox" :aria-label="`选择 ${getSongName(song.name)}`" :checked="selectedIndices.includes(song.index)" @change="toggleSelected(song, $event.target.checked)" @click.stop @dblclick.stop />
             <span class="index-number">{{ String(song.index).padStart(2, '0') }}</span>
           </div>
 
@@ -129,11 +146,7 @@
                   <path d="M719.4 499.1l-296.1-215A15.9 15.9 0 00398 297v430c0 13.1 14.8 20.5 25.3 12.9l296.1-215a15.9 15.9 0 000-25.8z"/>
                 </svg>
               </button>
-              <button type="button" v-if="!isPlaylistView" class="icon-btn favorite-btn active" @click.stop="removeFavorite(song)" title="取消收藏" @dblclick.stop>
-                <svg viewBox="0 0 1024 1024" width="16" height="16" fill="currentColor">
-                  <path d="M923 283.6a260.04 260.04 0 00-56.9-82.8 264.4 264.4 0 00-84-55.5A265.34 265.34 0 00679.7 125c-49.3 0-97.4 13.5-139.2 39-10 6.1-19.5 12.8-28.5 20.1-9-7.3-18.5-14-28.5-20.1-41.8-25.5-89.9-39-139.2-39-35.5 0-69.9 6.8-102.4 20.3-31.4 13-59.7 31.7-84 55.5a258.44 258.44 0 00-56.9 82.8c-13.9 32.3-21 66.6-21 101.9 0 33.3 6.8 68 20.3 103.3 11.3 29.5 27.5 60.1 48.2 91 32.8 48.9 77.9 99.9 133.9 151.6 92.8 85.7 184.7 144.9 188.6 147.3l23.7 15.2c10.5 6.7 24 6.7 34.5 0l23.7-15.2c3.9-2.5 95.7-61.6 188.6-147.3 56-51.7 101.1-102.7 133.9-151.6 20.7-30.9 37-61.5 48.2-91 13.5-35.3 20.3-70 20.3-103.3.1-35.3-7-69.6-20.9-101.9z"/>
-                </svg>
-              </button>
+              <LibraryActions :song="song" />
             </div>
         </div>
         </template>

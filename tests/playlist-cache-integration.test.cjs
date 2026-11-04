@@ -11,7 +11,7 @@ function fixture(packaged = false, controls = {}) {
   let options, savedListener, protocolHandler
   const settings = { software: { updates: {} }, download: { offlinePlaylistCacheEnabled: true, offlineCachePath: controls.offlineCachePath || '' }, playback: { quality: '128' } }
   const state = { revision: 1, generation: 1, userId: 'placeholder-account', playlists: [], cacheDirectory: controls.offlineCachePath || path.join('/user-data', 'offline-playlists') }
-  const methods = ['setSession', 'getState', 'readPlaylist', 'putPlaylist', 'cacheSong', 'getSource', 'releaseSource', 'readLyrics', 'putLyrics', 'getArtwork', 'cacheArtwork', 'pause', 'resume', 'retry', 'retryNetwork', 'clear']
+  const methods = ['setSession', 'getState', 'readPlaylist', 'putPlaylist', 'removePlaylist', 'cacheSong', 'getSource', 'releaseSource', 'readLyrics', 'putLyrics', 'getArtwork', 'cacheArtwork', 'pause', 'resume', 'retry', 'retryNetwork', 'clear']
   const service = {
     ...Object.fromEntries(methods.map(method => [method, arg => { calls.push([method, arg]); return state }])),
     configure(value) { calls.push(['configure', value]) },
@@ -58,6 +58,7 @@ function fixture(packaged = false, controls = {}) {
       if (name === './logger') return quiet
       if (name === './services/lyricLibraryService') return { createLyricLibraryService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/playlistCacheService') return { createPlaylistCacheService(value) { options = value; return service } }
+      if (name === './services/musicDownloadService') return { createMusicDownloadService: () => ({ configure: async () => {}, setSession: async () => {}, stop: async () => {} }) }
       if (name === './services/backendService') return { createBackendService: () => ({ stop: async () => {} }) }
       if (name === './services/updateService') return { createUpdateService: () => ({}) }
       if (name === './settingsStore') return {
@@ -100,7 +101,7 @@ test('offline worker paths and media registration cover development and packaged
 
 test('every offline operation rejects auxiliary windows, frames and calls during shutdown', async () => {
   const f = fixture()
-  const names = ['set-session', 'get-state', 'read-playlist', 'put-playlist', 'cache-song', 'get-source', 'release-source', 'read-lyrics', 'put-lyrics', 'get-artwork', 'cache-artwork', 'pause', 'resume', 'retry', 'retry-network', 'clear']
+  const names = ['set-session', 'get-state', 'read-playlist', 'put-playlist', 'remove-playlist', 'cache-song', 'get-source', 'release-source', 'read-lyrics', 'put-lyrics', 'get-artwork', 'cache-artwork', 'pause', 'resume', 'retry', 'retry-network', 'clear']
   for (const name of names) {
     for (const source of [{ sender: {} }, { sender: f.event.sender, senderFrame: {} }]) {
       assert.throws(() => f.invoke(name, null, source), /主窗口/)

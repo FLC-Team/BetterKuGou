@@ -17,6 +17,7 @@ const { pathToFileURL } = require('url')
 const { createBackendService } = require('./services/backendService')
 const { createUpdateService } = require('./services/updateService')
 const { createPlaylistCacheService } = require('./services/playlistCacheService')
+const { createMusicDownloadService } = require('./services/musicDownloadService')
 const { evaluateDesktopLyricPolicy, sameMonitorBounds } = require('./services/desktopLyricPolicy')
 const { createWindowsForegroundMonitor } = require('./services/windowsForeground')
 const { createLyricLibraryService } = require('./services/lyricLibraryService')
@@ -61,6 +62,8 @@ let mainWindowReady = false
 let unsubscribeSettings = null
 let updateService = null
 let playlistCacheService = null
+let musicDownloadService = null
+let downloadDirectorySelection = false
 let lyricLibraryService = null
 let cacheDirectorySelection = false
 let installRequest = null
@@ -908,6 +911,7 @@ function subscribeToSettingsUpdates() {
     updateService?.configure(nextSettings.software.updates)
     playlistCacheService?.configure(nextSettings)
     lyricLibraryService?.configure(nextSettings)
+    musicDownloadService?.configure(nextSettings).catch(error => logger.error('music-download', '应用下载设置失败', error))
   })
 }
 
@@ -962,6 +966,61 @@ function initializeLyricLibraryService() {
   lyricLibraryService.configure(getSettings())
 }
 
+/** Music file exports own a worker; cache leases and selected lyrics remain private to the main process. */
+function initializeMusicDownloadService() {
+  musicDownloadService = createMusicDownloadService({
+    workerPath: app.isPackaged ? path.join(process.resourcesPath, 'music-download', 'musicDownloadWorker.cjs') : path.join(app.getAppPath(), 'electron', 'services', 'musicDownloadWorker.cjs'),
+    root: path.join(app.getPath('userData'), 'music-downloads'),
+    defaultDownloadPath: getSettings().download.downloadPath || app.getPath('music'),
+    logger,
+    onState: state => { if (!isQuitting && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('downloads:state', state) },
+    onAuthExpired: identity => {
+      const state = playlistCacheService?.getState()
+      if (!isQuitting && mainWindow && !mainWindow.isDestroyed() && state?.userId && String(state.userId) === String(identity.userId)) {
+        mainWindow.webContents.send('playlist-cache:auth-expired', { userId: state.userId, generation: state.generation })
+      }
+    },
+    getCachedFile: (song, quality) => playlistCacheService?.acquireDownloadSource({ hash: song.hash, quality, source: song.source, sourceUserId: song.sourceUserId }),
+    async getDownloadLyrics(song) {
+      if (getSettings().playback?.lyricLibrary?.enabled && lyricLibraryService) {
+        const record = await lyricLibraryService.read(song.hash)
+        const selected = record?.versions?.find(version => version.id === record.selectedVersionId)?.data
+        if (selected?.decodeContent) return { content: selected.decodeContent }
+      }
+      const cached = await playlistCacheService?.readLyrics(song.hash)
+      const data = cached?.data || cached
+      return data?.decodeContent ? { content: data.decodeContent } : null
+    }
+  })
+  void musicDownloadService.configure(getSettings()).catch(error => logger.error('music-download', '初始化下载设置失败', error))
+}
+
+function getDownloadsForSender(event) {
+  if (isQuitting || !isMainWindowSender(event)) throw new Error('下载操作只能从应用主窗口发起。')
+  if (!musicDownloadService) throw new Error('下载服务尚未就绪，请稍后重试。')
+  return musicDownloadService
+}
+for (const [channel, method] of Object.entries({ 'get-state': 'getState', enqueue: 'enqueue', pause: 'pause', resume: 'resume', cancel: 'cancel', retry: 'retry', 'retry-metadata': 'retryMetadata' })) {
+  ipcMain.handle(`downloads:${channel}`, (event, argument) => getDownloadsForSender(event)[method](argument))
+}
+ipcMain.handle('downloads:reveal', async (event, id) => {
+  const service = getDownloadsForSender(event)
+  const file = await service.getFile(id)
+  if (getDownloadsForSender(event) !== service) return false
+  shell.showItemInFolder(file)
+  return true
+})
+ipcMain.handle('downloads:choose-directory', async event => {
+  const service = getDownloadsForSender(event)
+  if (downloadDirectorySelection) return { canceled: true }
+  downloadDirectorySelection = true
+  try {
+    const selected = await dialog.showOpenDialog(mainWindow, { title: '选择歌曲下载目录', defaultPath: getSettings().download.downloadPath || app.getPath('music'), properties: ['openDirectory', 'createDirectory', 'promptToCreate'] })
+    if (selected.canceled || !selected.filePaths?.length || getDownloadsForSender(event) !== service) return { canceled: true }
+    return { path: selected.filePaths[0] }
+  } finally { downloadDirectorySelection = false }
+})
+
 /** 歌词库只接受主窗口顶层请求，文件路径与持久化策略由主进程掌握。 */
 function getLyricLibraryForSender(event) {
   if (isQuitting || !isMainWindowSender(event)) throw new Error('歌词管理操作只能从应用主窗口发起。')
@@ -1007,12 +1066,20 @@ ipcMain.handle('playlist-cache:choose-directory', async (event) => {
 
 for (const [channel, method] of Object.entries({
   'set-session': 'setSession', 'get-state': 'getState', 'read-playlist': 'readPlaylist',
-  'put-playlist': 'putPlaylist', 'cache-song': 'cacheSong', 'get-source': 'getSource',
+  'put-playlist': 'putPlaylist', 'remove-playlist': 'removePlaylist', 'cache-song': 'cacheSong', 'get-source': 'getSource',
   'release-source': 'releaseSource', 'read-lyrics': 'readLyrics', 'put-lyrics': 'putLyrics',
   'get-artwork': 'getArtwork', 'cache-artwork': 'cacheArtwork', pause: 'pause', resume: 'resume',
   retry: 'retry', 'retry-network': 'retryNetwork', clear: 'clear'
 })) {
-  ipcMain.handle(`playlist-cache:${channel}`, (event, argument) => getPlaylistCacheForSender(event)[method](argument))
+  ipcMain.handle(`playlist-cache:${channel}`, (event, argument) => {
+    const service = getPlaylistCacheForSender(event)
+    if (channel !== 'set-session') return service[method](argument)
+    const downloadSession = argument?.userId && argument?.token ? { userid: String(argument.userId), token: String(argument.token) } : null
+    const result = service.setSession(argument)
+    if (!musicDownloadService) return result
+    const downloadResult = musicDownloadService.setSession(downloadSession).catch(error => logger.error('music-download', '切换下载账号失败', error))
+    return Promise.all([downloadResult, result]).then(([, state]) => state)
+  })
 }
 
 /** 更新桥接仅允许主窗口的顶层页面，路径与下载地址不接收渲染输入。 */
@@ -1273,6 +1340,12 @@ async function cleanupApplicationResources() {
     releaseInstallPreparation()
 
     try {
+      if (musicDownloadService) await musicDownloadService.stop()
+    } catch (error) {
+      logger.error('music-download', '停止音乐下载任务失败', error)
+    }
+
+    try {
       if (lyricLibraryService) await lyricLibraryService.stop()
     } catch (error) {
       logger.error('lyric-library', '结束歌词保存失败', error)
@@ -1518,6 +1591,11 @@ app.whenReady().then(async () => {
   }
 
   // 启动后端服务器
+  try {
+    initializeMusicDownloadService()
+  } catch (error) {
+    logger.error('music-download', '初始化音乐下载服务失败', error)
+  }
   backendService.start()
 
   // 与后端并行加载界面；渲染入口只在首批请求前等待实际服务就绪。

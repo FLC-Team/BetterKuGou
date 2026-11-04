@@ -56,7 +56,8 @@ export default {
   props: {
     items: { type: Array, default: () => [] },
     itemKey: { type: String, default: 'index' },
-    threshold: { type: Number, default: 200 }
+    threshold: { type: Number, default: 200 },
+    scrollContainerSelector: { type: String, default: '.list-page' }
   },
   data() {
     return { heights: new Map(), estimate: initialHeight, windowStart: 0, windowEnd: 24, focusedKey: null, keyboardKey: null }
@@ -143,7 +144,7 @@ export default {
         if (!state.active || state.disposed || generation !== state.generation || !this.$el.isConnected) return
         const doc = this.$el.ownerDocument
         state.view = doc.defaultView
-        state.scroller = this.$el.closest('.list-page')
+        state.scroller = this.$el.closest(this.scrollContainerSelector || '.list-page')
         if (!state.scroller) return
         const signature = this.themeSignature()
         state.invalidate ||= state.signature !== signature || state.width !== state.scroller.clientWidth

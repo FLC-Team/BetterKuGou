@@ -56,11 +56,13 @@ function loadComponent(filename, overrides = {}) {
     localStorage: { getItem: () => null, setItem: () => {} },
     getSongDetail: async () => ({ status: 1, data: [] }),
     getSongUrl: async hash => ({ status: 1, url: `https://example.test/${hash}.mp3` }),
+    getCloudSongUrl: async () => { throw new Error('Cloud playback tests must provide a URL response') },
+    uploadPlayHistory: async () => ({ status: 1 }),
     getLyric: async hash => ({ status: 1, decodeContent: `[00:00.00]${hash}` }),
     getPlaylistCacheAPI: () => sandbox.window.electronAPI?.playlistCache || null,
     waitForPlaylistCacheSession: async () => sandbox.window.electronAPI?.playlistCache || null,
     getPlaylistCacheSessionVersion: () => 0,
-    PlaylistDrawer: {}, ContextMenu: {}, AnimatedSelect: {}, LyricView: {}, VolumeControl: {}, ArtworkCover: {}, TransitionGroup: {}, SongBadges: {}, ArtistLinks: {},
+    PlaylistDrawer: {}, ContextMenu: {}, AnimatedSelect: {}, LyricView: {}, VolumeControl: {}, ArtworkCover: {}, TransitionGroup: {}, SongBadges: {}, ArtistLinks: {}, LibraryActions: {},
     contextMenuManager: menuManager,
     useSettingsStore: () => ({ settings: { playback: { quality: '128' }, custom: {} }, async updateSettings() {} }),
     ...Object.fromEntries(['playlistIcon', 'repeatAllIcon', 'repeatOneIcon', 'shuffleIcon',
@@ -77,12 +79,15 @@ function loadComponent(filename, overrides = {}) {
   const qualitySource = fs.readFileSync(path.join(playerDirectory, '..', '..', 'utils', 'playbackQuality.js'), 'utf8')
     .replace(/\bexport (?=(?:function|const))/g, '')
   vm.runInContext(qualitySource, sandbox)
-  for (const filename of ['songMetadata.js', 'desktopLyrics.js', 'lyricProcessing.js']) {
+  for (const filename of ['songMetadata.js', 'desktopLyrics.js', 'lyricProcessing.js', 'listeningHistory.js']) {
     const utility = fs.readFileSync(path.join(playerDirectory, '..', '..', 'utils', filename), 'utf8')
       .replace(/^import[^\n]*\n/gm, '')
       .replace(/\bexport (?=(?:function|const))/g, '')
     vm.runInContext(utility, sandbox)
   }
+  const metadataSource = fs.readFileSync(path.join(playerDirectory, '..', '..', 'utils', 'libraryMetadata.js'), 'utf8')
+    .replace(/^import[^\n]*\n/gm, '').replace(/\bexport (?=(?:function|const))/g, '')
+  sandbox.librarySongKey = vm.runInContext(`(function () { ${metadataSource}; return librarySongKey })()`, sandbox)
   vm.runInContext(source, sandbox, { filename })
   return { component: sandbox.component, sandbox, actions, listeners, menuManager }
 }
@@ -160,6 +165,138 @@ function createFrameClock() {
     }
   }
 }
+
+test('cloud playback skips public metadata and ordinary URLs, carries ownership and disables quality changes', async t => {
+  const requests = []
+  const store = qualityStore()
+  const { player, audio } = createPlayer(t, {
+    useSettingsStore: () => store,
+    getSongDetail: async () => { throw new Error('Cloud originals must not depend on public catalogue metadata') },
+    getSongUrl: async () => { throw new Error('Cloud originals must use their dedicated address') },
+    getCloudSongUrl: async (song, options) => { requests.push({ song, options }); return { status: 1, url: 'https://example.test/original.flac', extname: 'flac' } },
+  })
+  const cloud = { hash: 'cloud-a', source: 'cloud', sourceUserId: 'A', originalName: 'Private, original.flac', name: 'Private' }
+  assert.equal(await player.loadSong(cloud), true)
+  assert.equal(audio.src, 'https://example.test/original.flac')
+  assert.equal(requests[0].song.originalName, cloud.originalName)
+  assert.ok(requests[0].options.signal)
+  assert.equal(player.loadedQualityPreference, 'original')
+  assert.equal(player.qualitySwitchAvailable, false)
+  assert.match(player.qualityStatus, /云盘原文件/)
+  assert.equal(await player.changeQuality('320'), false)
+  assert.equal(store.settings.playback.quality, '128')
+  assert.equal(requests.length, 1)
+})
+
+test('navigation keeps catalogue and cloud copies at their own queue indexes and retries each source independently', async t => {
+  const cloudRequests = []
+  const { player } = createPlayer(t, {
+    getCloudSongUrl: async item => { cloudRequests.push(item.sourceUserId); return { status: 1, url: 'https://example.test/cloud.mp3' } }
+  })
+  const catalog = song('shared')
+  const cloud = { ...catalog, source: 'cloud', sourceUserId: 'owner-a' }
+  player.playlist = [catalog, cloud]
+  await player.loadSong(cloud)
+  assert.equal(player.currentIndex, 1)
+  await player.playNext()
+  assert.equal(player.currentSong.source, undefined)
+  assert.equal(player.currentIndex, 0)
+  await player.playPrevious()
+  assert.equal(player.currentSong.source, 'cloud')
+  assert.equal(player.currentIndex, 1)
+  assert.deepEqual(cloudRequests, ['owner-a', 'owner-a'])
+
+  const failed = createPlayer(t, { getCloudSongUrl: async () => { throw new Error('cloud unavailable') } })
+  failed.player.playlist = [song('start'), cloud, catalog]
+  await failed.player.loadSong(failed.player.playlist[0])
+  await failed.player.playNext()
+  assert.equal(failed.player.currentSong.hash, 'shared')
+  assert.equal(failed.player.currentSong.source, undefined)
+  assert.equal(failed.player.currentIndex, 2)
+})
+
+test('removing or queueing a same-hash source leaves the other source and cloud owner intact', async t => {
+  const { player, audio } = createPlayer(t, { getCloudSongUrl: async () => ({ status: 1, url: 'https://example.test/cloud.mp3' }) })
+  const catalog = song('shared')
+  const cloud = { ...catalog, source: 'cloud', sourceUserId: 'owner-a' }
+  const anotherOwner = { ...cloud, sourceUserId: 'owner-b' }
+  player.playlist = [catalog, cloud, anotherOwner]
+  await player.loadSong(cloud)
+  player.addToPlayNextQueue(catalog)
+  player.addToPlayNextQueue(cloud)
+  player.addToPlayNextQueue(anotherOwner)
+  player.addToPlayNextQueue(cloud)
+  assert.equal(player.playNextQueue.length, 3)
+  const plays = audio.playCount
+  await player.handleRemoveSong(0)
+  assert.equal(player.currentSong.source, 'cloud')
+  assert.equal(player.currentSong.sourceUserId, 'owner-a')
+  assert.equal(player.currentIndex, 0)
+  assert.equal(audio.playCount, plays)
+  assert.equal(player.playNextQueue.length, 2)
+  assert.equal(player.playNextQueue[0].sourceUserId, 'owner-a')
+  await player.removeFromPlaylist(anotherOwner)
+  assert.equal(player.playlist.length, 1)
+  assert.equal(player.playNextQueue.length, 1)
+  assert.equal(player.playNextQueue[0].sourceUserId, 'owner-a')
+  assert.equal(audio.playCount, plays)
+})
+
+test('catalogue and cloud copies sharing one hash still resolve distinct sources and cache descriptors', async t => {
+  const calls = [], cacheCalls = []
+  const { player } = createPlayer(t, {
+    window: { electronAPI: { playlistCache: { getSource: async payload => { cacheCalls.push(payload); return null } } } },
+    getCloudSongUrl: async song => { calls.push(song); return { status: 1, url: 'https://example.test/cloud.mp3' } },
+  })
+  await player.loadSong(song('same'))
+  await player.loadSong({ ...song('same'), source: 'cloud', sourceUserId: 'A', originalName: 'same.mp3' })
+  assert.equal(calls.length, 1)
+  assert.equal(player.currentSong.source, 'cloud')
+  assert.equal(cacheCalls[1].source, 'cloud')
+  assert.equal(cacheCalls[1].sourceUserId, 'A')
+  assert.equal(cacheCalls[1].quality, 'original')
+})
+
+test('a failed cloud source restores the confirmed song and never queues the failed private file', async t => {
+  const { player, audio } = createPlayer(t, { getCloudSongUrl: async () => { throw new Error('unavailable') } })
+  await player.loadSong(song('confirmed'))
+  audio.currentTime = 42
+  const previousSource = audio.src
+  assert.equal(await player.loadSong({ hash: 'private', source: 'cloud', sourceUserId: 'A' }), false)
+  assert.equal(player.currentSong.hash, 'confirmed')
+  assert.equal(audio.src, previousSource)
+  assert.equal(audio.currentTime, 42)
+})
+
+test('the real player credits advancing confirmed audio once and preserves that instance across quality replacement', async t => {
+  let now = 0
+  const uploads = []
+  const { player, audio } = createPlayer(t, {
+    performance: { now: () => now },
+    localStorage: { getItem: key => ({ kugou_userid: 'A', kugou_token: 'placeholder' })[key] ?? null, setItem() {} },
+    uploadPlayHistory: async (song, options) => { uploads.push({ song, options }); return { status: 1 } },
+  })
+  qualityAudio(audio, player)
+  await player.loadSong(song('A'))
+  audio.readyState = 4
+  player.handleDesktopClockChange({ type: 'playing' })
+  for (let n = 0; n < 20; n++) { now += 1000; audio.currentTime++; player.handleTimeUpdate() }
+  assert.equal(uploads.length, 0)
+  await player.changeQuality('320')
+  player.handleDesktopClockChange({ type: 'playing' })
+  for (let n = 0; n < 10; n++) { now += 1000; audio.currentTime++; player.handleTimeUpdate() }
+  assert.equal(uploads.length, 1)
+  player.handleDesktopClockChange({ type: 'seeking' })
+  audio.currentTime = 140
+  player.handleSeeked()
+  for (let n = 0; n < 35; n++) { now += 1000; audio.currentTime++; player.handleTimeUpdate() }
+  assert.equal(uploads.length, 1)
+  await player.loadSong(song('B'))
+  audio.readyState = 4
+  player.handleDesktopClockChange({ type: 'playing' })
+  for (let n = 0; n < 30; n++) { now += 1000; audio.currentTime++; player.handleTimeUpdate() }
+  assert.equal(uploads.length, 2)
+})
 
 test('startup restores a paused track only after readiness without briefly playing or publishing zero', async t => {
   const { component, player, audio, emitted } = createPlayer(t)

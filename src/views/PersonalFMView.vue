@@ -39,6 +39,7 @@
           </button>
           <button type="button" class="fm-song-title" :title="song.songname || song.filename" @click.stop="$emit('search', song)" @dblclick.stop>{{ song.songname || song.filename }}</button>
           <SongBadges :song="song" />
+          <LibraryActions :song="song" />
           <ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" />
         </article>
       </div>
@@ -50,6 +51,7 @@
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
 import SongBadges from '../components/common/SongBadges.vue'
+import LibraryActions from '../components/common/LibraryActions.vue'
 import ArtistLinks from '../components/common/ArtistLinks.vue'
 import { logger } from '../utils/logger.js'
 
@@ -57,7 +59,7 @@ import { getPersonalFM } from '../api/music.js'
 import { useSettingsStore } from '../stores/settingsStore.js'
 
 export default {
-  components: { ArtworkCover, SongBadges, ArtistLinks },
+  components: { ArtworkCover, SongBadges, ArtistLinks, LibraryActions },
   name: 'PersonalFMView',
   emits: ['navigate', 'play', 'search'],
   props: {

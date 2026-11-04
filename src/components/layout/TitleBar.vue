@@ -10,9 +10,9 @@
     </div>
     
     <!-- 搜索框（居中） -->
-    <Transition name="ui-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><div v-if="!isLyricViewVisible" class="search-container" role="search" aria-label="音乐搜索">
+    <Transition name="ui-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><div v-if="!isLyricViewVisible" class="search-container" role="search" aria-label="音乐搜索" @focusout="leaveSearch">
       <form class="search-box" @submit.prevent="performSearch">
-        <button class="search-btn" type="submit" aria-label="搜索" title="搜索" :disabled="!searchKeyword.trim()">
+        <button class="search-btn" type="submit" aria-label="搜索" title="搜索" :disabled="!searchKeyword.trim() && !defaultKeyword">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
             <circle cx="10.75" cy="10.75" r="6.75" />
             <path d="m16 16 4.5 4.5" />
@@ -23,11 +23,19 @@
           v-model="searchKeyword"
           type="text"
           aria-label="搜索歌曲、歌手、专辑"
-          placeholder="搜索歌曲、歌手、专辑"
+          :placeholder="defaultKeyword || '搜索歌曲、歌手、专辑'"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-controls="search-suggestions"
+          :aria-expanded="showSearchHints"
+          :aria-activedescendant="activeSuggestion >= 0 ? `search-suggestion-${activeSuggestion}` : undefined"
           enterkeyhint="search"
           autocomplete="off"
           spellcheck="false"
-          @keydown.esc="!$event.isComposing && !$event.target.composing && $event.target.blur()"
+          @focus="openSearchHints"
+          @keydown="handleSearchKey"
+          @compositionstart="startComposition"
+          @compositionend="endComposition"
         />
         <Transition name="ui-pop" mode="out-in" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><button v-if="searchKeyword" class="search-clear" type="button" aria-label="清空搜索" title="清空搜索" @click="clearSearch">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
@@ -36,6 +44,15 @@
         </button>
         <span v-else class="search-hint" aria-hidden="true">↵</span></Transition>
       </form>
+      <Transition name="ui-pop"><section v-if="showSearchHints" class="search-suggestions" aria-label="搜索提示">
+        <div class="suggestion-heading"><strong>{{ searchKeyword.trim() ? '搜索建议' : '大家都在搜' }}</strong><button type="button" aria-label="关闭搜索提示" @click="closeSearchHints">×</button></div>
+        <p v-if="hintsLoading" role="status">正在查找…</p>
+        <p v-else-if="hintsError" role="alert">{{ hintsError }} <button type="button" @click="retrySearchHints">重试</button></p>
+        <p v-else-if="!suggestionOptions.length">{{ searchKeyword.trim() ? '暂无建议，按回车搜索当前关键词。' : '暂无热搜，输入关键词开始搜索。' }}</p>
+        <div id="search-suggestions" role="listbox" :aria-label="searchKeyword.trim() ? '搜索建议' : '热门搜索'">
+          <button v-for="(keyword, index) in suggestionOptions" :id="`search-suggestion-${index}`" :key="keyword" type="button" role="option" :aria-selected="index === activeSuggestion" @mousedown.prevent @click="chooseSuggestion(keyword)"><span>{{ String(index + 1).padStart(2, '0') }}</span>{{ keyword }}</button>
+        </div>
+      </section></Transition>
     </div></Transition>
     
     <div class="window-controls">
@@ -86,6 +103,7 @@
 
 <script>
 import { logger } from '../../utils/logger.js'
+import { getSearchSuggestions, getSearchHot, getSearchDefault } from '../../api/library.js'
 
 // 动态导入图标文件
 import minimizeIcon from '../../assets/icons/minimize.svg'
@@ -127,6 +145,18 @@ export default {
       isMaximized: false,
       showUserMenu: false,
       userMenuPosition: { top: 0, right: 0 },
+      showSearchHints: false,
+      suggestions: [],
+      hotKeywords: [],
+      defaultKeyword: '',
+      hintsLoading: false,
+      hintsError: '',
+      discoveryLoaded: false,
+      composing: false,
+      activeSuggestion: -1,
+      suggestionTimer: null,
+      hintController: null,
+      hintGeneration: 0,
       // 图标路径配置 - 如需替换图标,只需修改这里的路径
       icons: {
         minimize: minimizeIcon,
@@ -137,14 +167,17 @@ export default {
     }
   },
   computed: {
+    suggestionOptions() { return this.searchKeyword.trim() ? this.suggestions : this.hotKeywords },
     searchKeyword: {
       get() { return this.modelValue },
       set(value) { this.$emit('update:modelValue', value) }
     }
   },
   watch: {
+    modelValue(value) { if (this.showSearchHints && !this.composing) this.scheduleSuggestions(value) },
     userLoggedIn(value) { if (!value) this.showUserMenu = false },
     isLyricViewVisible(newVal) {
+      if (newVal) this.closeSearchHints()
       logger.trace('TitleBar', 'TitleBar: 歌词界面状态 =', newVal)
     }
   },
@@ -167,10 +200,74 @@ export default {
     }
   },
   beforeUnmount() {
+    this.cancelSearchHints()
     this.unsubscribeMaximized?.()
     this.unsubscribeUnmaximized?.()
   },
   methods: {
+    /** Follow known search-word containers only; service text remains plain text in the template. */
+    readSearchWords(response) {
+      const words = [], seen = new Set()
+      const visit = (value, depth = 0) => {
+        if (value == null || depth > 7 || words.length >= 20) return
+        if (typeof value === 'string') { const word = value.trim(); if (word && !seen.has(word)) { seen.add(word); words.push(word) }; return }
+        if (Array.isArray(value)) { value.forEach(item => visit(item, depth + 1)); return }
+        if (typeof value !== 'object') return
+        const word = value.keyword ?? value.searchword ?? value.search_word ?? value.word ?? value.HintInfo ?? value.hintinfo ?? value.KeyWord ?? value.show_word ?? value.default_word
+        if (typeof word === 'string') visit(word, depth + 1)
+        for (const key of ['data', 'list', 'lists', 'info', 'items', 'hot', 'keywords', 'hotwords', 'hot_list', 'hot_keywords', 'MusicTip', 'AlbumTip', 'AuthorTip', 'SingerTip', 'CorrectTip', 'RecordDatas', 'Datas', 'records', 'default', 'default_search', 'fallback']) visit(value[key], depth + 1)
+      }
+      visit(response)
+      return words
+    },
+    cancelSearchHints() { if (this.suggestionTimer != null) clearTimeout(this.suggestionTimer); this.suggestionTimer = null; this.hintController?.abort(); this.hintGeneration++ },
+    openSearchHints() { this.showSearchHints = true; this.scheduleSuggestions(this.searchKeyword) },
+    closeSearchHints() { this.showSearchHints = false; this.activeSuggestion = -1; this.cancelSearchHints(); this.hintsLoading = false },
+    leaveSearch(event) { if (!event.currentTarget.contains(event.relatedTarget)) this.closeSearchHints() },
+    startComposition() { this.composing = true; this.cancelSearchHints(); this.hintsLoading = false; this.suggestions = [] },
+    endComposition(event) { this.composing = false; if (this.showSearchHints) this.scheduleSuggestions(event.target.value) },
+    scheduleSuggestions(value) {
+      this.cancelSearchHints(); this.activeSuggestion = -1; this.hintsError = ''; this.suggestions = []
+      if (this.composing || !this.showSearchHints) return
+      const keyword = String(value || '').trim()
+      if (!keyword) { this.hintsLoading = false; this.loadSearchDiscovery(); return }
+      this.hintsLoading = true
+      this.suggestionTimer = setTimeout(() => { this.suggestionTimer = null; this.fetchSuggestions(keyword) }, 180)
+    },
+    /** A new draft, dismissal or IME composition invalidates every previous request. */
+    async fetchSuggestions(keyword) {
+      const generation = ++this.hintGeneration; const controller = this.hintController = new AbortController()
+      this.hintsLoading = true; this.hintsError = ''
+      try {
+        const response = await getSearchSuggestions(keyword, { signal: controller.signal })
+        if (generation !== this.hintGeneration || controller.signal.aborted || !this.showSearchHints) return
+        this.suggestions = this.readSearchWords(response)
+      } catch (error) { if (generation === this.hintGeneration && !controller.signal.aborted) { this.hintsError = '暂时无法读取建议'; logger.warn('TitleBar', '读取搜索建议失败', { name: error?.name }) } }
+      finally { if (generation === this.hintGeneration) this.hintsLoading = false }
+    },
+    async loadSearchDiscovery(force = false) {
+      if (this.discoveryLoaded && !force) return
+      const generation = ++this.hintGeneration; const controller = this.hintController = new AbortController()
+      this.hintsLoading = true; this.hintsError = ''
+      const [hot, defaults] = await Promise.allSettled([getSearchHot({}, { signal: controller.signal }), getSearchDefault({}, { signal: controller.signal })])
+      if (generation !== this.hintGeneration || controller.signal.aborted || !this.showSearchHints) return
+      if (hot.status === 'fulfilled') { this.hotKeywords = this.readSearchWords(hot.value); this.discoveryLoaded = true }
+      else { this.hintsError = '暂时无法读取热搜'; logger.warn('TitleBar', '读取热搜失败', { name: hot.reason?.name }) }
+      if (defaults.status === 'fulfilled') this.defaultKeyword = this.readSearchWords(defaults.value)[0] || ''
+      else logger.warn('TitleBar', '读取默认搜索词失败', { name: defaults.reason?.name })
+      this.hintsLoading = false
+    },
+    retrySearchHints() { if (this.searchKeyword.trim()) this.scheduleSuggestions(this.searchKeyword); else this.loadSearchDiscovery(true) },
+    chooseSuggestion(keyword) { this.searchKeyword = keyword; this.$emit('search', keyword); this.closeSearchHints(); this.$refs.searchInput?.blur() },
+    handleSearchKey(event) {
+      if (event.isComposing || event.target.composing || this.composing || event.keyCode === 229) return
+      if (event.key === 'Escape') { event.preventDefault(); this.closeSearchHints(); event.target.blur(); return }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault(); if (!this.showSearchHints) this.openSearchHints()
+        const count = this.suggestionOptions.length
+        if (count) this.activeSuggestion = this.activeSuggestion < 0 ? (event.key === 'ArrowDown' ? 0 : count - 1) : (this.activeSuggestion + (event.key === 'ArrowDown' ? 1 : count - 1)) % count
+      } else if (event.key === 'Enter' && this.showSearchHints && this.activeSuggestion >= 0) { event.preventDefault(); this.chooseSuggestion(this.suggestionOptions[this.activeSuggestion]) }
+    },
     handleLogin() {
       logger.trace('TitleBar', 'Login clicked')
       // 发射登录事件到父组件
@@ -191,7 +288,6 @@ export default {
     },
     handleEditProfile() {
       logger.trace('TitleBar', 'Edit profile clicked')
-      // TODO: 实现编辑资料功能
       this.$emit('edit-profile')
     },
     handleSettings() {
@@ -226,8 +322,8 @@ export default {
     },
     // 输入法选词期间不提交；沿用父级搜索事件和关键词规范化。
     performSearch() {
-      if (this.$refs.searchInput?.composing) return
-      const keyword = this.searchKeyword.trim()
+      if (this.composing || this.$refs.searchInput?.composing) return
+      const keyword = this.searchKeyword.trim() || this.defaultKeyword
       if (!keyword) {
         logger.trace('TitleBar', '搜索关键词为空')
         return
@@ -235,9 +331,11 @@ export default {
       logger.trace('TitleBar', '执行搜索:', keyword)
       // 发射搜索事件到父组件
       this.$emit('search', keyword)
+      this.closeSearchHints()
     },
     clearSearch() {
       this.searchKeyword = ''
+      this.activeSuggestion = -1
       this.$refs.searchInput?.focus()
     }
   }
@@ -329,10 +427,22 @@ export default {
 
 /* 搜索容器 */
 .search-container {
+  position: relative;
   grid-column: 2;
   min-width: 0;
   -webkit-app-region: no-drag;
 }
+
+.search-suggestions { position:absolute; top:calc(100% + 10px); left:0; right:0; max-height:min(480px,70vh); overflow:auto; background:var(--color-background); border:1px solid var(--color-border); border-radius:16px; box-shadow:0 12px 38px #0002; padding:12px; font-size:12px; color:var(--color-text); }
+.suggestion-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:3px 5px 10px; color:var(--color-text-secondary); }
+.suggestion-heading strong { font-size:11px; font-weight:500; }
+.search-suggestions button { background:transparent; border:0; color:inherit; cursor:pointer; font:inherit; border-radius:7px; }
+.suggestion-heading button { padding:2px 6px; font-size:18px; }
+.search-suggestions p { padding:10px 5px; color:var(--color-text-secondary); line-height:1.7; }
+.search-suggestions [role=option] { display:flex; gap:13px; align-items:center; width:100%; padding:10px 8px; text-align:left; line-height:1.5; }
+.search-suggestions [role=option] span { color:var(--color-text-secondary); font-size:10px; font-variant-numeric:tabular-nums; }
+.search-suggestions [role=option]:hover,.search-suggestions [aria-selected=true] { color:var(--color-primary); background:var(--color-background-light); }
+.search-suggestions button:focus-visible { outline:2px solid var(--color-primary); outline-offset:1px; }
 
 .search-box {
   display: flex;

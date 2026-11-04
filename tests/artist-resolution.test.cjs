@@ -68,7 +68,7 @@ function createArtist(t, respond, options = {}) {
   const requests = []
   const { getSongArtists } = loadModule('src/utils/songMetadata.js', {}, ['getSongArtists'])
   const sandbox = {
-    ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, logger, getSongArtists,
+    ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, LibraryActions: {}, logger, getSongArtists,
     findArtistByName: lookup.findArtistByName,
     async getArtistDetail(id) {
       requests.push(['detail', id])

@@ -38,7 +38,7 @@ function loadFavorites({ props = {}, api = {}, cache = {} } = {}) {
     module: { exports: {} },
     ContextMenu: {},
     WindowedList: {},
-    ArtworkCover: {},
+    ArtworkCover: {}, LibraryActions: {}, PlaylistOverview: {},
     SongBadges: {},
     ArtistLinks: {},
     getSongArtists: metadata.getSongArtists,
@@ -118,7 +118,7 @@ test('favorites reuse the supplied directory, wait for readiness, and share an i
   assert.equal(favorites.calls.tracks.length, 1)
 })
 
-test('ordinary playlists load only their own tracks and expose no local favorite operations', async () => {
+test('ordinary playlists load only their own tracks and expose shared favorites without local writes', async () => {
   const favorites = loadFavorites({ props: { playlistId: 87, playlistName: '晚间歌单', playlistsLoaded: false } })
   await favorites.view.loadFavorites()
   assert.equal(favorites.view.pageTitle, '晚间歌单')
@@ -126,7 +126,7 @@ test('ordinary playlists load only their own tracks and expose no local favorite
   assert.equal(favorites.calls.tracks[0][0], 87)
   assert.equal(favorites.writes.length, 0)
   favorites.view.currentContextSong = favorites.view.favoriteList[0]
-  assert.equal(favorites.view.contextMenuItems.some(item => item.favoriteAction), false)
+  assert.equal(favorites.view.contextMenuItems.some(item => item.favoriteAction), true)
   favorites.view.removeFavorite(favorites.view.favoriteList[0])
   favorites.view.addFavorite({ hash: 'extra-song' })
   assert.equal(favorites.view.favoriteList.length, 1)
@@ -278,40 +278,58 @@ for (const owner of [null, 'another-account', 'account-a']) {
   })
 }
 
-test('local favorite edits preserve other row references, emit changes, and never reload tracks', async () => {
-  const favorites = loadFavorites({ api: { getPlaylistTracks: async () => page([{ hash: 'first' }, { hash: 'second' }]) } })
+function attachCloudLibrary(favorites, waitForWrite) {
+  const context = vm.createContext({ AbortController })
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/utils/musicLibrary.js'), 'utf8').replace('export function', 'function'), context)
+  let songs = [{ hash: 'first', fileid: 1 }, { hash: 'second', fileid: 2 }]
+  const remoteWrites = []
+  const library = context.createMusicLibrary({
+    getIdentity: () => ({ userId: favorites.storage.get('kugou_userid'), token: favorites.storage.get('kugou_token') }),
+    getDirectory: async () => [{ id: 'favorites-global', listId: 7, isFavorite: true }],
+    onFavorites: () => favorites.view.applyCloudFavorites(),
+    api: {
+      getAllPlaylistTracks: async () => songs.map(song => ({ ...song })),
+      removePlaylistSongs: async (id, ids) => { remoteWrites.push({ id, ids: [...ids] }); await waitForWrite; songs = songs.filter(song => !ids.includes(song.fileid)) },
+      addPlaylistSongs: async (_id, values) => { songs.push(...values.map(song => ({ ...song, fileid: 3 }))) }
+    }
+  })
+  favorites.view.musicLibrary = library
+  return { library, remoteWrites }
+}
+
+test('favorite edits keep the displayed list until cloud confirmation and use account entry IDs', async () => {
+  const response = deferred()
+  const favorites = loadFavorites()
+  const { remoteWrites } = attachCloudLibrary(favorites, response.promise)
   await favorites.view.loadFavorites()
-  favorites.emitted.length = 0
-  const list = favorites.view.favoriteList
-  const retainedRow = list[1]
-  favorites.view.removeFavorite(list[0])
-  assert.equal(favorites.view.favoriteList, list)
-  assert.equal(favorites.view.favoriteList[0], retainedRow)
-  favorites.view.addFavorite({ hash: 'third' })
-  favorites.view.addFavorite({ hash: 'third' })
-  await favorites.activate()
-  assert.equal(favorites.calls.tracks.length, 1)
-  assert.equal(favorites.emitted.filter(([name]) => name === 'favorites-changed').length, 2)
-  assert.equal(JSON.parse(favorites.storage.get('favorite_songs')).map(song => song.hash).join(','), 'second,third')
+  const pending = favorites.view.removeFavorite(favorites.view.favoriteList[0])
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(favorites.view.favoriteList.length, 2, 'a waiting request must not optimistically remove a row')
+  response.resolve()
+  await pending
+  assert.deepEqual(remoteWrites, [{ id: 7, ids: [1] }])
+  assert.equal(favorites.view.favoriteList[0].hash, 'second')
+  await favorites.view.addFavorite({ hash: 'third' })
+  assert.equal(favorites.view.favoriteList.map(song => song.hash).join(','), 'second,third')
+  assert.equal(favorites.emitted.filter(([name]) => name === 'favorites-changed').length, 0, 'the App-owned controller publishes changes, not a second local writer')
 })
 
-test('local edits during refresh survive its stale response, and stale identity cannot edit rows', async () => {
+test('a late cloud edit cannot mutate a view after its account changes', async () => {
   const response = deferred()
-  let count = 0
-  const favorites = loadFavorites({
-    api: { getPlaylistTracks: () => ++count === 1 ? Promise.resolve(page([{ hash: 'keep' }, { hash: 'remove' }])) : response.promise }
-  })
+  const favorites = loadFavorites()
+  const { library, remoteWrites } = attachCloudLibrary(favorites, response.promise)
   await favorites.view.loadFavorites()
-  favorites.emitted.length = 0
-  const request = favorites.view.loadFavorites(true)
-  favorites.view.removeFavorite(favorites.view.favoriteList[1])
-  response.resolve(page([{ hash: 'keep' }, { hash: 'remove' }]))
-  await request
-  assert.equal(favorites.view.favoriteList.length, 1)
+  const pending = favorites.view.removeFavorite(favorites.view.favoriteList[0])
+  await Promise.resolve()
+  await Promise.resolve()
   favorites.storage.set('kugou_token', 'example-new-token')
-  favorites.view.removeFavorite(favorites.view.favoriteList[0])
-  assert.equal(favorites.view.favoriteList.length, 1)
-  assert.equal(favorites.emitted.filter(([name]) => name === 'favorites-changed').length, 1)
+  library.reset()
+  response.resolve()
+  await pending
+  assert.equal(remoteWrites.length, 1)
+  assert.equal(favorites.view.favoriteList.length, 2, 'late completion cannot apply old account rows')
+  assert.equal(library.state.favorites.length, 0)
 })
 
 test('complete cloud loads notify linked pages only when favorite song seeds change', async () => {

@@ -57,6 +57,7 @@ const baseDefaultSettings = Object.freeze({
     fullscreenLyrics: true,
     enqueueFullPlaylist: true,
     restartOnPreviousNearEnd: false,
+    syncPlayHistory: true,
     showTranslation: true, // 默认显示翻译
     lyricLibrary: { enabled: true, autoSave: true, minMatch: 'high', autoUpdate: true },
     romanization: 'off',
@@ -74,7 +75,8 @@ const baseDefaultSettings = Object.freeze({
     downloadPath: '',
     cachePath: '',
     cacheSizeIndex: 0,
-    concurrentDownloads: 3
+    concurrentDownloads: 3,
+    quality: 'follow', embedMetadata: true, embedCover: true, saveLyrics: true
   },
   custom: {
     playerStyle: 'default',
@@ -360,6 +362,7 @@ function migrateSettings(rawSettings, defaults) {
   if (!normalized.playback || typeof normalized.playback !== 'object' || Array.isArray(normalized.playback)) normalized.playback = cloneDeep(defaults.playback)
   normalized.playback.showTranslation = typeof normalized.playback.showTranslation === 'boolean' ? normalized.playback.showTranslation : true
   normalized.playback.restartOnPreviousNearEnd = normalized.playback.restartOnPreviousNearEnd === true
+  normalized.playback.syncPlayHistory = typeof normalized.playback.syncPlayHistory === 'boolean' ? normalized.playback.syncPlayHistory : true
   const library = normalized.playback.lyricLibrary && typeof normalized.playback.lyricLibrary === 'object' && !Array.isArray(normalized.playback.lyricLibrary) ? normalized.playback.lyricLibrary : {}
   normalized.playback.lyricLibrary = {
     enabled: typeof library.enabled === 'boolean' ? library.enabled : true,
@@ -376,6 +379,9 @@ function migrateSettings(rawSettings, defaults) {
   normalized.download.offlinePlaylistCacheEnabled = typeof normalized.download.offlinePlaylistCacheEnabled === 'boolean' ? normalized.download.offlinePlaylistCacheEnabled : true
   normalized.download.cacheSizeIndex = Number.isInteger(normalized.download.cacheSizeIndex) && normalized.download.cacheSizeIndex >= 0 && normalized.download.cacheSizeIndex <= 5 ? normalized.download.cacheSizeIndex : 0
   normalized.download.concurrentDownloads = Number.isInteger(normalized.download.concurrentDownloads) ? Math.min(10, Math.max(1, normalized.download.concurrentDownloads)) : 3
+  normalized.download.quality = ['follow', '128', '320', 'flac', 'high'].includes(normalized.download.quality) ? normalized.download.quality : 'follow'
+  if (typeof normalized.download.downloadPath !== 'string' || normalized.download.downloadPath.includes('\0')) normalized.download.downloadPath = defaults.download.downloadPath
+  for (const key of ['embedMetadata', 'embedCover', 'saveLyrics']) normalized.download[key] = typeof normalized.download[key] === 'boolean' ? normalized.download[key] : true
   normalized.desktopLyrics = normalizeDesktopLyrics(desktop)
   normalized.islandLyrics = normalizeIslandLyrics(normalized.islandLyrics)
   normalized.taskbarLyrics = normalizeTaskbarLyrics(normalized.taskbarLyrics)

@@ -69,7 +69,7 @@ function mount(t, options = {}) {
       }
     })
     Object.assign(globals, { packageInfo: { version: '0.0.0' }, applyTheme() {}, ThemePackages: emptyComponent,
-      ThemeAdjustments: emptyComponent, AppUpdates: emptyComponent, PlaylistCacheSettings: emptyComponent,
+      ThemeAdjustments: emptyComponent, AppUpdates: emptyComponent, PlaylistCacheSettings: emptyComponent, MusicDownloadSettings: emptyComponent,
       DesktopLyricSettings: emptyComponent, IslandLyricSettings: emptyComponent, TaskbarLyricSettings: emptyComponent })
     globals.LyricLibrary = compile('components/common/LyricLibrary.vue', globals)
     globals.LyricSettings = compile('components/common/LyricSettings.vue', globals)

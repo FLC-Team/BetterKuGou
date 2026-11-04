@@ -88,7 +88,7 @@ function loadFavorite({ props = {}, cache = {}, tracks, legacy = {} } = {}) {
     callPlaylistCache: async (method, ...args) => { calls.push([method, ...args]); return cache[method]?.(...args) ?? null },
     getUserPlaylists: async () => ({ status: 1, data: { info: [{ id: 10, name: '我喜欢的音乐' }] } }),
     getPlaylistTracks: (...args) => { trackCalls.push(args); return tracks?.(...args) ?? Promise.resolve({ status: 1, data: { songs: [], count: 0 } }) },
-    ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, ContextMenu: {}, WindowedList: {}, nextplayIcon: '',
+    ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, LibraryActions: {}, PlaylistOverview: {}, ContextMenu: {}, WindowedList: {}, nextplayIcon: '',
     contextMenuManager: { unregisterMenu() {} }, filterSongs: songs => songs,
     clearTimeout, setTimeout
   })
@@ -150,7 +150,7 @@ test('failed pagination keeps the disk snapshot and never persists a partial rep
   assert.equal(fixture.trackCalls.length, 2)
 })
 
-test('local favorite edits update the same complete disk snapshot without triggering audio or lyric work', async () => {
+test('without a cloud controller favorite edits never replace the confirmed disk snapshot', async () => {
   const response = deferred()
   let count = 0
   const fixture = loadFavorite({
@@ -165,7 +165,7 @@ test('local favorite edits update the same complete disk snapshot without trigge
   const writes = fixture.calls.filter(([method]) => method === 'putPlaylist')
   assert.equal(writes.length, 2)
   assert.equal(writes.at(-1)[1].isFavorite, true)
-  assert.equal(writes.at(-1)[1].songs.map(song => song.hash).join(','), 'a')
+  assert.equal(writes.at(-1)[1].songs.map(song => song.hash).join(','), 'a,b')
   assert.equal(fixture.calls.some(([method]) => ['cacheSong', 'putLyrics', 'resume'].includes(method)), false)
 })
 
@@ -284,7 +284,7 @@ function mountMusicPage(t, name, data, props, cache) {
   const leaf = { render: () => null }
   const sandbox = vm.createContext({ listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},  module: { exports: {} }, logger,
     window: { innerWidth: 1200, innerHeight: 800 }, localStorage: { getItem: () => null },
-    SongBadges: leaf, ArtistLinks: leaf, ContextMenu: leaf, VolumeControl: leaf, ArtworkCover: artwork.component,
+    SongBadges: leaf, ArtistLinks: leaf, LibraryActions: leaf, PlaylistOverview: leaf, ContextMenu: leaf, VolumeControl: leaf, ArtworkCover: artwork.component,
     repeatAllIcon: '', repeatOneIcon: '', shuffleIcon: ''
   })
   vm.runInContext(stripImports(source).replace('export default', 'module.exports ='), sandbox)

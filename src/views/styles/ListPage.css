@@ -23,7 +23,7 @@
 .list-page .section-heading > span { color: var(--color-text-secondary); font-size: calc(var(--font-size-xs) - 2px); }
 .list-page .song-list { position: relative; background: transparent; }
 .list-page .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.list-page .song-list > .list-header, .list-page .song-list > .song-item { display: grid; grid-template-columns: 38px minmax(0, 1.9fr) minmax(0, .9fr) minmax(0, 1fr) 44px 56px; gap: 18px; align-items: center; padding: 12px 14px; }
+.list-page .song-list > .list-header, .list-page .song-list > .song-item { display: grid; grid-template-columns: 38px minmax(0, 1.9fr) minmax(0, .9fr) minmax(0, 1fr) 44px 92px; gap: 18px; align-items: center; padding: 12px 14px; }
 .list-page .song-list > .list-header { min-height: 44px; color: var(--color-text-secondary); font-size: calc(var(--font-size-xs) - 2px); border-block: 1px solid var(--color-border); margin-bottom: 7px; }
 .list-page .song-list > .song-item { min-height: 73px; border-radius: var(--radius-md); transition: background var(--transition-fast), scale var(--ui-motion-fast) var(--ui-motion-ease); }
 .list-page .song-list > .song-item:not(:where([data-window-index])):nth-of-type(odd),
@@ -69,7 +69,7 @@
 .list-page .search-info { color: var(--color-text-secondary); font-size: var(--font-size-xs); line-height: 1.8; }
 .album-detail-view .song-list > .list-header, .album-detail-view .song-list > .song-item { grid-template-columns: 38px minmax(0, 2fr) minmax(0, 1fr) 44px; }
 @container (max-width: 1000px) {
-  .list-page .song-list > .list-header, .list-page .song-list > .song-item { grid-template-columns: 30px minmax(0, 1.8fr) minmax(0, 1fr) 44px 56px; gap: 14px; padding-inline: 10px; }
+  .list-page .song-list > .list-header, .list-page .song-list > .song-item { grid-template-columns: 30px minmax(0, 1.8fr) minmax(0, 1fr) 44px 92px; gap: 14px; padding-inline: 10px; }
   .list-page .col-album { display: none; }
   .album-detail-view .song-list > .list-header, .album-detail-view .song-list > .song-item { grid-template-columns: 30px minmax(0, 1.8fr) minmax(0, 1fr) 44px; }
 }
@@ -82,7 +82,7 @@
   .collection-meta { margin-top: 8px; }
   .collection-actions { margin-top: 17px; gap: 8px; }
   .list-page .primary-btn, .list-page .play-all-btn, .list-page .action-btn { padding: 8px 15px; min-height: 35px; }
-  .list-page .song-list > .list-header, .list-page .song-list > .song-item, .album-detail-view .song-list > .list-header, .album-detail-view .song-list > .song-item { grid-template-columns: 25px minmax(0, 1fr) 44px 56px; gap: 11px; padding-inline: 8px; }
+  .list-page .song-list > .list-header, .list-page .song-list > .song-item, .album-detail-view .song-list > .list-header, .album-detail-view .song-list > .song-item { grid-template-columns: 25px minmax(0, 1fr) 44px 92px; gap: 11px; padding-inline: 8px; }
   .list-page .col-artist { display: none; }
   .list-page .mobile-artist { display: flex; color: var(--color-text-secondary); font-size: calc(var(--font-size-xs) - 2px); margin-top: 2px; }
   .list-page .song-cover { width: 42px; height: 42px; flex-basis: 42px; }
@@ -102,7 +102,7 @@
   .collection-actions { gap: 7px; margin-top: 13px; }
   .list-page .primary-btn, .list-page .play-all-btn, .list-page .action-btn { padding: 7px 12px; min-height: 32px; font-size: 10px; }
   .list-page .play-all-btn svg { width: 14px; height: 14px; }
-  .list-page .song-list > .list-header, .list-page .song-list > .song-item, .album-detail-view .song-list > .list-header, .album-detail-view .song-list > .song-item { grid-template-columns: 20px minmax(0, 1fr) 66px; gap: 8px; padding-inline: 4px; }
+  .list-page .song-list > .list-header, .list-page .song-list > .song-item, .album-detail-view .song-list > .list-header, .album-detail-view .song-list > .song-item { grid-template-columns: 20px minmax(0, 1fr) 92px; gap: 8px; padding-inline: 4px; }
   .list-page .col-title { gap: 10px; }
   .list-page .song-item .col-index, .list-page .song-item .col-title { grid-row: 1 / span 2; }
   .list-page .col-duration { grid-column: 3; grid-row: 1; align-self: end; }

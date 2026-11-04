@@ -33,6 +33,7 @@
 7. 初始化独立离线缓存服务，读取已提交的 `download.offlineCachePath`，空值使用 `userData/offline-playlists/`；开发 Worker 位于 services，打包 Worker 从 `resources/playlist-cache/playlistCacheWorker.cjs` 加载。设置成功广播后 configure；退出先等待进行中的目录迁移，再停止 Worker，后台缓存故障不阻断窗口与在线播放。
 
 8. 歌词库服务固定使用 `userData/lyric-library/`，独立管理曲目的在线原文、编辑副本及选中版本；已提交设置控制读取、自动保存阈值及后台更新。关闭管理保留文件，修改通知带歌曲 hash、revision 和 online/edit/select 原因；退出失效未发布写入并等待队列清理。
+9. 歌曲下载服务在缓存与歌词库就绪后创建，Worker 位于开发 services 或打包 `resources/music-download/`，标签库从 app.asar 生产依赖解析。通过缓存 set-session 同步账号，读取选中歌词和私有缓存租约；退出先等待下载停止，再关闭歌词库与缓存。
 
 ## 设置保障
 
@@ -51,10 +52,14 @@
 - `software.updates` 仅保存 `autoCheck`、`autoDownload` 和 `channel`，默认 true、false、stable，渠道限定 stable/beta；旧配置与非法导入值按同一规则补全。成功提交的设置广播才调用更新服务 `configure()`，不保存下载进度、文件路径或安装开关。
 - `download.offlinePlaylistCacheEnabled` 默认 true，`cacheSizeIndex` 限定 0–5（2048/4096/6144/8192/10240MB/无限制），`concurrentDownloads` 为 1–10，默认 3；原预留下载目录与缓存路径保持兼容，不作为离线服务目录来源。
 - `download.offlineCachePath` 默认空，仅迁移专用的 `setOfflineCacheDirectory()` 可在文件复制校验完成后串行原子保存；普通设置草稿、导入和重置保留最近已提交的路径，避免改变配置却未迁移文件。该事务不触发自启等无关系统操作，Windows 文件短暂占用时有限重试原子替换，持续失败保留原设置。
+- `playback.syncPlayHistory` 默认 true，双端仅接受布尔值；已提交设置控制登录账号的真实听歌记录同步。
+- 文件下载使用 `download.downloadPath` 和 `concurrentDownloads`，新增 quality 默认 follow（另选 128/320/flac/high）、embedMetadata/embedCover/saveLyrics 默认 true；非法导入值补默认。原生下载目录选择只返回父级设置草稿，保存成功后生效，不走缓存目录迁移事务。
 - 桌面歌词替换数组或歌曲身份时重置行索引，时间消息保存实际音频位置与可推进状态；只在明确可播放时以倍率逐帧插值，单个采样最多延伸 300ms，重复采样不延长截止时间。暂停、缓冲、seek、换源和重开立即冻结或重置，细小消息抖动不撤回已开始的自然换行；所有插值仅控制歌词显示，不写回播放进度。首帧、暂停重开、前后跳转和同文重复句均从绝对时间重算所有字素，歌词以纯文本创建 DOM，保留 Unicode 字素与原空格。
 - 前奏预览首句；当前句有译文且开关启用时次行显示译文，否则显示下一句。长句原文及当前译文根据播放时间与溢出宽度平移，下一句保持句首。自然连续换行时预览从次行位置上移、放大为当前行，下一句淡入；跳转、快速换曲、暂停及减少动态效果取消旧过渡。内容、字号和视口变化后重测，暂停保持横向位置。
 
 ## 窗口与兼容保障
+
+- `downloads:*` 固定主窗口顶层 IPC 提供任务和原生目录选择/文件定位，调用方不能指定下载 URL、缓存源路径、凭证或任意待定位文件。后台状态与认证失效校验账号代次，复用缓存认证失效通道；`playlist-cache:remove-playlist` 同样只允许主窗口顶层。
 
 - 所有窗口禁用 Node 集成并启用上下文隔离；HTML 不直接使用 `require('electron')`。
 - 桌面窗口的就绪、加载失败、10 秒超时、崩溃与关闭回调均绑定创建时实例；快速开关不能复活旧窗口或清除新窗口引用，显示失败返回 false，成功通过 `showInactive()` 显示而不抢焦点。窗口关闭清理显示器监听和计时器。

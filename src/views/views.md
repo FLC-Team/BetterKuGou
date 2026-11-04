@@ -12,16 +12,21 @@
 - `HomeView.vue`：音乐杂志式首页，每日推荐封面主视觉、私人 FM、精选歌曲与独立榜单区；引用外置 scoped 样式。
 - `LoginView.vue`：手机、账号和二维码登录；请求按钮绑定 disabled/aria-busy 和可见 spinner，成功/失败通过动画反馈区呈现，成功沿原认证事件导航。
 - `PageLoadingView.vue`：首次异步页面模块加载超过 120ms 后显示的可见等待状态；外观编辑器使用固定位置浮动提示，避免主页面外插入占位内容。
-- `SearchView.vue`：搜索、分页、歌曲操作与播放事件。
+- `SearchView.vue`：歌曲、歌手、专辑、歌单和歌词找歌五类搜索，分别保存分页与结果，单曲操作统一接入账号音乐库。
+- `DiscoverView.vue`：分类歌单及排序、新歌和新碟，分页状态按资源隔离。
+- `MyMusicView.vue`：最近听歌、听歌排行、关注歌手、新作品、云盘及下载；账号变化清除私有结果与在途请求。
 - `FavoriteView.vue`：收藏与普通歌单共用的列表模板，引用独立逻辑与样式，支持当前歌单刷新及全量已加载曲目的本地搜索、匹配数量与清空。
 - `ArtistView.vue`：歌手页模板，引用独立逻辑与样式。
 - `AlbumDetailView.vue`：专辑信息、曲目和播放入口。
-- `RankDetailView.vue`：排行详情和曲目播放，通过独立曲目接口完整分页加载 Top500 等榜单。
+- `RankDetailView.vue`：排行详情和曲目播放，通过独立曲目接口完整分页加载榜单，历史期次使用接口提供的 rank_cid。
 - `PersonalFMView.vue`：私人 FM 内容与播放。
-- `DailyRecommendView.vue`：每日推荐与全部播放。
-- `SettingsView.vue`：按聆听、歌词窗口、个性化、应用组织十个独立设置面板，提供标签搜索、固定保存反馈及细项折叠；管理播放、歌词内容、桌面/灵动岛/任务栏歌词、主题、快捷键、缓存、启动、更新及备份。排空保存后打开 App 常驻区域/CSS 编辑器，音乐下载预留项明确禁用。
+- `DailyRecommendView.vue`：每日推荐、历史日期选择与全部播放，日期分别缓存。
+- `SettingsView.vue`：按聆听、歌词窗口、个性化、应用组织十个独立设置面板，提供标签搜索、固定保存反馈及细项折叠；管理播放及历史同步、歌词内容、歌词窗口、主题、快捷键、缓存、歌曲文件下载、启动、更新及备份。排空保存后打开 App 常驻区域/CSS 编辑器。
 
 ## 数据流与保障
+
+- FavoriteView 通过 App 注入的 musicLibrary 读取及写入账号收藏，已确认结果驱动共享心形。公开歌单走全局 ID，本账号目录走真实 listId；曲目删除使用 fileid，多选保持原索引，全部分页成功才替换完整快照。磁盘与旧 owner 标记缓存只读恢复，不成为自动写入依据。
+- LibraryActions 为旧页面、播放栏、全屏和队列提供收藏、添加歌单、下载、评论/其他版本、分享；新页面使用 LibrarySongs 的多选与同组事件。PlaylistOverview 独立加载介绍和相似推荐，辅助接口失败不阻止曲目播放。
 
 - 设置的音质、桌面歌词大小/样式和启动页均用 AnimatedSelect 编辑原有 localSettings 草稿；更新渠道/安装包、缓存容量和主题区域沿各组件原事件保存，不增加第二份设置状态。选择器离焦仍触发原有保存排空。
 - 页面调用 api 封装，规整歌曲字段后发出 play/play-all/play-next/navigate 等事件。
@@ -45,7 +50,7 @@
 - 独立“灵动岛歌词”面板中的 `IslandLyricSettings` 通过 `localSettings.islandLyrics` 编辑完整偏好；模式、屏幕、左右内容和预设使用 AnimatedSelect，其余沿原 checkbox/range/color/text 交互及父级保存事务。内容、字体、透明度和隐藏细项默认折叠；大陆模式贴顶避让鼠标，浮动可拖动、顶部吸附，并通过点击或键盘展开控制；停用时仍可编辑偏好。
 - 独立“任务栏歌词”面板通过 TaskbarLyricSettings 编辑 `localSettings.taskbarLyrics`；启用、嵌入、轮询与屏幕保持直接可见，布局、内容、字体动效与尺寸细调使用 AnimatedDetails 收纳，系统能力及保存顺序沿用原组件。
 - 灵动岛“重新显示 / 找回”通过 beforeAction 排空草稿后调用窗口桥接，自动隐藏启用时预览 3 秒；等待防重入，失败可重试。屏幕热插拔优先于初始快照，拔出屏幕仍保留已保存选择；外部全屏检测按能力禁用，自家同屏全屏歌词隐藏跨平台可用。浏览器禁用系统窗口控件，局部翻译隐藏不改写全局偏好。
-- SettingsView 通过 PlaylistCacheSettings 编辑 download 的离线缓存开关、容量和并发，管理动作前排空设置草稿。占用和目录只读，清理仅作用于当前账号，任务不依赖设置页存活；普通文件下载保持禁用，应用更新使用独立目录；不将内部播放会话作为偏好项。
+- SettingsView 通过 PlaylistCacheSettings 编辑离线缓存，管理动作前排空草稿；清理仅作用于当前账号。MusicDownloadSettings 编辑歌曲文件目录、音质、并发、标签、封面和配套歌词，使用同一草稿与保存反馈；下载不依赖页面存活，应用更新使用独立目录。
 - ThemePackages 通过 v-model 编辑 custom 分组；主题立即预览后沿用设置页保存流程，保存失败显示提示，会话广播后重放待保存的预览。ThemeAdjustments 收纳于“界面精调与高级编辑”，默认折叠，仍保留全量令牌和外观编辑器入口。
 - 独立外观恢复先经 App 调用 `prepareThemeRecovery()`，暂停新保存并等待已有事务，只丢弃主题相关草稿及恢复期间的主题编辑；恢复写入成功/失败后按实际 store 解除握手，其余偏好草稿继续保存，防旧坏主题被防抖重新应用。
 - LoginView 的计时器、轮询和过期请求在卸载时清理。

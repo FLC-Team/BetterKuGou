@@ -27,6 +27,10 @@
       </div>
 
       <div class="sidebar-scrollable" @scroll="updateIndicator">
+        <button v-for="entry in [{ id: 'discover', label: '发现' }, { id: 'my-music', label: '我的音乐' }]" :key="entry.id" type="button" class="sidebar-item" :class="{ active: activeItem === entry.id }" :data-sidebar-item="entry.id" :aria-label="entry.label" :aria-current="activeItem === entry.id ? 'page' : undefined" :title="entry.label" @click="handleItemClick(entry.id)">
+          <span class="sidebar-icon-wrapper"><span class="sidebar-icon" :style="iconStyle(entry.id === 'discover' ? icons.home : icons.list)" aria-hidden="true"></span></span>
+          <Transition name="sidebar-label"><span v-show="isExpanded" class="sidebar-label">{{ entry.label }}</span></Transition>
+        </button>
         <button type="button" class="sidebar-item" :class="{ active: activeItem === 'favorite', 'requires-login': !userLoggedIn }" data-sidebar-item="favorite" aria-label="我喜欢" :aria-current="activeItem === 'favorite' ? 'page' : undefined" :title="userLoggedIn ? '我喜欢' : '我喜欢（需要登录）'" @click="handleItemClick('favorite')">
           <span class="sidebar-icon-wrapper"><span class="sidebar-icon" :style="iconStyle(icons.favorite)" aria-hidden="true"></span></span>
           <Transition name="sidebar-label"><span v-show="isExpanded" class="sidebar-label">我喜欢</span></Transition>
@@ -113,7 +117,7 @@ export default {
     activeItem() {
       if (this.userMenuVisible || this.currentView === 'login' || this.currentView === 'account') return 'account'
       if (this.currentView === 'playlist' && this.selectedPlaylistId != null) return `playlist-${this.selectedPlaylistId}`
-      return ['home', 'favorite', 'settings'].includes(this.currentView) ? this.currentView : null
+      return ['home', 'discover', 'my-music', 'favorite', 'settings'].includes(this.currentView) ? this.currentView : null
     },
     indicatorStyle() {
       return { top: `${this.indicatorTop}px`, opacity: this.indicatorTop < 0 ? 0 : 1 }
@@ -224,7 +228,7 @@ export default {
     handleItemClick(itemId, playlist = null) {
       if (this.disposed) return
       this.closeUserMenu()
-      if (!this.userLoggedIn && itemId !== 'home') {
+      if (!this.userLoggedIn && !['home', 'discover', 'my-music'].includes(itemId)) {
         this.$emit('show-login')
         return
       }

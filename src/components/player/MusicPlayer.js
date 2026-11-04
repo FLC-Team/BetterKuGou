@@ -2,11 +2,15 @@
 import { logger } from '../../utils/logger.js'
 import { computed } from 'vue'
 import { getSongUrl, getLyric, getSongDetail } from '../../api/music.js'
+import { getCloudSongUrl, uploadPlayHistory } from '../../api/library.js'
+import { createListeningHistory } from '../../utils/listeningHistory.js'
+import { librarySongKey } from '../../utils/libraryMetadata.js'
 import PlaylistDrawer from './PlaylistDrawer.vue'
 import ContextMenu from '../common/ContextMenu.vue'
 import AnimatedSelect from '../common/AnimatedSelect.vue'
 import ArtworkCover from '../common/ArtworkCover.vue'
 import ArtistLinks from '../common/ArtistLinks.vue'
+import LibraryActions from '../common/LibraryActions.vue'
 import LyricView from './LyricView.vue'
 import VolumeControl from './VolumeControl.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
@@ -26,12 +30,14 @@ import shuffleIcon from '../../assets/icons/shuffle.svg'
 
 export default {
   name: 'MusicPlayer',
+  inject: { musicLibrary: { default: null } },
   components: {
     PlaylistDrawer,
     ContextMenu,
     AnimatedSelect,
     ArtworkCover,
     ArtistLinks,
+    LibraryActions,
     LyricView,
     VolumeControl
   },
@@ -87,7 +93,6 @@ export default {
       lastAudibleVolume: 80,
       isMuted: false,
       playMode: 'loop', // loop: 列表循环, single: 单曲循环, shuffle: 随机播放
-      isFavorite: false,
       currentIndex: 0, // 当前播放索引
       showPlaylist: false, // 是否显示播放列表
       playedHistory: [], // 已播放历史（用于随机播放）
@@ -108,6 +113,7 @@ export default {
       lastPositionUpdate: null, // 上次位置更新的时间（秒）
       lastDesktopTimeUpdate: null, // 上次桌面歌词时间更新的时间戳（毫秒）
       desktopAudioWaiting: false,
+      listeningHistory: null,
       // 切歌控制
       isSwitchingSong: false, // 是否正在切歌（防止并发）
       isLoadingSong: false, // 是否正在加载歌曲（防止重复加载）
@@ -157,6 +163,10 @@ export default {
     }
   },
   computed: {
+    isFavorite() { return this.musicLibrary?.isFavorite(this.currentSong) || false },
+    favoritePending() { return this.musicLibrary?.isFavoritePending(this.currentSong) || false },
+    cloudCurrentSource() { return this.currentSong?.source === 'cloud' },
+    qualitySwitchAvailable() { return (this.pendingSong || this.loadingSongTarget || this.currentSong || this.song)?.source !== 'cloud' },
     displayLyric() {
       return processLyricContent(this.currentLyrics, this.currentLyricData, this.settingsStore?.settings?.playback || {})
     },
@@ -171,7 +181,7 @@ export default {
       return Boolean(this.pendingSong || this.loadingSongTarget)
     },
     barSongIsUnconfirmed() {
-      return !this.currentSong || this.barSong?.hash !== this.currentSong.hash
+      return !this.samePlaybackSource(this.barSong, this.currentSong)
     },
     barTrackTransition() {
       return this.pendingSong ? this.pendingSongTransition
@@ -188,6 +198,7 @@ export default {
     qualityStatus() {
       if (this.loadingQualityChange || this.pendingSongOptions?.qualityChange) return '正在切换…'
       if (this.barSongIsUnconfirmed) return this.isSongPending ? '音源加载中…' : '音源未加载'
+      if (this.cloudCurrentSource) return this.currentQuality?.confirmed ? `云盘原文件 · ${this.currentQuality.label}` : '云盘原文件'
       return this.currentQuality?.confirmed ? `实际音质 · ${this.currentQuality.label}` : '音源未提供音质信息'
     },
     qualityFeedback() {
@@ -229,6 +240,10 @@ export default {
     }
   },
   watch: {
+    'settingsStore.settings.playback.syncPlayHistory'() {
+      this.listeningHistory?.reset()
+      if (this.currentSong && this.loadedSongHash === this.currentSong.hash) this.beginListeningHistory()
+    },
     displayLyric() {
       if (!this.isDisposed && this.currentSong?.hash === this.loadedSongHash) this.sendLyricsToDesktop(this.currentLyrics, this.currentLyricData)
     },
@@ -241,7 +256,7 @@ export default {
     song: {
       handler(newSong) {
         if (!newSong || this.isDisposed) return
-        if (this.currentSong?.hash === newSong.hash && this.loadedSongHash === newSong.hash &&
+        if (this.samePlaybackSource(this.currentSong, newSong) && this.loadedSongHash === newSong.hash &&
             this.$refs.audioPlayer?.getAttribute('src') && !this.pendingSong &&
             !this.isLoadingSong && !this.isSwitchingSong) return
         const restoreState = !this.hasRequestedInitialSong && this.initialPlaybackState?.songHash === newSong.hash
@@ -291,7 +306,7 @@ export default {
             return
           }
           
-          const songIndex = newPlaylist.findIndex(song => song?.hash === this.currentSong?.hash)
+          const songIndex = newPlaylist.findIndex(song => this.samePlaybackSource(song, this.currentSong))
           if (songIndex !== -1) this.currentIndex = songIndex
           // 同长度替换也可能改变歌曲顺序，随机队列需同步更新。
           const oldLength = oldPlaylist ? oldPlaylist.length : 0
@@ -407,6 +422,8 @@ export default {
     })
   },
   beforeUnmount() {
+    this.listeningHistory?.dispose()
+    this.listeningHistory = null
     window.electronAPI?.setLyricViewVisible?.(false)
     this.lyricLibraryUnsubscribe?.()
     this.lyricLibraryUnsubscribe = null
@@ -459,6 +476,30 @@ export default {
     contextMenuManager.unregisterMenu(this.closePlayModeMenu)
   },
   methods: {
+    samePlaybackSource(left, right) {
+      const key = librarySongKey(left)
+      return !!key && key === librarySongKey(right)
+    },
+    /** A new confirmed play starts listening credit; replacements retain the existing play instance. */
+    beginListeningHistory(preserve = false) {
+      if (this.isDisposed) return
+      if (!this.listeningHistory) this.listeningHistory = createListeningHistory({
+        getIdentity: () => ({ userId: localStorage.getItem('kugou_userid'), token: localStorage.getItem('kugou_token') }),
+        isEnabled: () => this.settingsStore?.settings?.playback?.syncPlayHistory !== false,
+        upload: uploadPlayHistory,
+        onFailure: details => logger.warn('MusicPlayer', '听歌历史同步失败', details),
+      })
+      this.listeningHistory.begin(this.loadedSongDetail || this.currentSong, { preserve })
+    },
+    sampleListeningHistory() {
+      if (this.isDisposed || !this.listeningHistory) return
+      const audio = this.$refs.audioPlayer
+      const confirmed = !!audio && !!this.currentSong && this.loadedSongHash === this.currentSong.hash &&
+        !this.isLoadingSong && !this.isReplacingQualitySource && !this.replacingPlaybackSnapshot
+      this.listeningHistory.sample({ position: audio?.currentTime, duration: audio?.duration,
+        playing: confirmed && !audio.paused && !audio.ended, ready: confirmed && audio.readyState >= 3,
+        seeking: !!audio?.seeking, waiting: this.desktopAudioWaiting, rate: audio?.playbackRate || 1 })
+    },
     /** 租约独立于账号会话释放；旧音源在成功换源或停止之前始终保持可读。 */
     releaseCacheSource(leaseId) {
       if (!leaseId || !this.cacheSourceLeases.delete(leaseId)) return
@@ -481,7 +522,8 @@ export default {
       try {
         const api = await waitForPlaylistCacheSession()
         if (!api?.getSource || !isCurrent()) return null
-        const source = await api.getSource({ hash: song.hash, quality, allowFallback })
+        const source = await api.getSource({ hash: song.hash, quality, allowFallback,
+          ...(song.source === 'cloud' ? { source: 'cloud', sourceUserId: song.sourceUserId } : {}) })
         if (source?.leaseId) this.cacheSourceLeases.add(source.leaseId)
         if (!isCurrent() || source?.status !== 1 || typeof source.url !== 'string' || !source.url) {
           this.releaseCacheSource(source?.leaseId)
@@ -531,7 +573,7 @@ export default {
           this.loadedCacheSessionVersion !== getPlaylistCacheSessionVersion()) return
       const song = this.loadedSongDetail || this.currentSong
       const version = this.loadedCacheSessionVersion
-      const quality = this.loadedQualityPreference || this.qualityPreference
+      const quality = song.source === 'cloud' ? 'original' : this.loadedQualityPreference || this.qualityPreference
       const songKey = `${version}:${song.hash}`
       this.playedCacheSongs.add(songKey)
       const key = `${songKey}:${quality}`
@@ -642,11 +684,11 @@ export default {
       if (!song?.hash || this.isDisposed || !audioEl || this.isLoadingSong) return false
       this.cancelProgressDrag()
 
-      const qualityChange = Boolean(options.qualityChange && this.currentSong?.hash === song.hash &&
+      const qualityChange = Boolean(options.qualityChange && this.samePlaybackSource(this.currentSong, song) &&
         this.loadedSongHash === song.hash && audioEl.getAttribute('src'))
-      const requestedQuality = normalizePlaybackQuality(options.quality ?? this.qualityPreference)
+      const requestedQuality = song.source === 'cloud' ? 'original' : normalizePlaybackQuality(options.quality ?? this.qualityPreference)
       const restoreState = options.restoreState?.songHash === song.hash ? options.restoreState : null
-      const replaying = !qualityChange && this.currentSong?.hash === song.hash &&
+      const replaying = !qualityChange && this.samePlaybackSource(this.currentSong, song) &&
         this.loadedSongHash === song.hash && audioEl.getAttribute('src')
       this.isLoadingSong = true
       this.loadingSongHash = song.hash
@@ -704,6 +746,7 @@ export default {
           }
         }
         if (replaying) {
+          const restarting = audioEl.ended || options.restartFromBeginning
           const shouldReplay = audioEl.ended || audioEl.paused
           if (audioEl.ended || options.restartFromBeginning) {
             audioEl.currentTime = 0
@@ -715,9 +758,10 @@ export default {
             await this.waitForSongOperation(audioEl.play(), audioEl)
           }
           if (!this.isCurrentSongRequest(requestId) || !ownsSource()) return false
-          const songIndex = this.playlist.findIndex(item => item?.hash === song.hash)
+          if (restarting) this.beginListeningHistory()
+          const songIndex = this.playlist.findIndex(item => this.samePlaybackSource(item, song))
           if (songIndex !== -1) this.currentIndex = songIndex
-          if (options.navigation && this.song?.hash !== song.hash) this.$emit('song-changed', this.currentSong)
+          if (options.navigation && !this.samePlaybackSource(this.song, song)) this.$emit('song-changed', this.currentSong)
           committed = true
           return true
         }
@@ -730,17 +774,17 @@ export default {
         if (!urlResponse && options.cachedNetworkFallback) throw new Error('在线音源连接中断，尚无可用离线缓存')
         if (!urlResponse) {
           try {
-            if (!song.album_audio_id) {
+            if (song.source !== 'cloud' && !song.album_audio_id) {
               const detailResponse = await this.waitForSongOperation(getSongDetail(song.hash, { signal: controller.signal }))
               if (!this.isCurrentSongRequest(requestId)) return false
               if (detailResponse?.status === 1 && detailResponse.data?.length > 0) {
                 audioDetail = { ...song, ...detailResponse.data[0] }
               }
             }
-            urlResponse = await this.waitForSongOperation(getSongUrl(
-              audioDetail.hash, audioDetail.album_id || 0, audioDetail.album_audio_id || 0, requestedQuality,
-              { signal: controller.signal }
-            ))
+            urlResponse = await this.waitForSongOperation(song.source === 'cloud'
+              ? getCloudSongUrl(audioDetail, { signal: controller.signal })
+              : getSongUrl(audioDetail.hash, audioDetail.album_id || 0, audioDetail.album_audio_id || 0, requestedQuality,
+                { signal: controller.signal }))
           } catch (error) {
             if (!this.isCurrentSongRequest(requestId)) return false
             if (!this.isPlaybackNetworkFailure(error)) throw error
@@ -812,13 +856,15 @@ export default {
 
         committed = true
         this.loadedSongHash = song.hash
-        this.loadedQualityPreference = candidateLease ? normalizePlaybackQuality(urlResponse.requestedQuality || requestedQuality) : requestedQuality
+        this.loadedQualityPreference = song.source === 'cloud' ? 'original'
+          : candidateLease ? normalizePlaybackQuality(urlResponse.requestedQuality || requestedQuality) : requestedQuality
         this.loadedSongDetail = audioDetail
         this.loadedCacheSessionVersion = cacheSessionVersion
         this.currentQuality = readPlaybackQuality(urlResponse)
         if (previousPlayback.leaseId !== candidateLease) this.releaseCacheSource(previousPlayback.leaseId)
         this.qualityMessage = ''
         if (qualityChange) {
+          this.listeningHistory?.discontinuity()
           this.currentTime = audioEl.currentTime
           this.duration = Number.isFinite(audioEl.duration) && audioEl.duration > 0 ? audioEl.duration : previousPlayback.duration
           return true
@@ -827,7 +873,7 @@ export default {
         this.currentSong = song
         this.isPlaying = !audioEl.paused
         this.duration = Number.isFinite(audioEl.duration) && audioEl.duration > 0 ? audioEl.duration : 0
-        const songIndex = this.playlist.findIndex(item => item?.hash === song.hash)
+        const songIndex = this.playlist.findIndex(item => this.samePlaybackSource(item, song))
         if (songIndex !== -1) this.currentIndex = songIndex
         this.currentLyrics = ''
         this.isLyricPlaceholder = true
@@ -835,6 +881,7 @@ export default {
         this.cachedLyricData = null
         this.currentLyricsFromCache = false
         this.currentTime = audioEl.currentTime
+        this.beginListeningHistory()
         this.syncDesktopTrack(audioDetail)
         this.updateMediaSession(audioDetail)
         this.checkFavoriteStatus()
@@ -911,7 +958,7 @@ export default {
         if (playAttempted && !ownsSource() && !audioEl.getAttribute('src')) audioEl.pause()
         // App 用 song 同时传递选歌与保存会话，最终失败后回写实际保留的歌曲。
         if (failed && !committed && this.isCurrentSongRequest(requestId) && !this.pendingSong &&
-            this.currentSong && this.song?.hash === song.hash && this.currentSong.hash !== song.hash) {
+            this.currentSong && this.samePlaybackSource(this.song, song) && !this.samePlaybackSource(this.currentSong, song)) {
           this.$emit('song-changed', this.currentSong)
         }
         if ((!committed || replaying) && ownsSource() && this.isCurrentSongRequest(requestId) && !this.pendingSong &&
@@ -938,7 +985,7 @@ export default {
         if ((committed || replaying && !failed) && this.isCurrentSongRequest(requestId) && ownsSource()) this.cachePlayedSong()
         if (failed && options.navigation && this.isCurrentSongRequest(requestId) && !this.pendingSong &&
             options.navigation.stopVersion === this.playbackStopVersion) {
-          const index = this.playlist.findIndex(item => item?.hash === this.currentSong?.hash)
+          const index = this.playlist.findIndex(item => this.samePlaybackSource(item, this.currentSong))
           if (index !== -1) this.currentIndex = index
           if (options.navigation.attemptedSongs.length < Math.min(5, this.playlist.length)) {
             this.$nextTick(() => {
@@ -947,7 +994,7 @@ export default {
                   { ...options.navigation, target: song })
               }
             })
-          } else if (this.currentSong && this.song?.hash !== this.currentSong.hash) {
+          } else if (this.currentSong && !this.samePlaybackSource(this.song, this.currentSong)) {
             this.$emit('song-changed', this.currentSong)
           }
         }
@@ -988,6 +1035,7 @@ export default {
 
     /** 切换偏好与当前音源；最后一次选择优先，正在选中的下一首不会被旧歌覆盖。 */
     changeQuality(value) {
+      if (!this.qualitySwitchAvailable) return Promise.resolve(false)
       const quality = normalizePlaybackQuality(value)
       if (this.isDisposed || quality !== value) return Promise.resolve(false)
       const version = ++this.qualityRequestVersion
@@ -1007,10 +1055,10 @@ export default {
         : this.loadingSongTarget ? this.loadingSongTransition : this.trackTransition
       // 再选正在使用的缓存档位时允许联网重试，避免服务降级的缓存永久占据该偏好。
       const confirmedLease = this.replacingPlaybackSnapshot ? this.replacingPlaybackSnapshot.leaseId : this.cacheSourceLeaseId
-      const refreshCachedSource = Boolean(target.hash === this.currentSong?.hash && this.loadedSongHash === target.hash &&
+      const refreshCachedSource = Boolean(this.samePlaybackSource(target, this.currentSong) && this.loadedSongHash === target.hash &&
         confirmedLease && this.loadedQualityPreference === quality && !targetOptions?.cachedNetworkFallback)
       return this.requestSong(target, transition, { ...targetOptions, quality, refreshCachedSource,
-        qualityChange: target.hash === this.currentSong?.hash && this.loadedSongHash === target.hash })
+        qualityChange: this.samePlaybackSource(target, this.currentSong) && this.loadedSongHash === target.hash })
     },
 
     retryQualityChange() {
@@ -1071,6 +1119,7 @@ export default {
 
     /** 清空队列时立即使异步加载失效并释放当前音源。 */
     stopPlayback() {
+      this.listeningHistory?.reset()
       this.cancelProgressDrag()
       this.playbackStopVersion++
       this.songRequestId++
@@ -1466,6 +1515,8 @@ export default {
       if (this.isDisposed) return
       if (event?.type === 'waiting') this.desktopAudioWaiting = true
       else if (event?.type === 'playing') this.desktopAudioWaiting = false
+      this.listeningHistory?.discontinuity()
+      if (event?.type === 'playing') this.sampleListeningHistory()
       this.syncDesktopTime(true, { discontinuity: event?.type === 'seeking', freeze: event?.type === 'seeking' })
     },
 
@@ -1505,33 +1556,33 @@ export default {
       let nextSong = null
       while (direction > 0 && this.playNextQueue.length > 0 && !nextSong) {
         const candidate = this.playNextQueue.shift()
-        if (candidate?.hash && !attemptedSongs.has(candidate.hash)) nextSong = candidate
+        if (candidate?.hash && !attemptedSongs.has(librarySongKey(candidate))) nextSong = candidate
       }
       if (!nextSong?.hash) {
         const songs = this.playMode === 'shuffle' && this.shuffledPlaylist.length > 0
           ? this.shuffledPlaylist : this.playlist
-        const targetIndex = songs.findIndex(item => item?.hash === target?.hash)
+        const targetIndex = songs.findIndex(item => this.samePlaybackSource(item, target))
         for (let offset = 1; offset <= songs.length; offset++) {
           const index = (Math.max(0, targetIndex) + direction * offset + songs.length) % songs.length
           const candidate = songs[index]
-          if (candidate?.hash && !attemptedSongs.has(candidate.hash) &&
-              this.playlist.some(item => item?.hash === candidate.hash)) {
+          if (candidate?.hash && !attemptedSongs.has(librarySongKey(candidate)) &&
+              this.playlist.some(item => this.samePlaybackSource(item, candidate))) {
             nextSong = candidate
             break
           }
         }
         if (direction > 0 && this.playMode === 'shuffle' && transition !== 'auto') transition = 'shuffle'
-      } else if (!this.playlist.some(item => item?.hash === nextSong.hash)) {
+      } else if (!this.playlist.some(item => this.samePlaybackSource(item, nextSong))) {
         this.$emit('playlist-updated', [...this.playlist, nextSong])
       }
       if (this.isDisposed) return false
       if (!nextSong?.hash) {
-        if (navigation && !this.pendingSong && this.currentSong && this.song?.hash !== this.currentSong.hash) {
+        if (navigation && !this.pendingSong && this.currentSong && !this.samePlaybackSource(this.song, this.currentSong)) {
           this.$emit('song-changed', this.currentSong)
         }
         return false
       }
-      attemptedSongs.add(nextSong.hash)
+      attemptedSongs.add(librarySongKey(nextSong))
       return this.requestSong(nextSong, direction < 0 ? 'previous' : transition, {
         navigation: { direction, transition, attemptedSongs: [...attemptedSongs], stopVersion: this.playbackStopVersion }
       })
@@ -1582,14 +1633,14 @@ export default {
             // 使用预先打乱的播放列表
             if (this.shuffledPlaylist.length > 0) {
               // 在已打乱的列表中找到当前位置
-              const shuffledIndex = this.shuffledPlaylist.findIndex(song => song.hash === this.currentSong?.hash)
+              const shuffledIndex = this.shuffledPlaylist.findIndex(song => this.samePlaybackSource(song, this.currentSong))
               if (shuffledIndex !== -1) {
                 // 从当前位置开始，寻找上一首有效歌曲
                 for (let i = 1; i < this.shuffledPlaylist.length; i++) {
                   const candidateIndex = (shuffledIndex - i + this.shuffledPlaylist.length) % this.shuffledPlaylist.length
                   const candidateSong = this.shuffledPlaylist[candidateIndex]
-                  if (candidateSong?.hash && !attemptedSongs.has(candidateSong.hash)) {
-                    prevIndex = this.playlist.findIndex(song => song.hash === candidateSong.hash)
+                  if (candidateSong?.hash && !attemptedSongs.has(librarySongKey(candidateSong))) {
+                    prevIndex = this.playlist.findIndex(song => this.samePlaybackSource(song, candidateSong))
                     if (prevIndex !== -1) {
                       logger.trace('MusicPlayer', '随机模式上一首:', candidateSong.name, '原始索引:', prevIndex)
                       break
@@ -1602,8 +1653,8 @@ export default {
               if (prevIndex === -1) {
                 for (let i = this.shuffledPlaylist.length - 1; i >= 0; i--) {
                   const candidateSong = this.shuffledPlaylist[i]
-                  if (candidateSong?.hash && !attemptedSongs.has(candidateSong.hash)) {
-                    prevIndex = this.playlist.findIndex(song => song.hash === candidateSong.hash)
+                  if (candidateSong?.hash && !attemptedSongs.has(librarySongKey(candidateSong))) {
+                    prevIndex = this.playlist.findIndex(song => this.samePlaybackSource(song, candidateSong))
                     if (prevIndex !== -1) {
                       logger.trace('MusicPlayer', '随机列表中找到有效歌曲:', candidateSong.name, '原始索引:', prevIndex)
                       break
@@ -1618,7 +1669,7 @@ export default {
               for (let i = 0; i < this.playlist.length; i++) {
                 const candidateIndex = (this.currentIndex - i - 1 + this.playlist.length) % this.playlist.length
                 const candidateSong = this.playlist[candidateIndex]
-                if (candidateSong?.hash && !attemptedSongs.has(candidateSong.hash)) {
+                if (candidateSong?.hash && !attemptedSongs.has(librarySongKey(candidateSong))) {
                   prevIndex = candidateIndex
                   logger.trace('MusicPlayer', '原始列表中找到有效歌曲:', candidateSong.name, '索引:', prevIndex)
                   break
@@ -1630,7 +1681,7 @@ export default {
             for (let i = 1; i <= this.playlist.length; i++) {
               const candidateIndex = (this.currentIndex - i + this.playlist.length) % this.playlist.length
               const candidateSong = this.playlist[candidateIndex]
-              if (candidateSong?.hash && !attemptedSongs.has(candidateSong.hash)) {
+              if (candidateSong?.hash && !attemptedSongs.has(librarySongKey(candidateSong))) {
                 prevIndex = candidateIndex
                 logger.trace('MusicPlayer', '循环模式上一首:', candidateSong.name, '索引:', prevIndex)
                 break
@@ -1646,7 +1697,7 @@ export default {
           
           this.currentIndex = prevIndex
           const nextSong = this.playlist[this.currentIndex]
-          attemptedSongs.add(nextSong.hash)
+          attemptedSongs.add(librarySongKey(nextSong))
           logger.trace('MusicPlayer', `尝试播放上一曲 (${attempts + 1}/${maxAttempts}):`, nextSong.name || nextSong.filename, '索引:', this.currentIndex)
           
           // 双重检查：验证歌曲是否有效
@@ -1719,9 +1770,9 @@ export default {
         // 先检查"下一首播放"队列
         if (this.playNextQueue.length > 0) {
           const nextSong = this.playNextQueue.shift() // 取出队列第一首
-          if (!nextSong?.hash || attemptedSongs.has(nextSong.hash)) continue
-          attemptedSongs.add(nextSong.hash)
-          let songIndex = this.playlist.findIndex(s => s.hash === nextSong.hash)
+          if (!nextSong?.hash || attemptedSongs.has(librarySongKey(nextSong))) continue
+          attemptedSongs.add(librarySongKey(nextSong))
+          let songIndex = this.playlist.findIndex(s => this.samePlaybackSource(s, nextSong))
           
           // 如果歌曲不在播放列表中，添加它
           if (songIndex === -1) {
@@ -1759,14 +1810,14 @@ export default {
           // 使用预先打乱的播放列表
           if (this.shuffledPlaylist.length > 0) {
             // 在已打乱的列表中找到当前位置
-            const shuffledIndex = this.shuffledPlaylist.findIndex(song => song.hash === this.currentSong?.hash)
+            const shuffledIndex = this.shuffledPlaylist.findIndex(song => this.samePlaybackSource(song, this.currentSong))
             if (shuffledIndex !== -1) {
               // 从当前位置开始，寻找下一首有效歌曲
               for (let i = 1; i < this.shuffledPlaylist.length; i++) {
                 const candidateIndex = (shuffledIndex + i) % this.shuffledPlaylist.length
                 const candidateSong = this.shuffledPlaylist[candidateIndex]
-                if (candidateSong?.hash && !attemptedSongs.has(candidateSong.hash)) {
-                  nextIndex = this.playlist.findIndex(song => song.hash === candidateSong.hash)
+                if (candidateSong?.hash && !attemptedSongs.has(librarySongKey(candidateSong))) {
+                  nextIndex = this.playlist.findIndex(song => this.samePlaybackSource(song, candidateSong))
                   if (nextIndex !== -1) {
                     logger.trace('MusicPlayer', '随机模式下一首:', candidateSong.name, '原始索引:', nextIndex)
                     break
@@ -1779,8 +1830,8 @@ export default {
             if (nextIndex === -1) {
               for (let i = 0; i < this.shuffledPlaylist.length; i++) {
                 const candidateSong = this.shuffledPlaylist[i]
-                if (candidateSong?.hash && !attemptedSongs.has(candidateSong.hash)) {
-                  nextIndex = this.playlist.findIndex(song => song.hash === candidateSong.hash)
+                if (candidateSong?.hash && !attemptedSongs.has(librarySongKey(candidateSong))) {
+                  nextIndex = this.playlist.findIndex(song => this.samePlaybackSource(song, candidateSong))
                   if (nextIndex !== -1) {
                     logger.trace('MusicPlayer', '随机列表中找到有效歌曲:', candidateSong.name, '原始索引:', nextIndex)
                     break
@@ -1795,7 +1846,7 @@ export default {
             for (let i = 0; i < this.playlist.length; i++) {
               const candidateIndex = (this.currentIndex + i + 1) % this.playlist.length
               const candidateSong = this.playlist[candidateIndex]
-              if (candidateSong?.hash && !attemptedSongs.has(candidateSong.hash)) {
+              if (candidateSong?.hash && !attemptedSongs.has(librarySongKey(candidateSong))) {
                 nextIndex = candidateIndex
                 logger.trace('MusicPlayer', '原始列表中找到有效歌曲:', candidateSong.name, '索引:', nextIndex)
                 break
@@ -1807,7 +1858,7 @@ export default {
           for (let i = 1; i <= this.playlist.length; i++) {
             const candidateIndex = (this.currentIndex + i) % this.playlist.length
             const candidateSong = this.playlist[candidateIndex]
-            if (candidateSong?.hash && !attemptedSongs.has(candidateSong.hash)) {
+            if (candidateSong?.hash && !attemptedSongs.has(librarySongKey(candidateSong))) {
               nextIndex = candidateIndex
               logger.trace('MusicPlayer', '循环模式下一首:', candidateSong.name, '索引:', nextIndex)
               break
@@ -1823,7 +1874,7 @@ export default {
         
         this.currentIndex = nextIndex
         const nextSong = this.playlist[this.currentIndex]
-        attemptedSongs.add(nextSong.hash)
+        attemptedSongs.add(librarySongKey(nextSong))
         logger.trace('MusicPlayer', `尝试播放下一曲 (${attempts + 1}/${maxAttempts}):`, nextSong.name || nextSong.filename, '索引:', this.currentIndex)
         
         // 双重检查：验证歌曲是否有效
@@ -1926,9 +1977,10 @@ export default {
       if (this.isDisposed || !audioEl?.ended || audioEl.seeking) return
       // 旧源仍在请求新歌曲地址时可能自然结束，保留用户已经发出的选歌意图。
       const target = this.pendingSong || this.loadingSongTarget
-      if (target?.hash && target.hash !== this.currentSong?.hash) return
+      if (target?.hash && !this.samePlaybackSource(target, this.currentSong)) return
       if (this.playMode === 'single') {
         this.$refs.audioPlayer.currentTime = 0
+        this.beginListeningHistory()
         this.$refs.audioPlayer.play().catch(error => {
           logger.error('MusicPlayer', '单曲循环重播失败:', error)
         })
@@ -1999,6 +2051,7 @@ export default {
     // 音频播放事件
     handlePlay() {
       if (this.isDisposed) return
+      this.listeningHistory?.discontinuity()
       this.isPlaying = true
       this.cachePlayedSong(true)
       // 更新 MediaSession 播放状态
@@ -2016,6 +2069,7 @@ export default {
     // 音频暂停事件
     handlePause() {
       if (this.isDisposed) return
+      this.listeningHistory?.discontinuity()
       this.isPlaying = false
       // 更新 MediaSession 播放状态
       if ('mediaSession' in navigator) {
@@ -2123,7 +2177,7 @@ export default {
     
     // 收藏切换
     toggleFavorite() {
-      this.isFavorite = !this.isFavorite
+      if (this.favoritePending) return
       this.$emit('toggle-favorite', this.currentSong)
     },
 
@@ -2213,28 +2267,7 @@ export default {
     
     // 检查收藏状态
     checkFavoriteStatus() {
-      if (!this.currentSong) {
-        this.isFavorite = false
-        return
-      }
-      
-      try {
-        const userId = localStorage.getItem('kugou_userid')
-        if (!userId || localStorage.getItem('favorite_songs_userid') !== userId) {
-          this.isFavorite = false
-          return
-        }
-        const favorites = localStorage.getItem('favorite_songs')
-        if (favorites) {
-          const favoriteList = JSON.parse(favorites)
-          this.isFavorite = Array.isArray(favoriteList) && favoriteList.some(song => song?.hash === this.currentSong.hash)
-        } else {
-          this.isFavorite = false
-        }
-      } catch (e) {
-        logger.error('MusicPlayer', '检查收藏状态失败:', e)
-        this.isFavorite = false
-      }
+      return this.musicLibrary?.isFavorite(this.currentSong) || false
     },
     
     // 显示/隐藏播放列表
@@ -2244,7 +2277,7 @@ export default {
     
     // 播放列表中的歌曲
     async handlePlaylistPlay(song) {
-      if (this.playlist.some(item => item?.hash === song?.hash)) {
+      if (this.playlist.some(item => this.samePlaybackSource(item, song))) {
         return this.requestSong(song)
       }
       return false
@@ -2254,11 +2287,11 @@ export default {
     async handleRemoveSong(index) {
       if (this.isDisposed || !Number.isInteger(index) || index < 0 || index >= this.playlist.length) return
       const removedSong = this.playlist[index]
-      const wasCurrentSong = removedSong?.hash === this.currentSong?.hash
+      const wasCurrentSong = this.samePlaybackSource(removedSong, this.currentSong)
       const updatedPlaylist = this.playlist.filter((_, songIndex) => songIndex !== index)
-      this.playNextQueue = this.playNextQueue.filter(song => song?.hash !== removedSong?.hash)
-      if (this.pendingSong?.hash === removedSong?.hash) this.pendingSong = null
-      if (this.loadingSongHash === removedSong?.hash) {
+      this.playNextQueue = this.playNextQueue.filter(song => !this.samePlaybackSource(song, removedSong))
+      if (this.samePlaybackSource(this.pendingSong, removedSong)) this.pendingSong = null
+      if (this.samePlaybackSource(this.loadingSongTarget, removedSong)) {
         this.songRequestId++
         this.lyricRequestId++
         if (!wasCurrentSong && this.currentSong) this.pendingSong = this.currentSong
@@ -2273,7 +2306,7 @@ export default {
         this.currentIndex = nextIndex
         await this.requestSong(updatedPlaylist[nextIndex], 'next')
       } else {
-        const currentIndex = updatedPlaylist.findIndex(song => song?.hash === this.currentSong?.hash)
+        const currentIndex = updatedPlaylist.findIndex(song => this.samePlaybackSource(song, this.currentSong))
         if (currentIndex !== -1) this.currentIndex = currentIndex
       }
     },
@@ -2285,12 +2318,12 @@ export default {
       this.$emit('clear-playlist')
     },
 
-    /** 下一首队列按歌曲 hash 去重，播放列表使用事件交由父组件替换。 */
+    /** 下一首队列按歌曲来源、账号和 hash 去重，播放列表使用事件交由父组件替换。 */
     addToPlayNextQueue(song) {
       if (!song?.hash || this.isDisposed) return
-      if (!this.playNextQueue.some(item => item?.hash === song.hash)) {
+      if (!this.playNextQueue.some(item => this.samePlaybackSource(item, song))) {
         this.playNextQueue.push(song)
-        if (!this.playlist.some(item => item?.hash === song.hash)) {
+        if (!this.playlist.some(item => this.samePlaybackSource(item, song))) {
           this.$emit('playlist-updated', [...this.playlist, song])
         }
       }
@@ -2298,9 +2331,9 @@ export default {
 
     removeFromPlaylist(song) {
       if (!song?.hash) return
-      const index = this.playlist.findIndex(item => item?.hash === song.hash)
+      const index = this.playlist.findIndex(item => this.samePlaybackSource(item, song))
       if (index !== -1) return this.handleRemoveSong(index)
-      this.playNextQueue = this.playNextQueue.filter(item => item?.hash !== song.hash)
+      this.playNextQueue = this.playNextQueue.filter(item => !this.samePlaybackSource(item, song))
     },
 
     // 格式化时间
@@ -2444,6 +2477,7 @@ export default {
     
     // 音频时间更新事件
     handleTimeUpdate() {
+      this.sampleListeningHistory()
       // 同首换源暂时从零加载，歌词和系统进度保留最后确认位置，提交后统一同步。
       if (this.isDisposed || this.isReplacingQualitySource) return
       const audioEl = this.$refs.audioPlayer
@@ -2466,6 +2500,7 @@ export default {
 
     /** 原生 seeked 同时覆盖歌词、进度条及系统媒体跳转，恢复/换源期间不采集中间值。 */
     handleSeeked() {
+      this.listeningHistory?.discontinuity()
       if (this.isDisposed || this.isLoadingSong || this.isSwitchingSong) return
       this.desktopAudioWaiting = this.$refs.audioPlayer?.readyState < 3
       this.handleTimeUpdate()

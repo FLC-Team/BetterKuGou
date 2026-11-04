@@ -22,6 +22,18 @@ const electronAPI = {
   // 外部链接打开 API
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   writeClipboardText: (text) => ipcRenderer.invoke('clipboard:write-text', text),
+  downloads: {
+    getState: () => ipcRenderer.invoke('downloads:get-state'),
+    enqueue: (request) => ipcRenderer.invoke('downloads:enqueue', request),
+    pause: (id) => ipcRenderer.invoke('downloads:pause', id),
+    resume: (id) => ipcRenderer.invoke('downloads:resume', id),
+    cancel: (id) => ipcRenderer.invoke('downloads:cancel', id),
+    retry: (id) => ipcRenderer.invoke('downloads:retry', id),
+    retryMetadata: (id) => ipcRenderer.invoke('downloads:retry-metadata', id),
+    reveal: (id) => ipcRenderer.invoke('downloads:reveal', id),
+    chooseDirectory: () => ipcRenderer.invoke('downloads:choose-directory'),
+    onState: (callback) => subscribe('downloads:state', callback)
+  },
 
   // 私有离线资源只通过固定操作访问，不暴露文件路径或通用下载能力。
   playlistCache: {
@@ -30,6 +42,7 @@ const electronAPI = {
     chooseDirectory: () => ipcRenderer.invoke('playlist-cache:choose-directory'),
     readPlaylist: (id = null) => ipcRenderer.invoke('playlist-cache:read-playlist', id),
     putPlaylist: (snapshot) => ipcRenderer.invoke('playlist-cache:put-playlist', snapshot),
+    removePlaylist: (id) => ipcRenderer.invoke('playlist-cache:remove-playlist', id),
     cacheSong: (request) => ipcRenderer.invoke('playlist-cache:cache-song', request),
     getSource: (request) => ipcRenderer.invoke('playlist-cache:get-source', request),
     releaseSource: (leaseId) => ipcRenderer.invoke('playlist-cache:release-source', leaseId),

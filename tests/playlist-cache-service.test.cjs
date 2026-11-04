@@ -76,6 +76,19 @@ test('single byte ranges cover suffix, end clamping and malformed/unsatisfiable 
   for (const range of ['bytes=100-', 'bytes=3-2', 'bytes=-0', 'bytes=1-2,3-4', 'bytes=-', 'bytes=1.5-3', 'items=0-1', 'bytes=9007199254740992-']) assert.equal(parseByteRange(range, 100), false)
 })
 
+test('private download leases keep the old cache file alive until copying releases it after migration', async t => {
+  const f=await fixture(t)
+  await f.service.cacheSong({song:{hash:'song-a'},quality:'128'})
+  const lease=await until(()=>f.service.acquireDownloadSource({hash:'song-a',quality:'128'}))
+  const target=path.join(f.directory,'..',path.basename(f.directory)+'-download-migration')
+  t.after(()=>fs.rm(target,{recursive:true,force:true}))
+  await f.service.changeDirectory(target,async()=>{})
+  assert.deepEqual(await fs.readFile(lease.path),f.audio)
+  await lease.release()
+  await until(async()=>{try{await fs.access(lease.path);return false}catch(error){return error.code==='ENOENT'}})
+  await lease.release()
+})
+
 test('real Worker returns private leases and protocol serves GET, HEAD, seek ranges and rejects path injection', async t => {
   const f = await fixture(t)
   assert.equal(f.calls.length, 0)

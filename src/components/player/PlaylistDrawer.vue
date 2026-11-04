@@ -23,7 +23,7 @@
         >
           <div 
             v-for="(song, index) in validPlaylist" 
-            :key="song.hash || song.name || `song-${index}`"
+            :key="`${librarySongKey(song) || song.name || 'song'}:${index}`"
             class="playlist-item"
             :class="{ 'active': isCurrentSong(song) }"
             @dblclick="playSong(song)"
@@ -43,6 +43,7 @@
             <div class="song-title-line">
               <button type="button" class="song-name" :title="getSongName(song)" @click.stop="$emit('search', song)" @dblclick.stop>{{ getSongName(song) }}</button>
               <SongBadges :song="song" />
+              <LibraryActions :song="song" more-only />
             </div>
             <div class="song-artist"><ArtistLinks :song="song" @select="$emit('artist', $event)" /></div>
           </div>
@@ -107,10 +108,12 @@
 
 <script>
 import { logger } from '../../utils/logger.js'
+import { librarySongKey } from '../../utils/libraryMetadata.js'
 
 import { TransitionGroup } from 'vue'
 import ContextMenu from '../common/ContextMenu.vue'
 import SongBadges from '../common/SongBadges.vue'
+import LibraryActions from '../common/LibraryActions.vue'
 import ArtistLinks from '../common/ArtistLinks.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 
@@ -120,6 +123,7 @@ export default {
   components: {
     ContextMenu,
     SongBadges,
+    LibraryActions,
     ArtistLinks,
     TransitionGroup
   },
@@ -232,6 +236,7 @@ export default {
     contextMenuManager.unregisterMenu(this.closeContextMenu)
   },
   methods: {
+    librarySongKey,
     closeDrawer() {
       this.closeContextMenu()
       this.showClearConfirm = false
@@ -355,7 +360,7 @@ export default {
         
         // 如果两个对象都有 hash，优先用 hash 比较
         if (this.currentSong.hash && song.hash) {
-          const result = this.currentSong.hash === song.hash
+          const result = librarySongKey(this.currentSong) === librarySongKey(song)
           if (result) {
             logger.trace('PlaylistDrawer', '🎵 [PlaylistDrawer] Hash匹配成功:', {
               currentHash: this.currentSong.hash,

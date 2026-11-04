@@ -19,3 +19,8 @@
 .favorite-view .clear-search:hover { color: var(--color-primary); }
 .favorite-view .playlist-search-count { color: var(--color-text-secondary); font-size: calc(var(--font-size-xs) - 1px); }
 @media (prefers-reduced-motion: reduce) { .favorite-view .collection-art { transform: none; } }
+.selection-actions { flex-wrap:wrap; margin:16px 0; color:var(--color-text-secondary); font-size:12px; }
+.selection-actions label { display:flex; align-items:center; gap:8px; }
+.favorite-view input[type=checkbox] { accent-color:var(--color-primary); }
+.favorite-view .song-item .col-index { flex-direction:column; gap:2px; }
+.favorite-view .song-item .col-index input { margin:0; }

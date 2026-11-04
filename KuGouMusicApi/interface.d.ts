@@ -102,7 +102,9 @@ export function playlist_add(
 
 export function playlist_del(params: { listid: number | string } & RequestBaseConfig): Promise<UseAxiosResponse>;
 
-export function playlist_tracks_add(params: { listid: number | string; data: string } & RequestBaseConfig): Promise<UseAxiosResponse>;
+export type PlaylistSongInput = { name: string; hash: string; album_id?: number | string; mixsongid?: number | string; album_audio_id?: number | string };
+
+export function playlist_tracks_add(params: { listid: number | string } & ({ data: string } | { songs: PlaylistSongInput[] }) & RequestBaseConfig): Promise<UseAxiosResponse>;
 
 export function playlist_tracks_del(params: { listid: number | string; fileids: string } & RequestBaseConfig): Promise<UseAxiosResponse>;
 
@@ -193,7 +195,7 @@ export function playlist_detail(params: { ids: string } & RequestBaseConfig): Pr
 
 export function playlist_track_all(params: { id: string } & MultiPageConfig & RequestBaseConfig): Promise<UseAxiosResponse>;
 
-export function playlist_track_all_new(params: { lisdid: string | number } & MultiPageConfig & RequestBaseConfig): Promise<UseAxiosResponse>;
+export function playlist_track_all_new(params: { listid: string | number } & MultiPageConfig & RequestBaseConfig): Promise<UseAxiosResponse>;
 
 export function playlist_similar(params: { ids: string } & RequestBaseConfig): Promise<UseAxiosResponse>;
 

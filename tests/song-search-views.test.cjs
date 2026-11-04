@@ -24,6 +24,10 @@ const windowedList = { props: ['items'], render() {
 const metadata = vm.createContext({})
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/utils/songMetadata.js'), 'utf8').replace(/^export /gm, ''), metadata)
 
+const librarySource = fs.readFileSync(path.join(__dirname, '../src/utils/libraryMetadata.js'), 'utf8').replace(/^import[^\n]*\n/gm, '')
+const libraryExports = [...librarySource.matchAll(/^export (?:function|const) (\w+)/gm)].map(match => match[1])
+Object.assign(metadata, vm.runInContext(`(() => { ${librarySource.replace(/^export /gm, '')}\nreturn { ${libraryExports.join(',')} } })()`, metadata))
+
 /** Use the actual child component so navigation tests exercise the buttons users click. */
 function loadArtistLinks() {
   const filename = path.join(__dirname, '../src/components/common/ArtistLinks.vue')
@@ -46,7 +50,7 @@ function mountPage(t, name, overrides = {}) {
     : descriptor.script.content
   const timers = []
   const sandbox = vm.createContext({ listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},
-    logger, ArtworkCover: leaf, SongBadges: leaf, ContextMenu: leaf, ArtistLinks: loadArtistLinks(), WindowedList: windowedList,
+    logger, librarySongKey: metadata.librarySongKey, ArtworkCover: leaf, SongBadges: leaf, ContextMenu: leaf, ArtistLinks: loadArtistLinks(), LibraryActions: leaf, PlaylistOverview: leaf, WindowedList: windowedList,
     getSongArtists: metadata.getSongArtists, nextplayIcon: '',
     TransitionGroup: transitionGroup,
     localStorage: { getItem: () => null },

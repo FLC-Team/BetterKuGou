@@ -202,6 +202,7 @@ function ensureSchema(settings) {
   if (!isPlainObject(normalized.playback)) normalized.playback = cloneDeep(defaultsCache.playback)
   normalized.playback.showTranslation = typeof normalized.playback.showTranslation === 'boolean' ? normalized.playback.showTranslation : true
   normalized.playback.restartOnPreviousNearEnd = normalized.playback.restartOnPreviousNearEnd === true
+  normalized.playback.syncPlayHistory = typeof normalized.playback.syncPlayHistory === 'boolean' ? normalized.playback.syncPlayHistory : true
   const library = isPlainObject(normalized.playback.lyricLibrary) ? normalized.playback.lyricLibrary : {}
   normalized.playback.lyricLibrary = {
     enabled: typeof library.enabled === 'boolean' ? library.enabled : true,
@@ -218,6 +219,9 @@ function ensureSchema(settings) {
   normalized.download.offlinePlaylistCacheEnabled = typeof normalized.download.offlinePlaylistCacheEnabled === 'boolean' ? normalized.download.offlinePlaylistCacheEnabled : true
   normalized.download.cacheSizeIndex = Number.isInteger(normalized.download.cacheSizeIndex) && normalized.download.cacheSizeIndex >= 0 && normalized.download.cacheSizeIndex <= 5 ? normalized.download.cacheSizeIndex : 0
   normalized.download.concurrentDownloads = Number.isInteger(normalized.download.concurrentDownloads) ? Math.min(10, Math.max(1, normalized.download.concurrentDownloads)) : 3
+  normalized.download.quality = ['follow', '128', '320', 'flac', 'high'].includes(normalized.download.quality) ? normalized.download.quality : 'follow'
+  normalized.download.downloadPath = typeof normalized.download.downloadPath === 'string' && path.isAbsolute(normalized.download.downloadPath) && !normalized.download.downloadPath.includes('\0') ? path.resolve(normalized.download.downloadPath) : defaultsCache.download.downloadPath
+  for (const key of ['embedMetadata', 'embedCover', 'saveLyrics']) normalized.download[key] = typeof normalized.download[key] === 'boolean' ? normalized.download[key] : true
   const offlineCachePath = normalized.download.offlineCachePath
   normalized.download.offlineCachePath = typeof offlineCachePath === 'string' && path.isAbsolute(offlineCachePath) && !offlineCachePath.includes('\0') ? path.resolve(offlineCachePath) : ''
   normalized.desktopLyrics = normalizeDesktopLyrics(desktop)
@@ -296,6 +300,7 @@ function createDefaults(app) {
       fullscreenLyrics: true,
       enqueueFullPlaylist: true,
       restartOnPreviousNearEnd: false,
+      syncPlayHistory: true,
       showTranslation: true,
       lyricLibrary: { enabled: true, autoSave: true, minMatch: 'high', autoUpdate: true },
       romanization: 'off',
@@ -313,7 +318,8 @@ function createDefaults(app) {
       downloadPath: path.join(downloadsDir, 'BetterKugou'),
       cachePath: cacheDir,
       cacheSizeIndex: 0,
-      concurrentDownloads: 3
+      concurrentDownloads: 3,
+      quality: 'follow', embedMetadata: true, embedCover: true, saveLyrics: true
     },
     custom: {
       playerStyle: 'default',

@@ -61,6 +61,7 @@ function loadMain({ packaged = false } = {}) {
       if (name === './logger') return quiet
       if (name === './services/lyricLibraryService') return { createLyricLibraryService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/playlistCacheService') return { createPlaylistCacheService: () => ({ configure() {}, stop: async () => {} }) }
+      if (name === './services/musicDownloadService') return { createMusicDownloadService: () => ({ configure: async () => {}, setSession: async () => {}, stop: async () => {} }) }
       if (name === './services/backendService') return { createBackendService: () => ({ start() {}, stop: async () => {} }) }
       if (name === './services/updateService') return { createUpdateService: opts => { options = opts; return service } }
       if (name === './settingsStore') return { normalizeDesktopLyrics: require('../electron/settingsStore').normalizeDesktopLyrics,

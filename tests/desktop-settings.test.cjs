@@ -66,6 +66,7 @@ function desktopFixture({ realMain = false } = {}) {
       if (name === './logger') return silent
       if (name === './services/lyricLibraryService') return { createLyricLibraryService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/playlistCacheService') return { createPlaylistCacheService: () => ({ configure() {}, stop: async () => {} }) }
+      if (name === './services/musicDownloadService') return { createMusicDownloadService: () => ({ configure: async () => {}, setSession: async () => {}, stop: async () => {} }) }
       if (name === './services/backendService') return { createBackendService: () => ({}) }
       if (name === './settingsStore') return {
         normalizeDesktopLyrics: require('../electron/settingsStore').normalizeDesktopLyrics,
@@ -207,7 +208,7 @@ test('translation preferences immediately update an already mounted lyric view',
   const source = fs.readFileSync(path.resolve(__dirname, '../src/components/player/LyricView.js'), 'utf8')
     .replace(/^import\b[\s\S]*?from\s+['"][^'"]+['"]\s*;?\s*$/gm, '')
     .replace('export default', 'module.exports =')
-  const sandbox = { module: { exports: {} }, ContextMenu: {}, VolumeControl: {}, ArtistLinks: {}, ArtworkCover: {} }
+  const sandbox = { module: { exports: {} }, ContextMenu: {}, VolumeControl: {}, ArtistLinks: {}, ArtworkCover: {}, LibraryActions: {} }
   vm.runInNewContext(source, sandbox)
   let measured = 0
   const lyric = { showTranslation: true, styleCache: new Map([['line', 'cached']]), handleLongLyric() { measured++ } }

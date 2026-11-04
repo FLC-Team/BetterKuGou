@@ -246,6 +246,25 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
     return true
   }
 
+  /** Only the main-process download service may receive a private path, protected by the existing lease. */
+  async function acquireDownloadSource(payload) {
+    const result = await call('getSource', payload)
+    if (!result?.leaseId || !result.path) return null
+    const item = { resource: result, active: 1, releasing: false }
+    const stream = { path: result.path }
+    resources.set(result.leaseId, item)
+    streams.add(stream)
+    let released = false
+    return { path: result.path, async release() {
+      if (released) return
+      released = true
+      item.active--
+      streams.delete(stream)
+      await releaseSource(result.leaseId)
+      finishMigrationCleanup()
+    } }
+  }
+
   async function handleRequest(request) {
     let url
     try { url = new URL(request.url) } catch { return new Response(null, { status: 400 }) }
@@ -308,8 +327,8 @@ function createPlaylistCacheService({ workerPath, cacheRoot, onState = () => {},
   }
 
   return {
-    configure, setSession, getState, stop, handleRequest, releaseSource, changeDirectory,
-    readPlaylist: id => call('readPlaylist', { id }), putPlaylist: value => call('putPlaylist', value),
+    configure, setSession, getState, stop, handleRequest, releaseSource, changeDirectory, acquireDownloadSource,
+    readPlaylist: id => call('readPlaylist', { id }), putPlaylist: value => call('putPlaylist', value), removePlaylist: id => call('removePlaylist', { id }),
     cacheSong: value => call('cacheSong', value), getSource: value => acquire('getSource', value),
     readLyrics: hash => call('readLyrics', { hash }), putLyrics: value => call('putLyrics', value),
     getArtwork: url => acquire('getArtwork', { url }), cacheArtwork: url => call('cacheArtwork', { url }),

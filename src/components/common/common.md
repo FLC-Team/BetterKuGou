@@ -32,6 +32,16 @@
 
 ## 接口与流程
 
+- `LibraryActions.vue` 注入 App 的 musicLibrary 和 songActions，在全部旧歌曲入口提供共享心形与更多菜单；只在云端确认后改状态，等待时禁用重复点击，菜单沿原管理器互斥。
+- `LibrarySongs.vue` 是发现、我的音乐和版本列表的通用歌曲列表，支持多选、播放、收藏、歌单添加、下载及分享；来源与所属账号参与当前歌曲识别。
+- `SongDetailsPanel.vue` 承载歌曲、专辑、歌单评论及其他版本；歌曲分类、热词、回复分别分页，切换资源取消旧请求，侧栏保持焦点范围并在关闭后归还。
+- `PlaylistDialog.vue` 负责新建/私密、添加歌曲、收藏公开歌单、删除或取消收藏；确认真实 listId 和完整目录，失败保留表单，系统收藏目标不可删除。
+- 歌单复合操作全过程核对同一账号；未知创建/收藏结果先读回核实，防止重复建立；收藏缺失曲目分批补齐并核对最终列表，确认绑定与候选系统收藏均拒绝删除。PlaylistOverview 只用公开全局 ID，不以自有 listId 查询公共详情。
+- `PlaylistOverview.vue` 独立读取公开歌单简介、评论入口及相似歌单，不影响主曲目加载，卸载取消请求。
+- `DownloadsView.vue` 展示主进程确认的账号任务状态，提供暂停、继续、取消、重试、补全附加信息副本及文件定位；状态订阅在卸载解绑。
+- `MusicDownloadSettings.vue` 编辑既有 download 草稿，目录通过原生选择器获得，保存后才影响新任务；浏览器预览禁用系统功能。
+- WindowedList 默认使用 `.list-page` 为滚动容器，LibrarySongs 通过 scrollContainerSelector 指向实际的 `.library-page` 或 `.song-panel-body`，保证主页面与侧栏超过窗口化阈值后仍能访问全部歌曲。
+
 - AnimatedSelect 通过 `modelValue/options` 接收选项和值，`update:modelValue` 与 `change` 返回选项原始值，不产生原生 change Event；保存仍由调用方负责。DropdownMenu 与既有右键/歌词菜单共用 contextMenuManager，选择后立即执行动作，退场层禁用输入；支持方向键、Home/End、文字查找、Escape/Tab 与焦点恢复。
 - 选择器弹层按实际未变换尺寸测量并限制在视口内，选项过多可滚动；祖先 fieldset 禁用、inert/hidden、页面失活与卸载均关闭并释放监听。ThemeStudio 的弹层带主题安全标记与固定配色，避免自定义 CSS 隐藏编辑入口；减少动态效果保留可见选中反馈。
 - props 为 visible、position 和 items，关闭通过 close 事件反馈。

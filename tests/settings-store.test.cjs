@@ -49,6 +49,22 @@ function createStore() {
   }
 }
 
+test('download enrichment and account history preferences normalize and survive unrelated saves', async () => {
+  const { store, app, files, settingsPath } = createStore()
+  await store.initSettingsStore(app)
+  assert.equal(store.getDefaultSettings().playback.syncPlayHistory, true)
+  assert.equal(store.getSettings().download.quality, 'follow')
+  for (const key of ['embedMetadata', 'embedCover', 'saveLyrics']) assert.equal(store.getSettings().download[key], true)
+  await store.setSettings({ playback: { syncPlayHistory: false }, download: { quality: 'flac', embedMetadata: false, embedCover: false, saveLyrics: false } })
+  await store.setSettings({ playback: { quality: '320' } })
+  const saved=JSON.parse(files.get(settingsPath))
+  assert.equal(saved.playback.syncPlayHistory, false); assert.equal(saved.download.quality, 'flac')
+  for (const key of ['embedMetadata', 'embedCover', 'saveLyrics']) assert.equal(saved.download[key], false)
+  await store.setSettings({ playback: { syncPlayHistory: 'false' }, download: { quality: 'invalid', embedMetadata: 'false', embedCover: null, saveLyrics: 0 } })
+  assert.equal(store.getSettings().playback.syncPlayHistory, true); assert.equal(store.getSettings().download.quality, 'follow')
+  for (const key of ['embedMetadata', 'embedCover', 'saveLyrics']) assert.equal(store.getSettings().download[key], true)
+})
+
 test('previous near-end restart defaults off and persists only explicit boolean preferences', async () => {
   const { store, app, files, settingsPath } = createStore()
   await store.initSettingsStore(app)
