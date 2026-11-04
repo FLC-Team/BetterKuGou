@@ -2,7 +2,7 @@
 
 此目录实现原生辅助进程，通过父目录 CMake 构建；无子目录。对外协议与构建入口见 [audio-effects.md](../audio-effects.md)。
 
-- `main.cpp`：命令行扫描/宿主/echo/self-test 模式；独占输出协议；有界线程队列；效果链复用、聚合延迟/尾音、ProcessContext、保存前参数屏障和管道断开的强制退出兜底。
+- `main.cpp`：命令行扫描/宿主/echo/self-test 模式；独占输出协议；有界线程队列；效果链复用、聚合延迟/尾音、ProcessContext、保存前参数屏障和管道断开的强制退出兜底。正常关闭在写线程结束后仅刷新协议流，避免仍打开的 stdin 引发全局 stdio 锁等待。
 - `plugin.h` / `plugin.cpp`：VST3 component/controller 初始化和消息连接、立体声总线、精度协商、参数队列/零样本提交、状态 base64、原生 view/frame 与多实例窗口生命周期。
 - `platform.h`：平台窗口和事件泵抽象。
 - `platform_win.cpp`：COM、HWND、Windows 消息泵；显式 SWP_SHOWWINDOW 不受子进程 windowsHide 的首次 ShowWindow 行为影响。
