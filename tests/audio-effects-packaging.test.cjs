@@ -151,7 +151,7 @@ test('extraResources keeps the host, notices and all worker-local modules outsid
     assert.ok(worker.filter.includes(relative), `Worker dependency ${relative} must be copied beside it`)
   }
   const workflow = fs.readFileSync(path.join(root, '.github/workflows/release.yml'), 'utf8')
-  for (const runner of ['windows-latest', 'ubuntu-latest', 'macos-latest']) assert.ok(workflow.includes(runner))
+  for (const runner of ['windows-latest', 'ubuntu-24.04', 'macos-latest']) assert.ok(workflow.includes(runner))
   assert.ok(workflow.indexOf('libx11-dev') < workflow.indexOf('npm run build:audio-effects'))
   assert.ok(workflow.indexOf('npm run build:audio-effects') < workflow.indexOf('npm test'))
 })
