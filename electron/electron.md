@@ -11,7 +11,7 @@
 - `main.js`：应用入口，编排启动、窗口、托盘、IPC 和退出清理。
 - `preload.js`：通过 `contextBridge` 暴露 `electronAPI`、`settingsAPI`、`loadingAPI`、`desktopLyricAPI`、`islandLyricAPI` 与 `taskbarLyricAPI`；事件订阅隐藏 Electron event 并返回解绑函数，`electronAPI.updates` 提供固定的更新操作及状态订阅；`waitForBackend()` 与 `notifyReady()` 仅桥接固定的启动就绪频道。`onAppNotice()` 订阅统一通知，独立歌词窗口仅通过 `reportNotice()` 转发有界纯文本。
 - `settingsStore.js`：设置默认值、Schema 补全、导入导出、自启协调与串行原子持久化。
-- `audioEffectsConfig.cjs`：音频效果偏好白名单，限定插件链/搜索目录数量与字段；与主设置存储共用规范化入口。
+- `audioEffectsConfig.cjs`：音频效果偏好白名单，限定插件链/搜索目录数量与字段；缓冲限定 64/128/256/512ms，旧设置与非法值回退 128ms，与主设置存储共用规范化入口。
 - `autoLaunch.js`：封装 Windows/macOS 登录启动设置；不支持的平台返回明确的状态或错误。
 - `logger.js`：主进程日志级别与输出入口，默认 `info`，通过 `BK_LOG_LEVEL` 或 `DEBUG` 开启诊断。
 - `loading.html`：启动进度窗口，通过 `loadingAPI` 接收真实进度和状态；阶段文字以可取消的 WAAPI 动效切换，进度和 spinner 独立更新。

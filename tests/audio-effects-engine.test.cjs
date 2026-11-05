@@ -6,7 +6,7 @@ const vm = require('node:vm')
 
 const root = path.join(__dirname, '..')
 
-function worklet({ rate = 48000, bridge = 1024, transform } = {}) {
+function worklet({ rate = 48000, bridge = 1024, bufferMs, transform, responseDelayFrames = 0 } = {}) {
   let Processor
   const reports = []
   const outgoing = []
@@ -17,13 +17,13 @@ function worklet({ rate = 48000, bridge = 1024, transform } = {}) {
     registerProcessor: (name, implementation) => { assert.equal(name, 'bk-audio-effects'); Processor = implementation }
   }
   vm.runInNewContext(fs.readFileSync(path.join(root, 'public/audio-effects-worklet.js'), 'utf8'), context)
-  const processor = new Processor({ processorOptions: { bridgeFrames: bridge } })
+  const processor = new Processor({ processorOptions: bufferMs === undefined ? { bridgeFrames: bridge } : { bufferMs } })
   const hostPort = {
     start() {}, close() { this.closed = true },
     postMessage(message) {
       const copy = structuredClone(message)
       outgoing.push(copy)
-      if (copy.type === 'audio' && transform) pending.push({ ...copy, pcm: transform(copy.pcm, copy) })
+      if (copy.type === 'audio' && transform) pending.push({ ...copy, pcm: transform(copy.pcm, copy), dueAt: context.currentTime + responseDelayFrames / rate })
     }
   }
   processor.control({ type: 'connect', port: hostPort })
@@ -34,13 +34,13 @@ function worklet({ rate = 48000, bridge = 1024, transform } = {}) {
     const output = [new Float32Array(source[0].length), new Float32Array(source[0].length)]
     processor.process([source, tap], [output])
     context.currentTime += source[0].length / rate
-    while (pending.length) processor.receive(pending.shift())
+    while (pending.length && pending[0].dueAt <= context.currentTime) processor.receive(pending.shift())
     return output
   }
   return { processor, reports, outgoing, hostPort, render, context }
 }
 
-for (const rate of [44100, 48000, 96000]) {
+for (const rate of [44100, 48000, 96000, 192000]) {
   test(`dry passthrough supports ${rate} Hz and a non-128 render quantum`, () => {
     const fixture = worklet({ rate })
     const left = Float32Array.from({ length: 192 }, (_, i) => Math.sin(i / 10) * 0.25)
@@ -264,7 +264,7 @@ test('audio port handshake validates the page and request and releases its liste
   assert.equal(listeners.size, 0)
 })
 
-function graphFixture() {
+function graphFixture({ getStatus = async () => ({ state: 'ready', audioConnectionGeneration: 1, reconnectRequired: false }), ...options } = {}) {
   const { page } = pageFixture()
   const nodes = []
   const sent = []
@@ -293,10 +293,10 @@ function graphFixture() {
   }
   const port = { close() {} }
   const api = { connectAudio(connectionId) { connections++; page.emit({ type: 'bk-audio-effects-port', connectionId }, [port]); return { connectionId } },
-    getStatus: async () => ({ state: 'ready', audioConnectionGeneration: 1, reconnectRequired: false }),
+    getStatus,
     onStatus: callback => { statusListener = callback; return () => { statusListener = null } } }
   const { createAudioEffectsEngine } = engineModule()
-  const engine = createAudioEffectsEngine({ api, page, AudioContextClass: Context, AudioWorkletNodeClass: WorkletNode })
+  const engine = createAudioEffectsEngine({ api, page, AudioContextClass: Context, AudioWorkletNodeClass: WorkletNode, ...options })
   return { engine, nodes, sent, context: () => actualContext, worklet: () => actualWorklet,
     status: value => statusListener?.(value), connections: () => connections }
 }
@@ -407,7 +407,7 @@ test('one media source survives detach/re-attach and master gain follows the eff
   const master = fixture.worklet().links[0].node
   assert.equal(master.gain.value, 0.25)
   assert.equal(master.links[0].node.kind, 'destination')
-  assert.equal(fixture.worklet().options.processorOptions.bridgeFrames, Math.ceil(44100 * 0.064 / 128) * 128)
+  assert.equal(fixture.worklet().options.processorOptions.bufferMs, 128)
   fixture.engine.detach(audio)
   await fixture.engine.attach(audio)
   assert.equal(fixture.context().sources, 1)
@@ -464,4 +464,200 @@ test('replacing the direct port preserves dry history and resumes new-generation
   for (let i = 0; i < 3; i++) fixture.render(new Float32Array(128).fill(0.25))
   assert.ok(sent.some(message => message.type === 'audio' && message.generation === generation + 1))
   assert.ok(sent.some(message => message.type === 'track' && message.trackId === 'song-A'))
+})
+
+for (const rate of [44100, 48000, 96000, 192000]) for (const bufferMs of [64, 128, 256, 512]) {
+  test(`${bufferMs} ms at ${rate} Hz retains every wet block until its audible deadline`, () => {
+    const fixture = worklet({ rate, bufferMs, transform: pcm => Float32Array.from(pcm, sample => sample * 2) })
+    const { processor } = fixture
+    const bridge = Math.ceil(rate * bufferMs / 1000 / 128) * 128
+    assert.equal(processor.bridgeFrames, bridge)
+    assert.ok(processor.wetSlots.length > Math.ceil(bridge / 512))
+    assert.ok(processor.capacity > rate * 10 + bridge)
+    processor.control({ type: 'enabled', value: true, position: 0 })
+    for (let frame = 0; frame < bridge + 4096; frame += 128) {
+      const output = fixture.render(new Float32Array(128).fill(0.2))[0]
+      if (frame > bridge + 1024) assert.ok(output.every(value => Math.abs(value - 0.4) < 1e-6))
+    }
+    assert.equal(processor.overloaded, false)
+    assert.equal(processor.pending.size, 0)
+    assert.equal(fixture.outgoing[0].bufferMs, bufferMs)
+  })
+}
+
+test('larger buffers tolerate native replies exceeding the old 32-block deadline at 192 kHz', () => {
+  const fixture = worklet({ rate: 192000, bufferMs: 256, responseDelayFrames: 19200,
+    transform: pcm => Float32Array.from(pcm, sample => sample * 2) })
+  fixture.processor.control({ type: 'enabled', value: true, position: 0 })
+  for (let frame = 0; frame < 80000; frame += 128) {
+    const output = fixture.render(new Float32Array(128).fill(0.2))[0]
+    if (frame > fixture.processor.bridgeFrames + 2048) assert.ok(output.every(value => Math.abs(value - 0.4) < 1e-6))
+  }
+  assert.equal(fixture.processor.overloaded, false)
+  assert.ok(fixture.processor.pending.size > 32)
+  assert.ok(fixture.processor.pending.size < fixture.processor.maxPendingBlocks)
+  assert.equal(fixture.reports.some(message => message.state === 'failed'), false)
+})
+
+test('live buffer edits preserve the dry history, fade between read positions and invalidate old wet packets', () => {
+  const fixture = worklet({ bufferMs: 64, transform: pcm => pcm })
+  const { processor } = fixture
+  processor.control({ type: 'enabled', value: true, position: 0 })
+  for (let frame = 0; frame < 48000; frame += 128) fixture.render(new Float32Array(128).fill(0.25))
+  const oldPacket = fixture.outgoing.findLast(message => message.type === 'audio')
+  const frame = processor.frame, dry = processor.dry, generation = processor.generation
+  for (const value of [512, 128, 256, 64]) {
+    processor.control({ type: 'buffer', bufferMs: value, epoch: value })
+    assert.equal(processor.dry, dry)
+    assert.ok(processor.frame >= frame)
+    assert.equal(processor.bufferMs, value)
+    assert.ok(processor.generation > generation)
+    processor.receive(oldPacket)
+    assert.ok(processor.wetSlots.every(slot => slot.sequence === -1))
+    for (let index = 0; index < 260; index++) assert.ok(fixture.render(new Float32Array(128).fill(0.25))[0].every(sample => sample === 0.25))
+    const presentation = fixture.reports.findLast(message => message.type === 'presentation')
+    assert.equal(presentation.epoch, value)
+    assert.ok(Math.abs(presentation.position - (processor.frame - processor.bridgeFrames) / 48000) < 2048 / 48000)
+    assert.equal(presentation.latencySamples, processor.bridgeFrames)
+  }
+  assert.equal(fixture.outgoing.filter(message => message.type === 'configure').length, 1, 'buffer changes must not rebuild the native effect chain')
+  assert.equal(fixture.outgoing.filter(message => message.type === 'buffer').length, 4)
+})
+
+test('a paused buffer change remains silent and resumes its fade without advancing the output clock', () => {
+  const fixture = worklet({ bufferMs: 64, transform: pcm => pcm })
+  fixture.processor.control({ type: 'enabled', value: true, position: 0 })
+  for (let frame = 0; frame < 48000; frame += 128) fixture.render(new Float32Array(128).fill(0.3))
+  fixture.processor.control({ type: 'transport', playing: false })
+  const frame = fixture.processor.frame
+  fixture.processor.control({ type: 'buffer', bufferMs: 512, epoch: 2 })
+  const fade = fixture.processor.latencyFade
+  for (let index = 0; index < 8; index++) assert.ok(fixture.render(new Float32Array(128))[0].every(sample => sample === 0))
+  assert.equal(fixture.processor.frame, frame)
+  assert.equal(fixture.processor.latencyFade, fade)
+  assert.equal(fixture.reports.findLast(message => message.type === 'presentation').advancing, false)
+  fixture.processor.control({ type: 'transport', playing: true })
+  assert.ok(fixture.render(new Float32Array(128).fill(0.3))[0].every(sample => Math.abs(sample - 0.3) < 1e-6))
+})
+
+test('increasing a buffer restores the preceding song identity if its samples become audible again', () => {
+  const fixture = worklet({ bufferMs: 64, transform: pcm => pcm })
+  fixture.processor.control({ type: 'enabled', value: true, position: 0 })
+  for (let frame = 0; frame < 48000; frame += 128) fixture.render(new Float32Array(128).fill(0.1))
+  fixture.processor.control({ type: 'track', trackId: 'song-B', token: 2, position: 0, playing: true, changed: true })
+  for (let frame = 0; frame < 9600; frame += 128) fixture.render(new Float32Array(128).fill(0.2))
+  assert.equal(fixture.reports.findLast(message => message.type === 'presentation').trackId, 'song-B')
+  fixture.processor.control({ type: 'buffer', bufferMs: 512, epoch: 9 })
+  for (let frame = 0; frame < 4096; frame += 128) fixture.render(new Float32Array(128).fill(0.2))
+  const report = fixture.reports.findLast(message => message.type === 'presentation')
+  assert.equal(report.trackId, 'song-A')
+  assert.equal(report.sourceTrackId, 'song-B')
+  assert.equal(report.epoch, 9)
+})
+
+test('late acknowledgements recover an overloaded bridge without erasing dry audio or the presented marker', () => {
+  const fixture = worklet({ bufferMs: 128 })
+  fixture.processor.control({ type: 'enabled', value: true, position: 0 })
+  for (let frame = 0; frame < 48000; frame += 128) fixture.render(new Float32Array(128).fill(0.3))
+  assert.equal(fixture.processor.overloaded, true)
+  const frame = fixture.processor.frame, generation = fixture.processor.generation
+  const packets = fixture.outgoing.filter(message => message.type === 'audio')
+  for (const packet of packets.slice(0, Math.ceil(packets.length / 2))) fixture.processor.receive(packet)
+  assert.equal(fixture.processor.overloaded, false)
+  assert.equal(fixture.processor.frame, frame)
+  assert.equal(fixture.processor.generation, generation + 1)
+  assert.equal(fixture.processor.presentedMarker.trackId, 'song-A')
+  assert.ok(fixture.render(new Float32Array(128).fill(0.3))[0].every(sample => Math.abs(sample - 0.3) < 1e-6))
+  assert.ok(fixture.reports.some(message => message.detail === 'host-recovered' && message.error === ''))
+})
+
+test('engine consumes only applied buffer preferences and rejects reports from before the edit', async () => {
+  const fixture = graphFixture({ bufferMs: 64 })
+  const audio = { crossOrigin: 'anonymous', currentTime: 3 }
+  await fixture.engine.attach(audio)
+  fixture.engine.setActiveTrack({ audio, trackId: 'A', playing: true })
+  fixture.engine.setEnabled(true)
+  fixture.worklet().port.onmessage({ data: { type: 'presentation', trackId: 'A', sourceTrackId: 'A',
+    sourceToken: fixture.engine.activePresentationToken, epoch: 1, position: 2.9, contextTime: 0, advancing: false } })
+  fixture.status({ revision: 1, bufferMs: 512, appliedBufferMs: 128, pendingChanges: true })
+  assert.equal(fixture.engine.bufferMs, 128)
+  const change = fixture.sent.findLast(message => message.type === 'buffer')
+  assert.equal(change.bufferMs, 128)
+  assert.equal(change.epoch, 2)
+  assert.equal(fixture.context().sources, 1)
+  fixture.worklet().port.onmessage({ data: { type: 'presentation', trackId: 'A', sourceTrackId: 'A', epoch: 1, position: 99 } })
+  assert.equal(fixture.engine.getPresentedPlayback().position, 2.9)
+  fixture.status({ revision: 2, bufferMs: 512, appliedBufferMs: 512 })
+  assert.equal(fixture.engine.bufferMs, 512)
+  assert.equal(fixture.engine.setBufferMs(300), false)
+  assert.equal(fixture.engine.setBufferMs('128'), false)
+  assert.equal(fixture.engine.bufferMs, 512)
+  fixture.status({ revision: 3, bufferMs: 'invalid' })
+  assert.equal(fixture.engine.bufferMs, 128)
+  await fixture.engine.dispose()
+})
+
+test('a late initial status cannot restore an older buffer or host failure after a newer push', async () => {
+  let finishStatus
+  const fixture = graphFixture({ getStatus: () => new Promise(resolve => { finishStatus = resolve }) })
+  await fixture.engine.init()
+  fixture.status({ revision: 7, bufferMs: 512, appliedBufferMs: 512, running: true })
+  const controlCount = fixture.sent.length
+  finishStatus({ revision: 6, bufferMs: 64, appliedBufferMs: 64, error: 'old host failure' })
+  await Promise.resolve()
+  assert.equal(fixture.engine.bufferMs, 512)
+  assert.equal(fixture.sent.length, controlCount, 'old snapshots cannot send buffer or host-state controls')
+  fixture.worklet().port.onmessage({ data: { type: 'status', latencySamples: 24576 } })
+  assert.equal(fixture.engine.latencySamples, 24576, 'worklet reports are independent of service snapshot revisions')
+  fixture.status({ revision: 8, bufferMs: 256, appliedBufferMs: 256 })
+  assert.equal(fixture.engine.bufferMs, 256)
+  await fixture.engine.dispose()
+})
+
+test('invalid buffer controls cannot invalidate the audible clock or allocate unbounded queues', () => {
+  const fixture = worklet({ bufferMs: 128 })
+  const { processor } = fixture
+  const generation = processor.generation, slots = processor.wetSlots, epoch = processor.presentationEpoch
+  for (const value of [-1, 0, 300, '512', Infinity, null]) processor.control({ type: 'buffer', bufferMs: value, epoch: 999 })
+  assert.equal(processor.generation, generation)
+  assert.equal(processor.wetSlots, slots)
+  assert.equal(processor.presentationEpoch, epoch)
+  assert.equal(processor.bufferMs, 128)
+})
+
+test('rapid buffer changes join the actual mixed output without a discontinuity or replaying pre-seek samples', () => {
+  const fixture = worklet({ bufferMs: 64, transform: pcm => pcm })
+  const { processor } = fixture
+  processor.control({ type: 'enabled', value: true, position: 0 })
+  let previous = 0
+  const renderSine = () => {
+    const frame = processor.frame
+    const output = fixture.render(Float32Array.from({ length: 128 }, (_, i) => Math.sin((frame + i) * 2 * Math.PI * 440 / 48000) * 0.5))[0]
+    const boundaryJump = Math.abs(output[0] - previous)
+    previous = output.at(-1)
+    return { output, boundaryJump }
+  }
+  for (let index = 0; index < 500; index++) renderSine()
+  for (const [index, bufferMs] of [512, 128, 256, 64, 512, 128].entries()) {
+    processor.control({ type: 'buffer', bufferMs, epoch: index + 2 })
+    const { output, boundaryJump } = renderSine()
+    assert.ok(boundaryJump < 1e-6, `edit ${index + 1} starts from the last actual sample`)
+    assert.ok(output.every(Number.isFinite))
+    for (let i = 1; i < output.length; i++) assert.ok(Math.abs(output[i] - output[i - 1]) < 0.07)
+  }
+  processor.control({ type: 'buffer', bufferMs: 512, epoch: 9 })
+  processor.control({ type: 'transport', playing: true, seeking: true, position: 12, epoch: 10 })
+  assert.equal(processor.smoothOutput, false, 'seek discards the old output correction')
+  assert.ok(fixture.render(new Float32Array(128).fill(0.3))[0].every(sample => sample === 0))
+})
+
+test('a buffer edit before first playback cannot carry an obsolete correction into startup', () => {
+  const fixture = worklet({ bufferMs: 64, transform: pcm => pcm })
+  fixture.processor.control({ type: 'transport', playing: false })
+  fixture.processor.control({ type: 'buffer', bufferMs: 512, epoch: 1 })
+  fixture.processor.control({ type: 'buffer', bufferMs: 128, epoch: 2 })
+  fixture.processor.control({ type: 'enabled', value: true, position: 0, epoch: 3 })
+  fixture.processor.control({ type: 'transport', playing: true })
+  assert.equal(fixture.processor.smoothOutput, false)
+  assert.ok(fixture.render(new Float32Array(128).fill(0.3))[0].every(sample => sample === 0))
 })

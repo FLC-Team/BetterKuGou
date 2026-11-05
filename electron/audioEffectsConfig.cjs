@@ -1,4 +1,6 @@
 const forbiddenKeys = new Set(['__proto__', 'prototype', 'constructor'])
+const AUDIO_EFFECTS_BUFFER_MS_OPTIONS = Object.freeze([64, 128, 256, 512])
+const DEFAULT_AUDIO_EFFECTS_BUFFER_MS = 128
 
 function record(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value) &&
@@ -12,9 +14,10 @@ function text(value, maximum) {
 
 /** Keep only portable preferences; native plugin state, scan results and per-track tempo live in the service. */
 function normalizeAudioEffects(value) {
-  const normalized = { enabled: false, searchPaths: [], chain: [] }
+  const normalized = { enabled: false, bufferMs: DEFAULT_AUDIO_EFFECTS_BUFFER_MS, searchPaths: [], chain: [] }
   if (!record(value)) return normalized
   normalized.enabled = Object.hasOwn(value, 'enabled') && value.enabled === true
+  if (Object.hasOwn(value, 'bufferMs') && AUDIO_EFFECTS_BUFFER_MS_OPTIONS.includes(value.bufferMs)) normalized.bufferMs = value.bufferMs
   const paths = new Set()
   if (Object.hasOwn(value, 'searchPaths') && Array.isArray(value.searchPaths)) {
     for (const item of value.searchPaths) {
@@ -43,4 +46,4 @@ function normalizeAudioEffects(value) {
   return normalized
 }
 
-module.exports = { normalizeAudioEffects }
+module.exports = { normalizeAudioEffects, AUDIO_EFFECTS_BUFFER_MS_OPTIONS, DEFAULT_AUDIO_EFFECTS_BUFFER_MS }

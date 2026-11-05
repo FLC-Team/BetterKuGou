@@ -7,9 +7,11 @@
 - `notifications.test.cjs`：真实 AppNotice 与 Vue 生命周期验证消息替换和旧关闭隔离、重复序号、持续/定时参数、动作禁用与忙碌防重入、异常后重试、过期按钮、KeepAlive 失活恢复及卸载后迟到结果；另验证开始离场即禁用动作、完整离场后才报告关闭及不可关闭消息的守卫。Fue Message 展示接口使用共享测试替身，不代替原库动画验收。
 - `app-notice-ipc.test.cjs`：歌词窗口当前顶层来源限制、纯文本消息字段和长度白名单、早期通知的有界队列及同标识替换、错误恢复隐藏/最小化主窗口，以及固定 preload 频道、事件隐藏与订阅清理。
 
-- `audio-effects-engine.test.cjs`：实际 Worklet 源码的 44.1/48/96kHz 与可变 quantum、原生 echo 包序与平面左右声道、同延迟干声、有界积压、暂停冻结/跳转旧包、动态延迟、自然结束尾音与新曲取消截止点、独立 BPM tap 和 analysis ack；渲染图的限定端口握手、元素唯一 source、后置音量、可听时钟、utility 重建后恢复音频及处理器异常原声回退。模拟测试不替代真实 Electron 和 VST3 插件验证。
+- `audio-effects-engine.test.cjs`：实际 Worklet 源码的 44.1/48/96/192kHz 与四档缓冲、可变 quantum、原生 echo 包序与平面左右声道、同延迟干声、有界积压、暂停冻结/跳转旧包、动态延迟、自然结束尾音与新曲取消截止点、独立 BPM tap 和 analysis ack；覆盖大缓冲超过 32 块的延迟回包、热切换保留干声和曲目身份、短时超时后恢复及迟到快照隔离。渲染图检查限定端口握手、元素唯一 source、后置音量、可听时钟、utility 重建后恢复音频及处理器异常原声回退。模拟测试不替代真实 Electron 和 VST3 插件验证。
 - `audio-effects-service.test.cjs`：真实临时文件保存与 mock utility，覆盖配置保存失败保留草稿和原听感、无关广播保护、外部导入同草稿后应用、当前提交广播不重复配置、重试应用、新实例状态恢复、已加载实例不重复恢复、释放和重连串行、失效进程迟到事件、扫描缺失插件、dirty 合并保存且无编辑时不轮询，以及延迟自动 BPM 写入不覆盖后续手动值、退出等待保存。
 - `audio-effects-worker.test.cjs`：真实二进制协议加 mock 子进程管道，覆盖平面 PCM、设备采样率、分析确认、原生崩溃延迟保留、断开后重启、扫描分块 UTF-8 与取消、曲目与跳转代次、迟到 BPM 隔离，以及音频端口拒绝原生控制字段。
+- service/worker 故障回归覆盖同步/异步 EPIPE、故障后移除或旁通恢复、保存过程中进程失效与真实磁盘错误的区分、旁通插件按需打开编辑器、缓冲保存失败重试及 buffer-only 不重配。调度验证原生 16 个发送额度、按缓冲有界积压、旧代回包归还额度后再 flush，以及插件状态/窗口命令和采样率切换的排空屏障。
+- `audio-effects-settings.test.cjs` 与 `settings-store.test.cjs` 覆盖缓冲四档白名单、旧配置默认值、导入和重启持久化、父级保存屏障、失败重试、已保存值与草稿的延迟展示；选择菜单复用 AnimatedSelect，其交互由独立组件测试覆盖。
 - `audio-effects-integration.test.cjs`：真实 main/integration/preload 与内存流媒体边界，覆盖三平台开发/打包路径、顶层当前窗口限制、固定操作、连接抢占及过期端口关闭、目录选择取消/重载失效、媒体租约释放与导航/崩溃/退出清理、宿主退出失败后的注销，以及实际设置/App 模板的保存屏障和音效快捷入口；不写入用户数据或连接真实外部音源。
 - `audio-effects-media.test.cjs` / `audio-effects-protocol.test.cjs`：真实本地 HTTP 的流式 GET/HEAD/Range、CORS 与不透明租约，以及分块/合包的二进制 PCM、非法长度与 JSON 防护。
 - `audio-effects-packaging.test.cjs`：执行真实构建/打包脚本并隔离编译器与文件边界，覆盖 electron-builder 上下文、平台架构映射、依赖提交校验、失败时不暂存、许可版权、Ninja 架构保护和 ASAR 外资源布局；不等同于各平台实机编译。

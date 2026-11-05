@@ -4,16 +4,21 @@ class BkAudioEffectsProcessor extends AudioWorkletProcessor {
     super()
     const settings = options.processorOptions || {}
     this.blockFrames = 512
-    this.bridgeFrames = Number.isInteger(settings.bridgeFrames) ? settings.bridgeFrames : Math.ceil(sampleRate * 0.064 / 128) * 128
+    this.bufferMs = [64, 128, 256, 512].includes(settings.bufferMs) ? settings.bufferMs : 128
+    this.maxBridgeFrames = Math.ceil(sampleRate * 0.512 / 128) * 128
+    this.bridgeFrames = Number.isInteger(settings.bridgeFrames) && settings.bridgeFrames >= this.blockFrames && settings.bridgeFrames <= this.maxBridgeFrames
+      ? settings.bridgeFrames : Math.ceil(sampleRate * this.bufferMs / 1000 / 128) * 128
+    this.maxPendingBlocks = Math.max(32, Math.ceil(this.bridgeFrames / this.blockFrames) + 8)
     this.maxLatency = Math.ceil(sampleRate * 10)
-    this.capacity = this.maxLatency + this.bridgeFrames + this.blockFrames * 4
+    // Reserve history for every selectable delay so resizing cannot erase audible audio.
+    this.capacity = this.maxLatency + this.maxBridgeFrames + this.blockFrames * 4
     this.dry = new Float32Array(this.capacity * 2)
     this.block = new Float32Array(this.blockFrames * 2)
     this.analysis = new Float32Array(2048)
     this.analysisOffset = 0
     this.analysisSequence = 0
     this.pendingAnalysis = new Set()
-    this.wetSlots = Array.from({ length: 32 }, () => ({ sequence: -1, pcm: new Float32Array(this.blockFrames * 2) }))
+    this.wetSlots = Array.from({ length: this.maxPendingBlocks }, () => ({ sequence: -1, pcm: new Float32Array(this.blockFrames * 2) }))
     this.hostPort = null
     this.generation = 0
     this.frame = 0
@@ -21,7 +26,8 @@ class BkAudioEffectsProcessor extends AudioWorkletProcessor {
     this.blockOffset = 0
     this.sequence = 0
     this.latency = 0
-    this.previousLatency = 0
+    this.previousDelay = this.bridgeFrames
+    this.delayFadeFrames = Math.ceil(sampleRate * 0.02)
     this.latencyFade = 0
     this.enabled = false
     this.playing = false
@@ -36,12 +42,14 @@ class BkAudioEffectsProcessor extends AudioWorkletProcessor {
     this.lastOutput = new Float32Array(2)
     this.fallbackCorrection = new Float32Array(2)
     this.correctionMix = 0
+    this.smoothOutput = false
     this.trackId = ''
     this.trackFrame = 0
     this.trackPosition = 0
     this.trackToken = 0
     this.presentedMarker = null
     this.presentationMarkers = []
+    this.presentationHistory = []
     this.presentationEpoch = 0
     this.tempo = null
     this.automaticTempo = true
@@ -75,9 +83,11 @@ class BkAudioEffectsProcessor extends AudioWorkletProcessor {
     this.trackPosition = Math.max(0, Number(position) || 0)
     this.presentedMarker = { frame: 0, position: this.trackPosition, trackId: this.trackId, token: this.trackToken }
     this.presentationMarkers = []
+    this.presentationHistory = []
     this.wetMix = 0
     this.wasWet = false
     this.correctionMix = 0
+    this.smoothOutput = false
     this.lastOutput.fill(0)
     this.latencyFade = 0
     this.reportAt = 0
@@ -92,17 +102,9 @@ class BkAudioEffectsProcessor extends AudioWorkletProcessor {
     this.sendHost({ type: 'reset', generation: this.generation, trackId: this.trackId, position: this.trackPosition })
   }
 
-  setLatency(samples) {
-    if (!Number.isInteger(samples) || samples < 0 || samples === this.latency) return
-    if (samples > this.maxLatency) {
-      this.hostAvailable = false
-      this.port.postMessage({ type: 'status', state: 'failed', error: '插件延迟超过支持的 10 秒上限，已恢复原声播放' })
-      return
-    }
+  /** Retire stale native packets without clearing dry samples or output identity. */
+  rewarm(reason) {
     const position = this.trackPosition + Math.max(0, this.frame - this.trackFrame) / sampleRate
-    this.previousLatency = this.latency
-    this.latency = samples
-    this.latencyFade = Math.ceil(sampleRate * 0.01)
     this.generation++
     this.generationFrame = this.frame
     this.blockOffset = 0
@@ -112,11 +114,52 @@ class BkAudioEffectsProcessor extends AudioWorkletProcessor {
     this.pendingAnalysis.clear()
     this.overloaded = false
     this.wetMix = 0
+    // Another delay edit can interrupt a mixture of two read positions. Its
+    // weighted delay is not the mixed PCM, so anchor the new ramp to real output.
+    if (this.latencyFade > 0) this.smoothOutput = true
     for (const slot of this.wetSlots) slot.sequence = -1
-    // Keep the dry history while the new native generation warms up.
     this.sendHost({ type: 'reset', generation: this.generation, trackId: this.trackId, position })
-    this.port.postMessage({ type: 'status', reason: 'resync-required', detail: 'plugin-latency-changed',
+    this.port.postMessage({ type: 'status', reason: 'resync-required', detail: reason,
+      ...(reason === 'host-recovered' ? { state: 'ready', error: '' } : {}),
+      bufferMs: this.bufferMs, bridgeFrames: this.bridgeFrames, bridgeLatencyMs: this.bridgeFrames / sampleRate * 1000,
+      maxPendingBlocks: this.maxPendingBlocks,
       latencySamples: this.enabled ? this.bridgeFrames + this.latency : 0, pluginLatencySamples: this.latency })
+  }
+
+  audibleDelay() {
+    const target = this.bridgeFrames + this.latency
+    return this.latencyFade > 0 ? target + (this.previousDelay - target) * this.latencyFade / this.delayFadeFrames : target
+  }
+
+  setLatency(samples) {
+    if (!Number.isInteger(samples) || samples < 0 || samples === this.latency) return
+    if (samples > this.maxLatency) {
+      this.hostAvailable = false
+      this.port.postMessage({ type: 'status', state: 'failed', error: '插件延迟超过支持的 10 秒上限，已恢复原声播放' })
+      return
+    }
+    this.previousDelay = this.audibleDelay()
+    if (this.draining) this.drainUntil += samples - this.latency
+    this.latency = samples
+    this.latencyFade = this.delayFadeFrames
+    this.rewarm('plugin-latency-changed')
+  }
+
+  /** A buffer edit crossfades two dry read positions while a fresh wet generation warms up. */
+  setBufferMs(value) {
+    if (![64, 128, 256, 512].includes(value)) return
+    const frames = Math.ceil(sampleRate * value / 1000 / 128) * 128
+    if (frames === this.bridgeFrames && value === this.bufferMs) return
+    this.previousDelay = this.audibleDelay()
+    if (this.draining) this.drainUntil += frames - this.bridgeFrames
+    this.bufferMs = value
+    this.bridgeFrames = frames
+    this.maxPendingBlocks = Math.max(32, Math.ceil(frames / this.blockFrames) + 8)
+    this.wetSlots = Array.from({ length: this.maxPendingBlocks }, () => ({ sequence: -1, pcm: new Float32Array(this.blockFrames * 2) }))
+    this.latencyFade = this.delayFadeFrames
+    this.sendHost({ type: 'buffer', bufferMs: value })
+    this.rewarm('buffer-changed')
+    this.report(true)
   }
 
   control(message) {
@@ -127,7 +170,7 @@ class BkAudioEffectsProcessor extends AudioWorkletProcessor {
       this.hostPort = message.port
       this.hostPort.onmessage = event => this.receive(event.data)
       this.hostPort.start?.()
-      this.sendHost({ type: 'configure', sampleRate, frames: this.blockFrames, channels: 2 })
+      this.sendHost({ type: 'configure', sampleRate, frames: this.blockFrames, channels: 2, bufferMs: this.bufferMs })
       if (replacing) {
         this.generation++
         this.generationFrame = this.frame
@@ -199,11 +242,15 @@ class BkAudioEffectsProcessor extends AudioWorkletProcessor {
       } else this.draining = false
       this.sendHost({ type: 'transport', generation: this.generation, playing: this.playing, position: message.position, seeking: message.seeking === true })
       this.report(true)
+    } else if (message.type === 'buffer') {
+      if (![64, 128, 256, 512].includes(message.bufferMs)) return
+      this.presentationEpoch = Number.isSafeInteger(message.epoch) ? message.epoch : this.presentationEpoch
+      this.setBufferMs(message.bufferMs)
     } else if (message.type === 'latency') this.setLatency(message.samples)
     else if (message.type === 'tail') this.tailSamples = message.samples === -1 ? sampleRate * 10 : Number.isSafeInteger(message.samples) && message.samples >= 0 ? message.samples : 0
     else if (message.type === 'host-state') {
       this.hostAvailable = message.available === true
-      if (this.hostAvailable && this.overloaded) this.reset(this.trackPosition + Math.max(0, this.frame - this.trackFrame) / sampleRate)
+      if (this.hostAvailable && this.overloaded) this.rewarm('host-recovered')
     }
     else if (message.type === 'tempo') {
       this.tempo = Number.isFinite(message.bpm) ? message.bpm : null
@@ -233,7 +280,7 @@ class BkAudioEffectsProcessor extends AudioWorkletProcessor {
       if (message.error) this.hostAvailable = false
       if (message.state === 'ready' || message.running === true) {
         this.hostAvailable = true
-        if (this.overloaded) this.reset(this.trackPosition + Math.max(0, this.frame - this.trackFrame) / sampleRate)
+        if (this.overloaded) this.rewarm('host-recovered')
       }
       if (Number.isInteger(message.latencySamples)) this.setLatency(message.latencySamples)
       if (message.tailSamples === -1) this.tailSamples = sampleRate * 10
@@ -242,7 +289,12 @@ class BkAudioEffectsProcessor extends AudioWorkletProcessor {
     }
     if (message.type !== 'audio' || message.generation !== this.generation || !Number.isInteger(message.sequence)) return
     const sequence = message.sequence
-    this.pending.delete(sequence)
+    const acknowledged = this.pending.delete(sequence)
+    if (this.overloaded && acknowledged && this.pending.size <= Math.floor(this.maxPendingBlocks / 2)) {
+      this.hostAvailable = true
+      this.rewarm('host-recovered')
+      return
+    }
     if (sequence < 0 || sequence >= this.sequence || sequence < Math.floor((this.frame - this.generationFrame - this.bridgeFrames) / this.blockFrames) - 1) return
     if (Number.isInteger(message.latencySamples) && message.latencySamples !== this.latency) {
       this.setLatency(message.latencySamples)
@@ -262,11 +314,18 @@ class BkAudioEffectsProcessor extends AudioWorkletProcessor {
 
   report(force = false, contextTimestamp = currentTime) {
     if (!force && this.frame < this.reportAt) return
-    this.reportAt = this.frame + 2048
-    const audibleFrame = this.frame - (this.enabled ? this.bridgeFrames + this.latency : 0)
+    this.reportAt = this.frame + (this.latencyFade > 0 ? 128 : 2048)
+    const audibleFrame = this.frame - (this.enabled ? this.audibleDelay() : 0)
+    // A larger delay may expose a recent preceding song again during the crossfade.
+    while (this.presentedMarker && this.presentationHistory.length && this.presentedMarker.frame > audibleFrame) {
+      this.presentationMarkers.unshift(this.presentedMarker)
+      this.presentedMarker = this.presentationHistory.pop()
+    }
     while (this.presentationMarkers.length && this.presentationMarkers[0].frame <= audibleFrame) {
+      if (this.presentedMarker) this.presentationHistory.push(this.presentedMarker)
       this.presentedMarker = this.presentationMarkers.shift()
     }
+    while (this.presentationHistory.length > 1 && this.presentationHistory[1].frame < this.frame - this.capacity) this.presentationHistory.shift()
     const marker = this.presentedMarker || { trackId: this.trackId, token: this.trackToken, frame: this.trackFrame, position: this.trackPosition }
     const nextMarker = this.presentationMarkers[0]
     const maxPosition = Math.min(marker.token === this.trackToken ? this.drainEndPosition ?? Infinity : Infinity,
@@ -277,11 +336,13 @@ class BkAudioEffectsProcessor extends AudioWorkletProcessor {
       epoch: this.presentationEpoch,
       position, draining: this.draining,
       contextTime: contextTimestamp, maxPosition: Number.isFinite(maxPosition) ? maxPosition : null,
-      advancing: (this.playing || this.draining) && audibleFrame >= marker.frame && position < maxPosition,
+      advancing: (this.playing || this.draining) && !this.latencyFade && audibleFrame >= marker.frame && position < maxPosition,
       latencySamples: this.enabled ? this.bridgeFrames + this.latency : 0 })
     if (force || this.frame >= this.statusReportAt) {
       this.statusReportAt = this.frame + sampleRate
       this.port.postMessage({ type: 'status', underruns: this.underruns,
+        bufferMs: this.bufferMs, bridgeFrames: this.bridgeFrames, bridgeLatencyMs: this.bridgeFrames / sampleRate * 1000,
+        maxPendingBlocks: this.maxPendingBlocks,
         latencySamples: this.enabled ? this.bridgeFrames + this.latency : 0, bypassed: !this.hostAvailable })
     }
   }
@@ -297,7 +358,7 @@ class BkAudioEffectsProcessor extends AudioWorkletProcessor {
       return true
     }
     for (let offset = 0; offset < frames; offset++) {
-      if (this.presentationMarkers[0]?.frame <= this.frame - (this.enabled ? this.bridgeFrames + this.latency : 0)) {
+      if (this.presentationMarkers[0]?.frame <= this.frame - (this.enabled ? this.audibleDelay() : 0)) {
         this.report(true, currentTime + offset / sampleRate)
       }
       if (this.draining && this.frame >= this.drainUntil) {
@@ -340,16 +401,16 @@ class BkAudioEffectsProcessor extends AudioWorkletProcessor {
       this.blockOffset++
       if (this.blockOffset === this.blockFrames) {
         const sequence = this.sequence++
-        if (this.hostPort && !this.overloaded && this.pending.size < 32) {
+        if (this.hostPort && !this.overloaded && this.pending.size < this.maxPendingBlocks) {
           this.pending.add(sequence)
           this.sendHost({ type: 'audio', generation: this.generation, sequence, frames: this.blockFrames,
             sampleRate, channels: 2, tempo: this.tempo, trackId: this.trackId,
             position: Math.max(0, this.trackPosition + (this.frame + 1 - this.blockFrames - this.trackFrame) / sampleRate),
             playing: this.playing, pcm: this.block })
-        } else if (this.pending.size >= 32 && !this.overloaded) {
+        } else if (this.pending.size >= this.maxPendingBlocks && !this.overloaded) {
           this.overloaded = true
           this.hostAvailable = false
-          this.port.postMessage({ type: 'status', state: 'failed', error: '音效处理超时，已恢复原声播放；可重新启用音效重试' })
+          this.port.postMessage({ type: 'status', state: 'failed', error: '音效处理超时，暂用原声并等待恢复；可增大音效缓冲' })
         }
         this.blockOffset = 0
       }
@@ -371,18 +432,19 @@ class BkAudioEffectsProcessor extends AudioWorkletProcessor {
       let dryLeft = dryRead >= 0 ? this.dry[dryRead] : 0
       let dryRight = dryRead >= 0 ? this.dry[dryRead + 1] : 0
       if (this.latencyFade > 0) {
-        const oldFrame = wetFrame - this.previousLatency
+        const oldFrame = this.frame - Math.round(this.previousDelay)
         const oldRead = oldFrame >= 0 ? (oldFrame % this.capacity) * 2 : -1
-        const amount = this.latencyFade / Math.ceil(sampleRate * 0.01)
+        const amount = this.latencyFade / this.delayFadeFrames
         dryLeft = dryLeft * (1 - amount) + (oldRead >= 0 ? this.dry[oldRead] : 0) * amount
         dryRight = dryRight * (1 - amount) + (oldRead >= 0 ? this.dry[oldRead + 1] : 0) * amount
         this.latencyFade--
       }
-      if (!hasWet && this.wasWet) {
+      if (!hasWet && (this.wasWet || this.smoothOutput)) {
         this.fallbackCorrection[0] = this.lastOutput[0] - dryLeft
         this.fallbackCorrection[1] = this.lastOutput[1] - dryRight
         this.correctionMix = 1
       }
+      this.smoothOutput = false
       this.wasWet = hasWet
       dryLeft += this.fallbackCorrection[0] * this.correctionMix
       dryRight += this.fallbackCorrection[1] * this.correctionMix

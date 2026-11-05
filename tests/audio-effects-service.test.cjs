@@ -17,7 +17,7 @@ async function waitFor(predicate) {
   }
 }
 
-async function fixture(t, { enabled = false, chain = [], persist } = {}) {
+async function fixture(t, { enabled = false, chain = [], persist, beforeRequest } = {}) {
   await fs.mkdir(temporaryRoot, { recursive: true })
   const root = await fs.mkdtemp(path.join(temporaryRoot, 'audio-effects-service-'))
   const nativePath = path.join(root, 'host')
@@ -35,6 +35,7 @@ async function fixture(t, { enabled = false, chain = [], persist } = {}) {
       void (async () => {
         let result = true
         try {
+          await beforeRequest?.(request, this)
           if (request.operation === 'configure') {
             this.loaded = new Set(request.args.chain.map(item => item.instanceId))
             this.emit('message', { type: 'status', running: true, latencySamples: 96, sampleRate: 48000, error: '' })
@@ -264,4 +265,107 @@ test('a delayed automatic tempo save cannot overwrite a newer manual override, a
     assert.equal(stored.get('song').manualBpm, 140)
     assert.equal(tempoWrites, 3)
   } finally { release() }
+})
+
+for (const operation of ['remove', 'bypass']) {
+  test(`${operation} of an unsupported plugin rebuilds the remaining chain without reading the failed host`, async t => {
+    const setup = await fixture(t, { enabled: true, chain: [
+      { instanceId: 'healthy', pluginId: 'plugin' }, { instanceId: 'unsupported', pluginId: 'plugin' }
+    ], beforeRequest(request, child) {
+      if (request.operation === 'configure' && request.args.chain.some(item => item.instanceId === 'unsupported')) {
+        child.emit('message', { type: 'status', running: false, error: 'Unsupported plugin class' })
+        throw new Error('Unsupported plugin class')
+      }
+    } })
+    assert.equal(setup.service.getStatus().running, false)
+    const state = operation === 'remove' ? await setup.service.removePlugin('unsupported') :
+      await setup.service.setBypass({ instanceId: 'unsupported', bypassed: true })
+    assert.equal(state.running, true)
+    assert.equal(state.error, '')
+    assert.equal(state.pendingChanges, false)
+    assert.deepEqual(setup.messages.filter(message => message.operation === 'configure').at(-1).args.chain.map(item => item.instanceId), ['healthy'])
+    assert.equal(setup.messages.some(message => message.operation === 'native'), false)
+    await setup.service.retrySave()
+    assert.ok(setup.messages.filter(message => message.operation === 'native').every(message => message.args.payload.instanceId === 'healthy'))
+    if (operation === 'bypass') assert.equal(state.chain.find(item => item.instanceId === 'unsupported').bypassed, true)
+  })
+}
+
+test('a host pipe failing during removal state capture does not block persisting and applying the repaired chain', async t => {
+  let failCapture = false
+  const setup = await fixture(t, { enabled: true, chain: [{ instanceId: 'healthy', pluginId: 'plugin' }, { instanceId: 'removed', pluginId: 'plugin' }],
+    beforeRequest(request, child) {
+      if (failCapture && request.operation === 'native' && request.args.command === 'getState') {
+        failCapture = false
+        child.emit('message', { type: 'status', running: false, error: 'write EPIPE' })
+        throw new Error('write EPIPE')
+      }
+    } })
+  failCapture = true
+  const state = await setup.service.removePlugin('removed')
+  assert.equal(state.running, true)
+  assert.equal(state.error, '')
+  assert.equal(state.saveError, '')
+  assert.deepEqual(state.appliedChain.map(item => item.instanceId), ['healthy'])
+  assert.deepEqual(setup.persisted.at(-1).chain.map(item => item.instanceId), ['healthy'])
+})
+
+test('a genuine state-file write failure still protects the existing chain during removal', async t => {
+  const setup = await fixture(t, { enabled: true, chain: [{ instanceId: 'instance', pluginId: 'plugin' }] })
+  const originalRename = fs.rename
+  t.mock.method(fs, 'rename', async (source, destination) => {
+    if (destination.startsWith(path.join(setup.root, 'states') + path.sep)) throw new Error('State disk unavailable')
+    return originalRename(source, destination)
+  })
+  await assert.rejects(setup.service.removePlugin('instance'), /State disk unavailable/)
+  assert.equal(setup.service.getStatus().chain.length, 1)
+  assert.equal(setup.service.getStatus().appliedChain.length, 1)
+  assert.equal(setup.persisted.length, 0)
+})
+
+test('buffer changes are validated and durable, retaining the applied value on failure without native reconfiguration', async t => {
+  let fail = true
+  const setup = await fixture(t, { enabled: true, persist: () => { if (fail) throw new Error('disk busy') } })
+  const configurations = () => setup.messages.filter(message => message.operation === 'configure').length
+  assert.equal(setup.service.getStatus().bufferMs, 128)
+  for (const invalid of [0, 65, 1024, '256', NaN, null, {}]) await assert.rejects(setup.service.setBufferMs(invalid), /缓冲/)
+  assert.equal(setup.persisted.length, 0)
+  await assert.rejects(setup.service.setBufferMs(256), /disk busy/)
+  assert.equal(setup.service.getStatus().bufferMs, 256)
+  assert.equal(setup.service.getStatus().appliedBufferMs, 128)
+  fail = false
+  await setup.service.retrySave()
+  assert.equal(setup.service.getStatus().appliedBufferMs, 256)
+  for (const bufferMs of [64, 128, 256, 512]) {
+    await setup.service.setBufferMs(bufferMs)
+    assert.equal(setup.service.getStatus().appliedBufferMs, bufferMs)
+    assert.equal(setup.persisted.at(-1).bufferMs, bufferMs)
+  }
+  await setup.service.configure({ enabled: true, bufferMs: 128, chain: [], searchPaths: [] })
+  assert.equal(setup.service.getStatus().appliedBufferMs, 128)
+  assert.equal(configurations(), 1)
+})
+
+test('saving the buffer also applies a previously unsaved chain change once it becomes durable', async t => {
+  const setup = await fixture(t, { persist: (value, attempt) => { if (attempt === 1) throw new Error('disk busy') } })
+  await assert.rejects(setup.service.setEnabled(true), /disk busy/)
+  const state = await setup.service.setBufferMs(256)
+  assert.equal(state.appliedEnabled, true)
+  assert.equal(state.appliedBufferMs, 256)
+  assert.equal(state.pendingChanges, false)
+  assert.equal(setup.messages.filter(message => message.operation === 'configure').length, 1)
+})
+
+test('opening a bypassed plugin loads only that explicitly requested editor after restart', async t => {
+  const setup = await fixture(t, { enabled: true, chain: [
+    { instanceId: 'requested', pluginId: 'plugin', bypassed: true }, { instanceId: 'other', pluginId: 'plugin', bypassed: true }
+  ] })
+  assert.deepEqual(setup.messages.find(message => message.operation === 'configure').args.chain, [])
+  const state = await setup.service.openEditor({ instanceId: 'requested', alwaysOnTop: true })
+  assert.deepEqual(setup.messages.filter(message => message.operation === 'configure').at(-1).args.chain.map(item => item.instanceId), ['requested'])
+  assert.ok(state.chain.every(item => item.bypassed))
+  assert.equal(state.chain.find(item => item.instanceId === 'requested').editorOpen, true)
+  assert.equal(state.error, '')
+  await setup.service.retrySave()
+  assert.ok(setup.messages.filter(message => message.operation === 'native').every(message => message.args.payload.instanceId === 'requested'))
 })

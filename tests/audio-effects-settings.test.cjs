@@ -9,7 +9,7 @@ const { normalizeAudioEffects } = require('../electron/audioEffectsConfig.cjs')
 
 const flush = async () => { await new Promise(resolve => setImmediate(resolve)); await vue.nextTick() }
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
-const initialState = () => ({ revision: 1, supported: true, enabled: false, running: false, scanning: false,
+const initialState = () => ({ revision: 1, supported: true, enabled: false, bufferMs: 128, running: false, scanning: false,
   scanProgress: null, searchPaths: [], error: null, saveError: null, latencyMs: 10,
   plugins: [{ id: 'plugin-a', name: 'Test Compressor', vendor: 'Vendor A', category: 'Dynamics', version: '1.0' },
     { id: 'plugin-b', name: 'Test Delay', vendor: 'Vendor B', category: 'Delay' }],
@@ -33,13 +33,14 @@ function mount(t, options = {}) {
     onStatus(callback) { order.push('subscribe'); listener = callback; return () => { unsubscribed++ } }
   }
   for (const method of ['listPlugins', 'scan', 'cancelScan', 'chooseDirectory', 'addPlugin', 'removePlugin', 'movePlugin',
-    'setBypass', 'setEnabled', 'openEditor', 'closeEditor', 'setTempoOverride', 'retry', 'retrySave']) {
+    'setBypass', 'setEnabled', 'setBufferMs', 'openEditor', 'closeEditor', 'setTempoOverride', 'retry', 'retrySave']) {
     api[method] = async (...args) => {
       calls.push([method, ...args])
       if (options[method]) return options[method](...args)
       snapshot = structuredClone(snapshot)
       snapshot.revision++
       if (method === 'setEnabled') snapshot.enabled = args[0]
+      if (method === 'setBufferMs') snapshot.bufferMs = args[0]
       if (method === 'scan') snapshot.scanning = true
       if (method === 'cancelScan') snapshot.scanning = false
       if (method === 'setTempoOverride') {
@@ -61,8 +62,11 @@ function mount(t, options = {}) {
   }
   const motionVue = { ...vue, Transition: { inheritAttrs: false, setup(_props, { slots }) { return () => slots.default?.() } },
     TransitionGroup: { inheritAttrs: false, setup(_props, { slots }) { return () => vue.h('ol', slots.default?.()) } } }
-  const component = new Function('Vue', 'window', 'logger', compiled)(motionVue,
-    { electronAPI: options.browser ? undefined : { audioEffects: api } }, { warn() {} })
+  const select = { props: ['modelValue', 'options', 'disabled', 'busy'], emits: ['update:modelValue'],
+    setup(props, { emit }) { return () => vue.h('select', { value: props.modelValue, disabled: props.disabled, busy: props.busy,
+      onChange: event => emit('update:modelValue', Number(event.target.value)) }, props.options.map(option => vue.h('option', { value: option.value }, option.label))) } }
+  const component = new Function('Vue', 'window', 'logger', 'AnimatedSelect', compiled)(motionVue,
+    { electronAPI: options.browser ? undefined : { audioEffects: api } }, { warn() {} }, select)
   const node = (type, text = '') => ({ type, text, props: {}, children: [], parent: null,
     setAttribute(name, value) { this.props[name] = value }, removeAttribute(name) { delete this.props[name] } })
   const renderer = vue.createRenderer({
@@ -103,16 +107,16 @@ function mount(t, options = {}) {
 }
 
 test('normalization limits persistent fields, preserves repeated plugins and rejects polluted records', () => {
-  assert.deepEqual(normalizeAudioEffects(null), { enabled: false, searchPaths: [], chain: [] })
+  assert.deepEqual(normalizeAudioEffects(null), { enabled: false, bufferMs: 128, searchPaths: [], chain: [] })
   const value = normalizeAudioEffects({ enabled: true, searchPaths: [' /plugins ', '/plugins', '', 'bad\0path'],
     chain: [{ instanceId: 'a', pluginId: 'plugin-a', bypassed: true, alwaysOnTop: true, state: 'private-data' },
       { instanceId: 'b', pluginId: 'plugin-a', bypassed: 'true', alwaysOnTop: 1 },
       { instanceId: 'a', pluginId: 'duplicate' }, { instanceId: 'bad', pluginId: '__proto__' }],
     tempo: { bpm: 120 }, token: 'placeholder' })
-  assert.deepEqual(value, { enabled: true, searchPaths: ['/plugins'], chain: [
+  assert.deepEqual(value, { enabled: true, bufferMs: 128, searchPaths: ['/plugins'], chain: [
     { instanceId: 'a', pluginId: 'plugin-a', bypassed: true, alwaysOnTop: true },
     { instanceId: 'b', pluginId: 'plugin-a', bypassed: false, alwaysOnTop: false } ] })
-  assert.deepEqual(normalizeAudioEffects(JSON.parse('{"enabled":true,"__proto__":{"polluted":true}}')), { enabled: false, searchPaths: [], chain: [] })
+  assert.deepEqual(normalizeAudioEffects(JSON.parse('{"enabled":true,"__proto__":{"polluted":true}}')), { enabled: false, bufferMs: 128, searchPaths: [], chain: [] })
   assert.equal(normalizeAudioEffects({ chain: [JSON.parse('{"instanceId":"a","pluginId":"x","constructor":{}}')] }).chain.length, 0)
   assert.equal(normalizeAudioEffects(Object.create({ enabled: true, searchPaths: ['/inherited'] })).enabled, false)
   assert.equal({}.polluted, undefined)
@@ -126,6 +130,39 @@ test('normalization bounds directory, identifier and chain sizes without coercin
   assert.equal(value.searchPaths.length, 64)
   assert.equal(value.chain.length, 64)
   assert.equal(value.chain[0].instanceId, '0')
+})
+
+test('buffer preferences accept only supported durations and migrate older settings to 128ms', () => {
+  for (const bufferMs of [64, 128, 256, 512]) assert.equal(normalizeAudioEffects({ bufferMs }).bufferMs, bufferMs)
+  for (const bufferMs of [null, undefined, '256', 0, -1, 129, 8192, Infinity, {}, true]) {
+    assert.equal(normalizeAudioEffects({ bufferMs }).bufferMs, 128)
+  }
+  assert.equal(normalizeAudioEffects(Object.create({ bufferMs: 512 })).bufferMs, 128)
+})
+
+test('buffer choice saves through the service after the parent barrier and failures remain retryable', async t => {
+  let fail = true
+  const snapshot = initialState()
+  const ui = mount(t, { setBufferMs: async bufferMs => {
+    if (fail) throw new Error('缓冲设置保存失败')
+    return { ...snapshot, revision: 2, bufferMs }
+  } })
+  await flush()
+  assert.equal(ui.byId('effects-buffer').props.value, 128)
+  assert.deepEqual(ui.byId('effects-buffer').children.map(item => item.props.value), [64, 128, 256, 512])
+  ui.byId('effects-buffer').props.onChange({ target: { value: '256' } })
+  await flush()
+  assert.equal(ui.order.at(-1), 'save')
+  assert.deepEqual(ui.calls, [['setBufferMs', 256]])
+  assert.equal(ui.byId('effects-buffer').props.value, 128)
+  assert.match(ui.text(), /缓冲设置保存失败/)
+  fail = false
+  await ui.button('重试').props.onClick()
+  await flush()
+  assert.equal(ui.byId('effects-buffer').props.value, 256)
+  ui.byId('effects-buffer').props.onChange({ target: { value: '999' } })
+  await flush()
+  assert.equal(ui.calls.length, 2)
 })
 
 test('imported instance identifiers match native editor events while missing-plugin identifiers remain portable', () => {
@@ -291,8 +328,8 @@ test('plugin latency is distinct from the sample-rate-aligned audio bridge buffe
   const ui = mount(t, { snapshot: { ...initialState(), enabled: true, running: true, sampleRate: 44100, latencyMs: 12 } })
   await flush()
   assert.match(ui.text(), /插件延迟 12 ms/)
-  assert.match(ui.text(), /约 66.76 ms 音频缓冲/)
-  ui.publish({ ...initialState(), revision: 2, enabled: true, running: true, sampleRate: 48000, latencyMs: 12 })
+  assert.match(ui.text(), /约 130.61 ms 音频缓冲/)
+  ui.publish({ ...initialState(), revision: 2, enabled: true, running: true, bufferMs: 256, appliedBufferMs: 64, sampleRate: 48000, latencyMs: 12 })
   await flush()
   assert.match(ui.text(), /约 64 ms 音频缓冲/)
 })
@@ -301,7 +338,7 @@ test('host readiness follows the applied switch while a disabled retained host n
   const ui = mount(t, { snapshot: { ...initialState(), running: true, enabled: false } })
   await flush()
   assert.match(ui.text(), /音频效果已关闭/)
-  assert.doesNotMatch(ui.text(), /效果链已就绪|正在处理音频|音频缓冲/)
+  assert.doesNotMatch(ui.text(), /效果链已就绪|正在处理音频|音效处理另有约/)
   ui.publish({ ...initialState(), revision: 2, running: true, enabled: true, appliedEnabled: false, pendingChanges: true })
   await flush()
   assert.match(ui.text(), /音频效果已关闭/)

@@ -27,7 +27,7 @@ function createAudioEffectsIntegration({ app, ipcMain, protocol, utilityProcess,
     })
   }
   for (const operation of ['getStatus', 'listPlugins', 'scan', 'cancelScan', 'addPlugin', 'removePlugin', 'movePlugin',
-    'setBypass', 'setEnabled', 'openEditor', 'closeEditor', 'setTempoOverride', 'retry', 'retrySave']) {
+    'setBypass', 'setEnabled', 'setBufferMs', 'openEditor', 'closeEditor', 'setTempoOverride', 'retry', 'retrySave']) {
     handle(operation, request => service[operation](request))
   }
   handle('chooseDirectory', async (_request, event) => {

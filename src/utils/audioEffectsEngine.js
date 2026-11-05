@@ -1,5 +1,6 @@
 const BLOCK_FRAMES = 512
 const PORT_TIMEOUT_MS = 10000
+const BUFFER_OPTIONS_MS = [64, 128, 256, 512]
 let connectionSequence = 0
 
 /** Transfer the one-use audio capability without exposing Electron IPC to the page. */
@@ -48,7 +49,7 @@ function bounded(value, fallback = 0) {
  * owns deck gains, post-effect volume and the audible clock, never a second queue.
  */
 export function createAudioEffectsEngine({ api = globalThis.window?.electronAPI?.audioEffects, onStatus = () => {}, onTempo = () => {},
-  onPresentation = () => {}, AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext,
+  onPresentation = () => {}, bufferMs = 128, AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext,
   AudioWorkletNodeClass = globalThis.AudioWorkletNode, page = globalThis.window,
   workletUrl = new URL('audio-effects-worklet.js', globalThis.document?.baseURI || 'http://localhost/').href } = {}) {
   const decks = new Map()
@@ -60,6 +61,7 @@ export function createAudioEffectsEngine({ api = globalThis.window?.electronAPI?
   let initialized = null
   let disposed = false
   let desiredEnabled = false
+  let desiredBufferMs = BUFFER_OPTIONS_MS.includes(bufferMs) ? bufferMs : 128
   let volume = 1
   let muted = false
   let activeAudio = null
@@ -75,6 +77,7 @@ export function createAudioEffectsEngine({ api = globalThis.window?.electronAPI?
   let connectedGeneration = null
   let reconnecting = null
   let attemptedGeneration = null
+  let statusRevision = -1
   const initializationAbort = typeof globalThis.AbortController === 'function' ? new globalThis.AbortController() : null
   let status = { ready: false, enabled: false, latencySamples: 0, sampleRate: 0 }
 
@@ -101,6 +104,16 @@ export function createAudioEffectsEngine({ api = globalThis.window?.electronAPI?
 
   const handleStatus = value => {
     if (disposed || !value || typeof value !== 'object') return
+    // The initial read can finish after a newer pushed snapshot. Worklet reports
+    // use emitStatus directly and never participate in this service revision.
+    if (Number.isSafeInteger(value.revision)) {
+      if (value.revision < statusRevision) return
+      statusRevision = value.revision
+    }
+    if (Object.hasOwn(value, 'appliedBufferMs') || Object.hasOwn(value, 'bufferMs')) {
+      const requested = value.appliedBufferMs ?? value.bufferMs
+      engine.setBufferMs(BUFFER_OPTIONS_MS.includes(requested) ? requested : 128)
+    }
     if (value.type === 'tempo' || (value.tempo && typeof value.tempo === 'object') || Number.isFinite(value.bpm)) {
       const tempo = value.tempo || value
       if (!tempo.trackId || tempo.trackId === activeTrackId) {
@@ -116,7 +129,7 @@ export function createAudioEffectsEngine({ api = globalThis.window?.electronAPI?
     // A host failure uses the worklet's aligned dry audio; it does not tear down the clock.
     if (value.error || value.state === 'failed') send({ type: 'host-state', available: false })
     if ((value.state === 'ready' || value.available === true || value.running === true) && !value.reconnectRequired && !reconnecting) send({ type: 'host-state', available: true })
-    emitStatus(value)
+    emitStatus({ ...value, bufferMs: desiredBufferMs })
     if (Number.isSafeInteger(value.audioConnectionGeneration)) {
       if (!value.reconnectRequired && !reconnecting) connectedGeneration = value.audioConnectionGeneration
       else if (value.reconnectRequired && value.running && value.audioConnectionGeneration !== connectedGeneration &&
@@ -148,7 +161,7 @@ export function createAudioEffectsEngine({ api = globalThis.window?.electronAPI?
         worklet = new AudioWorkletNodeClass(context, 'bk-audio-effects', {
           numberOfInputs: 2, numberOfOutputs: 1, outputChannelCount: [2],
           channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers',
-          processorOptions: { blockFrames: BLOCK_FRAMES, bridgeFrames: Math.ceil(context.sampleRate * 0.064 / 128) * 128 }
+          processorOptions: { blockFrames: BLOCK_FRAMES, bufferMs: desiredBufferMs }
         })
         worklet.port.onmessage = event => {
           if (disposed) return
@@ -174,7 +187,7 @@ export function createAudioEffectsEngine({ api = globalThis.window?.electronAPI?
         worklet.port.postMessage({ type: 'connect', port }, [port])
         send({ type: 'enabled', value: desiredEnabled, epoch: presentationEpoch })
         unsubscribe = api?.onStatus?.(handleStatus) || null
-        emitStatus({ ready: true, enabled: desiredEnabled, sampleRate: context.sampleRate })
+        emitStatus({ ready: true, enabled: desiredEnabled, bufferMs: desiredBufferMs, sampleRate: context.sampleRate })
         Promise.resolve(api?.getStatus?.()).then(handleStatus, error => emitStatus({ error: error.message }))
         return engine
       })().catch(async error => {
@@ -298,6 +311,17 @@ export function createAudioEffectsEngine({ api = globalThis.window?.electronAPI?
       onPresentation(engine.getPresentedPlayback())
     },
 
+    /** Change only the bridge budget; retain media sources, plugin state and the last presented clock until its acknowledgement. */
+    setBufferMs(value) {
+      if (!BUFFER_OPTIONS_MS.includes(value) || disposed) return false
+      if (value === desiredBufferMs) return true
+      desiredBufferMs = value
+      presentationEpoch++
+      send({ type: 'buffer', bufferMs: value, epoch: presentationEpoch })
+      emitStatus({ bufferMs: value })
+      return true
+    },
+
     setTempo(value) {
       automaticTempo = value?.automatic !== false
       send({ type: 'tempo', bpm: Number.isFinite(value?.bpm) ? value.bpm : null,
@@ -323,6 +347,7 @@ export function createAudioEffectsEngine({ api = globalThis.window?.electronAPI?
     },
 
     get activePresentationToken() { return activeTrackToken },
+    get bufferMs() { return desiredBufferMs },
 
     get ready() { return !!status.ready && !disposed },
     get graphReady() { return !!context && !!master && !!mix && !disposed },

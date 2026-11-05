@@ -17,6 +17,10 @@
 
     <fieldset :disabled="locked" class="effects-controls">
       <legend class="sr-only">音频效果设置</legend>
+      <section class="effects-section" aria-labelledby="effects-buffer-heading">
+        <div class="section-heading"><div><h4 id="effects-buffer-heading">音频缓冲</h4><p id="effects-buffer-note">出现杂音或处理超时时可调高。缓冲越大，声音响应越慢；歌词会跟随实际播放时间。</p></div></div>
+        <AnimatedSelect id="effects-buffer" label="音频缓冲" aria-describedby="effects-buffer-note" :model-value="state.bufferMs ?? 128" :options="bufferOptions" :disabled="locked" :busy="pending === 'setBufferMs'" @update:model-value="setBufferMs" />
+      </section>
       <section class="effects-section" aria-labelledby="effects-chain-heading">
         <div class="section-heading"><div><h4 id="effects-chain-heading">效果链</h4><p>声音按从上到下的顺序处理，可拖动或使用排序按钮。</p></div><span class="effects-count">{{ state.chain.length }} / 64</span></div>
         <p v-if="!state.chain.length" class="effects-empty">从下方插件列表添加第一个效果。</p>
@@ -68,11 +72,12 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { logger } from '../../utils/logger.js'
+import AnimatedSelect from './AnimatedSelect.vue'
 
 const props = defineProps({ beforeAction: { type: Function, default: async () => true } })
 const api = window.electronAPI?.audioEffects
 const available = Boolean(api?.getStatus && api?.onStatus)
-const state = ref({ revision: -1, supported: available, enabled: false, running: false, scanning: false,
+const state = ref({ revision: -1, supported: available, enabled: false, bufferMs: 128, running: false, scanning: false,
   scanProgress: null, plugins: [], chain: [], searchPaths: [], latencyMs: null, error: null, saveError: null,
   tempo: { trackId: null, bpm: null, automaticBpm: null, manualBpm: null, status: 'idle' } })
 const query = ref('')
@@ -94,9 +99,17 @@ let actionVersion = 0
 let readingStatus = false
 const locked = computed(() => !available || state.value.supported === false || loading.value || Boolean(pending.value))
 const appliedEnabled = computed(() => (state.value.appliedEnabled ?? state.value.enabled) === true)
+const bufferOptions = [
+  { value: 64, label: '64 ms · 低延迟' },
+  { value: 128, label: '128 ms · 推荐' },
+  { value: 256, label: '256 ms · 更稳妥' },
+  { value: 512, label: '512 ms · 大缓冲' }
+]
+const setBufferMs = value => runAction('setBufferMs', [value], () => bufferOptions.some(option => option.value === value))
 const bridgeLatencyMs = computed(() => {
   const sampleRate = Number.isFinite(state.value.sampleRate) && state.value.sampleRate > 0 ? state.value.sampleRate : 48000
-  return formatNumber(Math.ceil(sampleRate * 0.064 / 128) * 128 / sampleRate * 1000)
+  const bufferMs = state.value.appliedBufferMs ?? state.value.bufferMs ?? 128
+  return formatNumber(Math.ceil(sampleRate * bufferMs / 1000 / 128) * 128 / sampleRate * 1000)
 })
 const filteredPlugins = computed(() => {
   const search = query.value.trim().toLocaleLowerCase()

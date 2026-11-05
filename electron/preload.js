@@ -21,6 +21,7 @@ const electronAPI = {
     movePlugin: request => ipcRenderer.invoke('audio-effects:movePlugin', request),
     setBypass: request => ipcRenderer.invoke('audio-effects:setBypass', request),
     setEnabled: enabled => ipcRenderer.invoke('audio-effects:setEnabled', enabled),
+    setBufferMs: bufferMs => ipcRenderer.invoke('audio-effects:setBufferMs', bufferMs),
     openEditor: request => ipcRenderer.invoke('audio-effects:openEditor', request),
     closeEditor: id => ipcRenderer.invoke('audio-effects:closeEditor', id),
     setTempoOverride: request => ipcRenderer.invoke('audio-effects:setTempoOverride', request),

@@ -3,7 +3,7 @@ const fsp = require('node:fs/promises')
 const path = require('node:path')
 const os = require('node:os')
 const crypto = require('node:crypto')
-const { normalizeAudioEffects } = require('../audioEffectsConfig.cjs')
+const { normalizeAudioEffects, AUDIO_EFFECTS_BUFFER_MS_OPTIONS } = require('../audioEffectsConfig.cjs')
 
 const identifier = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(value)
 const digest = value => crypto.createHash('sha256').update(value).digest('hex')
@@ -69,6 +69,7 @@ function createAudioEffectsService({ root, nativePath, workerPath, utilityProces
   let stopped = false, faulted = false, running = false, latencySamples = 0, tailSamples = 0, sampleRate = 48000
   let error = '', saveError = '', scanning = false, scanEpoch = 0, scanProgress = null, scanErrors = []
   let registry = new Map(), states = new Map(), editors = new Map(), tempoCache = new Map()
+  let loadedInstances = new Set()
   let tempo = { trackId: '', bpm: 120, automaticBpm: null, manualBpm: null, status: 'waiting' }
   let mutations = Promise.resolve(), saveTask = Promise.resolve(), configureTask = Promise.resolve(), saveTimer = null, stoppingTask = null
   let connectionTask = Promise.resolve()
@@ -81,6 +82,7 @@ function createAudioEffectsService({ root, nativePath, workerPath, utilityProces
   const describeChain = value => value.chain.map(item => ({ ...item, name: registry.get(item.pluginId)?.name || '未找到的插件',
     missing: !registry.has(item.pluginId), ...editors.get(item.instanceId) }))
   const getStatus = () => ({ revision, supported, enabled: config.enabled, appliedEnabled: appliedConfig.enabled,
+    bufferMs: config.bufferMs, appliedBufferMs: canonicalConfig.bufferMs,
     appliedChain: describeChain(appliedConfig), pendingChanges: configPending || runtimeSignature(config) !== runtimeSignature(appliedConfig),
     audioConnectionGeneration, reconnectRequired,
     running, scanning, scanProgress,
@@ -109,6 +111,7 @@ function createAudioEffectsService({ root, nativePath, workerPath, utilityProces
     for (const task of pending.values()) { clearTimeout(task.timer); task.reject(new Error(error)) }
     pending.clear()
     editors.clear()
+    loadedInstances.clear()
     try { child.kill?.() } catch (failure) { logger.warn('audio-effects', '结束失效音效进程失败', failure) }
     publish()
   }
@@ -144,7 +147,7 @@ function createAudioEffectsService({ root, nativePath, workerPath, utilityProces
         if (Number.isFinite(data.latencySamples)) latencySamples = data.latencySamples
         if (Number.isSafeInteger(data.tailSamples) && data.tailSamples >= -1) tailSamples = data.tailSamples
         if (typeof data.error === 'string') { error = cleanText(data.error); if (error) faulted = true }
-        if (!running && !data.reconfiguring) editors.clear()
+        if (!running && !data.reconfiguring) { editors.clear(); loadedInstances.clear() }
         if (data.dirty === true) scheduleSave()
         publish()
       } else if (data.type === 'editor') {
@@ -174,30 +177,37 @@ function createAudioEffectsService({ root, nativePath, workerPath, utilityProces
     return workerReady
   }
 
-  async function nativeChain(desired = config) {
+  async function nativeChain(desired = config, loadInstanceId = null) {
     const result = []
     for (const item of desired.chain) {
       const plugin = registry.get(item.pluginId)
       if (!plugin) continue
+      const existing = running && loadedInstances.has(item.instanceId) &&
+        appliedConfig.chain.some(active => active.instanceId === item.instanceId && active.pluginId === item.pluginId)
+      // A failed module must not be loaded again just to bypass it. Keep already
+      // loaded bypassed instances so their editor and state remain available.
+      if (item.bypassed && !existing && item.instanceId !== loadInstanceId) continue
       if (!states.has(item.instanceId)) states.set(item.instanceId, await readJson(stateFile(item.instanceId), null))
-      const existing = running && appliedConfig.chain.some(active => active.instanceId === item.instanceId && active.pluginId === item.pluginId)
       result.push({ ...item, path: plugin.path, classId: plugin.classId, state: existing ? undefined : states.get(item.instanceId) || undefined })
     }
     return result
   }
 
-  function applyRuntime() {
+  function applyRuntime({ recover = false, loadInstanceId = null } = {}) {
     configureTask = configureTask.catch(() => {}).then(async () => {
-      if (stopped || faulted || configPending) return
+      if (stopped || configPending || (faulted && !recover)) return
+      if (recover) { faulted = false; error = '' }
       const desired = normalizeAudioEffects(config)
       if (!desired.enabled && !worker) { appliedConfig = desired; publish(); return }
       await ensureWorker()
       if (stopped) return
-      await rpc('configure', { enabled: desired.enabled, chain: await nativeChain(desired) })
+      const native = await nativeChain(desired, loadInstanceId)
+      await rpc('configure', { enabled: desired.enabled, chain: native })
+      loadedInstances = new Set(running ? native.map(item => item.instanceId) : [])
       appliedConfig = desired
       publish()
       if (desired.enabled) scheduleSave()
-    }).catch(failure => { error = message(failure); faulted = true; running = false; publish(); throw failure })
+    }).catch(failure => { error = message(failure); faulted = true; running = false; loadedInstances.clear(); publish(); throw failure })
     return configureTask
   }
 
@@ -209,13 +219,20 @@ function createAudioEffectsService({ root, nativePath, workerPath, utilityProces
     return saveTask
   }
 
-  function saveStates() {
+  function saveStates({ allowUnavailable = false } = {}) {
     saveTask = saveTask.catch(() => {}).then(async () => {
       try {
-        if (running && worker) {
+        if (running && worker && !faulted) {
           for (const item of appliedConfig.chain) {
-            if (!registry.has(item.pluginId)) continue
-            const state = await rpc('native', { command: 'getState', payload: { instanceId: item.instanceId } })
+            if (!registry.has(item.pluginId) || !loadedInstances.has(item.instanceId)) continue
+            const owner = worker
+            let state
+            try { state = await rpc('native', { command: 'getState', payload: { instanceId: item.instanceId } }) }
+            catch (failure) {
+              if (!allowUnavailable || (running && !faulted && worker === owner)) throw failure
+              logger.warn('audio-effects', '音效进程已失效，保留上次参数快照并继续修改效果链', failure)
+              break
+            }
             if (!state || typeof state.component !== 'string') throw new Error('插件未返回可恢复的参数')
             states.set(item.instanceId, state)
             await writeJson(stateFile(item.instanceId), state)
@@ -280,7 +297,9 @@ function createAudioEffectsService({ root, nativePath, workerPath, utilityProces
       if (JSON.stringify(canonicalConfig) === serialized) return getStatus()
       if (configPending) saveError = ''
       config = normalized; canonicalConfig = normalizeAudioEffects(normalized); configPending = false
-      publish(); await applyRuntime(); return getStatus()
+      publish()
+      if (runtimeSignature(config) !== runtimeSignature(appliedConfig)) await applyRuntime({ recover: true })
+      return getStatus()
     })
   }
 
@@ -338,10 +357,10 @@ function createAudioEffectsService({ root, nativePath, workerPath, utilityProces
     }),
     removePlugin: instanceId => mutate(async () => {
       if (!config.chain.some(item => item.instanceId === instanceId)) throw new Error('插件实例不存在')
-      await saveStates()
+      await saveStates({ allowUnavailable: true })
       await commit({ ...config, chain: config.chain.filter(item => item.instanceId !== instanceId) })
       editors.delete(instanceId)
-      await applyRuntime(); return getStatus()
+      await applyRuntime({ recover: true }); return getStatus()
     }),
     movePlugin: ({ instanceId, index } = {}) => mutate(async () => {
       if (!Number.isInteger(index) || index < 0 || index >= config.chain.length) throw new Error('插件位置无效')
@@ -353,20 +372,31 @@ function createAudioEffectsService({ root, nativePath, workerPath, utilityProces
     setBypass: ({ instanceId, bypassed } = {}) => mutate(async () => {
       if (typeof bypassed !== 'boolean' || !config.chain.some(item => item.instanceId === instanceId)) throw new Error('插件旁路状态无效')
       await commit({ ...config, chain: config.chain.map(item => item.instanceId === instanceId ? { ...item, bypassed } : item) })
-      if (running && appliedConfig.chain.some(item => item.instanceId === instanceId)) {
-        await rpc('native', { command: 'setBypass', payload: { instanceId, bypassed } })
-        appliedConfig = normalizeAudioEffects({ ...appliedConfig, chain: appliedConfig.chain.map(item => item.instanceId === instanceId ? { ...item, bypassed } : item) })
-      } else await applyRuntime()
+      if (running && !faulted && loadedInstances.has(instanceId)) {
+        try {
+          await rpc('native', { command: 'setBypass', payload: { instanceId, bypassed } })
+          appliedConfig = normalizeAudioEffects({ ...appliedConfig, chain: appliedConfig.chain.map(item => item.instanceId === instanceId ? { ...item, bypassed } : item) })
+        } catch (failure) {
+          if (!faulted && running) throw failure
+          await applyRuntime({ recover: true })
+        }
+      } else await applyRuntime({ recover: true })
       return publish()
     }),
     setEnabled: enabled => mutate(async () => {
       if (typeof enabled !== 'boolean') throw new Error('音效开关无效')
-      if (!enabled) await saveStates()
-      faulted = false; error = ''
-      await commit({ ...config, enabled }); await applyRuntime(); return getStatus()
+      if (!enabled) await saveStates({ allowUnavailable: true })
+      await commit({ ...config, enabled }); await applyRuntime({ recover: true }); return getStatus()
+    }),
+    setBufferMs: bufferMs => mutate(async () => {
+      if (!AUDIO_EFFECTS_BUFFER_MS_OPTIONS.includes(bufferMs)) throw new Error('音频缓冲必须为 64、128、256 或 512 毫秒')
+      await commit({ ...config, bufferMs })
+      if (runtimeSignature(config) !== runtimeSignature(appliedConfig)) await applyRuntime({ recover: true })
+      return publish()
     }),
     openEditor: ({ instanceId, alwaysOnTop = false } = {}) => mutate(async () => {
       if (!config.chain.some(item => item.instanceId === instanceId) || typeof alwaysOnTop !== 'boolean') throw new Error('插件窗口请求无效')
+      if (!loadedInstances.has(instanceId)) await applyRuntime({ recover: true, loadInstanceId: instanceId })
       await rpc('native', { command: 'openEditor', payload: { instanceId, alwaysOnTop } })
       editors.set(instanceId, { editorOpen: true })
       appliedConfig = normalizeAudioEffects({ ...appliedConfig, chain: appliedConfig.chain.map(item => item.instanceId === instanceId ? { ...item, alwaysOnTop } : item) })
@@ -385,11 +415,11 @@ function createAudioEffectsService({ root, nativePath, workerPath, utilityProces
       tempoCache.set(trackId, { ...tempoCache.get(trackId), manualBpm: bpm, automaticBpm: tempo.automaticBpm, algorithm: 1 })
       await rpc('tempo', { trackId, bpm: tempo.bpm }); await saveTempo(); return publish()
     }),
-    retry: () => mutate(async () => { faulted = false; error = ''; await applyRuntime(); return publish() }),
+    retry: () => mutate(async () => { await applyRuntime({ recover: true }); return publish() }),
     retrySave: () => mutate(async () => {
       try { await persistConfig(config); canonicalConfig = normalizeAudioEffects(config); configPending = false }
       catch (failure) { configPending = true; saveError = message(failure); publish(); throw failure }
-      if (runtimeSignature(config) !== runtimeSignature(appliedConfig)) await applyRuntime()
+      if (runtimeSignature(config) !== runtimeSignature(appliedConfig)) await applyRuntime({ recover: true })
       await saveStates()
       return publish()
     }),
@@ -411,6 +441,7 @@ function createAudioEffectsService({ root, nativePath, workerPath, utilityProces
         clearTimeout(saveTimer); saveTimer = null
         running = false
         editors.clear()
+        loadedInstances.clear()
         appliedConfig = normalizeAudioEffects()
         tempo = { trackId: '', bpm: 120, automaticBpm: null, manualBpm: null, status: 'waiting' }
         publish()

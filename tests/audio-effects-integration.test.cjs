@@ -9,7 +9,7 @@ const { createAudioEffectsMedia } = require('../electron/services/audioEffectsMe
 
 const root = path.join(__dirname, '..')
 const operations = ['getStatus', 'listPlugins', 'scan', 'cancelScan', 'addPlugin', 'removePlugin', 'movePlugin',
-  'setBypass', 'setEnabled', 'openEditor', 'closeEditor', 'setTempoOverride', 'retry', 'retrySave']
+  'setBypass', 'setEnabled', 'setBufferMs', 'openEditor', 'closeEditor', 'setTempoOverride', 'retry', 'retrySave']
 const capabilities = [...operations, 'chooseDirectory', 'acquireMedia', 'releaseMedia', 'connectAudio']
 const quiet = Object.fromEntries(['trace', 'debug', 'info', 'warn', 'error'].map(name => [name, () => {}]))
 const flush = () => new Promise(resolve => setImmediate(resolve))

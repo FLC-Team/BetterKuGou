@@ -73,7 +73,7 @@ const baseDefaultSettings = Object.freeze({
   islandLyrics: normalizeIslandLyrics(),
   taskbarLyrics: normalizeTaskbarLyrics(),
   // Native effect commands consume the main process's canonical configuration, not a page draft.
-  audioEffects: { enabled: false, searchPaths: [], chain: [] },
+  audioEffects: { enabled: false, bufferMs: 128, searchPaths: [], chain: [] },
   download: {
     offlinePlaylistCacheEnabled: true,
     offlineCachePath: '',

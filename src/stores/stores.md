@@ -13,7 +13,7 @@
 - `useSettingsStore()` 暴露稳定的 `settings` 引用和 ready/loading/error/revision 状态。
 - `initSettings()` 复用初始化 Promise，并发读取 `window.settingsAPI` 的默认设置、默认目录与已保存设置，再统一补全、应用主题并就绪；任一读取失败沿用对应回退，浏览器回退 LocalStorage。
 - 默认分组为 playback/audioEffects/desktopLyrics/islandLyrics/taskbarLyrics/download/custom/shortcuts/software/session，Schema 版本为 1。
-- `audioEffects` 默认 `{ enabled: false, searchPaths: [], chain: [] }`，主进程共用规范化模块白名单保存，沿现有设置事务及导入导出。插件扫描结果、二进制状态、节拍缓存、运行状态不进入设置；设置页由音效服务管理此分组，避免普通页面草稿回写覆盖链。
+- `audioEffects` 默认 `{ enabled: false, bufferMs: 128, searchPaths: [], chain: [] }`，缓冲限定 64/128/256/512ms；主进程共用规范化模块白名单保存，沿现有设置事务及导入导出。插件扫描结果、二进制状态、节拍缓存、运行状态不进入设置；设置页由音效服务管理此分组，避免普通页面草稿回写覆盖链。
 - 当前版本的设置也按默认值补全缺失分组，保留已保存的用户选择。
 - 关闭偏好复用 software：`promptBeforeClose` 默认 true，缺失/非法类型回退 true；`minimizeToTray` 默认 false，仅布尔 true 表示托盘。关闭提示的成功写入会同步原 store，设置草稿仍保留未提交字段；导入、重置和保存使用相同双端补全规则。
 - 主题包列表保存在 `custom.themePackages`，选择的包 ID 使用原 `custom.theme`；旧配置自动补全空列表，不迁移或删除已有配色。

@@ -76,6 +76,23 @@ test('window close preferences prompt for old settings and preserve remembered c
   }
 })
 
+test('audio buffer preferences migrate, survive unrelated saves and restart, and normalize imports', async () => {
+  const { store, app, files, settingsPath } = createStore()
+  await store.initSettingsStore(app)
+  assert.equal(store.getSettings().audioEffects.bufferMs, 128)
+  await store.setSettings({ audioEffects: { bufferMs: 512 } })
+  await store.setSettings({ playback: { quality: '320' } })
+  const reopened = createStore()
+  reopened.files.set(reopened.settingsPath, files.get(settingsPath))
+  await reopened.store.initSettingsStore(reopened.app)
+  assert.equal(reopened.store.getSettings().audioEffects.bufferMs, 512)
+  for (const bufferMs of [64, 128, 256, 512, '512', 0, 10000]) {
+    files.set('/buffer-import.json', JSON.stringify({ audioEffects: { bufferMs } }))
+    await store.importSettings('/buffer-import.json')
+    assert.equal(store.getSettings().audioEffects.bufferMs, [64, 128, 256, 512].includes(bufferMs) ? bufferMs : 128)
+  }
+})
+
 test('imported close preferences accept only boolean values and keep prompting on malformed input', async () => {
   const { store, app, files } = createStore()
   await store.initSettingsStore(app)

@@ -9,7 +9,7 @@
 - `logger.js`：日志级别过滤、统一脱敏、最多保留 500 条记录及主进程日志桥接。
 - `themeManager.js`：主题包解析、旧 dark/light/system/custom 模式兼容、系统配色监听、完整 CSS 变量/限定作用域 CSS 应用、草稿预览取消及视觉快照导出。
 - `objectUtils.js`：深拷贝、原地合并、响应式内容替换和可写副本。
-- `audioEffectsEngine.js`：CORS 已授权的双 deck WebAudio 图，每个元素复用唯一 source；淡化位于插件前，主音量与静音位于插件后。通过限定连接握手把专用 MessagePort 直接转交 AudioWorklet，utility 进程重建后按连接代次重新握手而不重建媒体 source。输入 track/token 与延迟输出呈现身份分开；`getPresentedPlayback()` 返回实际可听曲目及位置，连续同源循环只添加标记、不重置 DSP 队列。显式 seek/效果启停携带呈现代次，拒绝同曲目的旧回执，暂停冻结旧输出时钟。保持媒体事务与播放队列由播放器持有；提供原始音频 BPM tap、自然结束尾音、跳转与停止清理，以及处理器异常后的原声回退。
+- `audioEffectsEngine.js`：CORS 已授权的双 deck WebAudio 图，每个元素复用唯一 source；淡化位于插件前，主音量与静音位于插件后。通过限定连接握手把专用 MessagePort 直接转交 AudioWorklet，utility 进程重建后按连接代次重新握手而不重建媒体 source。`setBufferMs()` 接受 64/128/256/512ms、默认 128ms，并自动读取服务快照的 `appliedBufferMs ?? bufferMs`；服务 revision 拒绝迟到旧快照，不影响音频线程状态上报。输入 track/token 与延迟输出呈现身份分开；`getPresentedPlayback()` 返回实际可听曲目及位置，连续同源循环只添加标记、不重置 DSP 队列。显式 seek/效果启停/缓冲调整携带呈现代次，拒绝同曲目的旧回执；缓冲调整保留最后呈现时钟直至新回执，暂停冻结旧输出时钟。保持媒体事务与播放队列由播放器持有；提供原始音频 BPM tap、自然结束尾音、跳转与停止清理，以及处理器异常后的原声回退。
 - `contextMenuManager.js`：管理一个活动菜单关闭回调。
 - `playbackQuality.js`：普通音质选项及菜单的名称/格式/短标签、偏好规范化及依据响应格式/码率（含驼峰历史字段）确认当前音源信息，缺少格式时读取实际首条播放地址路径扩展名；不读取查询参数/备用地址，不凭格式推断码率或以偏好推断实际无损。
 - `playbackTransition.js`：供 MusicPlayer 双音频元素管理复用的取消/15秒超时等待、候选音源 canplay 就绪、线性且有界的音量增益包络及只读导航选择器；预览下一首不提前消费队列或修改随机顺序。
