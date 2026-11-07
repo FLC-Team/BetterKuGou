@@ -5,11 +5,12 @@ const validRect = value => value && ['x', 'y', 'width', 'height'].every(key => N
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
 const same = (first, second) => JSON.stringify(first) === JSON.stringify(second)
 
-/** Use only verified free horizontal taskbar space. Unknown layouts float above the bar. */
+/** Suppress hidden bars; use only verified free space for placement inside a shown bar. */
 function taskbarLayout({ display, bar, preferences = {}, contentSize = {} }) {
   const area = display.bounds || display.workArea
   const work = display.workArea || area
   const edge = bar?.edge || (work.y > area.y ? 'top' : work.x > area.x ? 'left' : work.width < area.width ? 'right' : 'bottom')
+  if (bar?.hidden === true) return { hidden: true, embedded: false, edge, availableWidth: 0, warning: '' }
   const desired = preferences.adaptive === false ? 480 : clamp(contentSize.width || 420, 120, 8192)
   const maximum = preferences.maxWidth > 0 ? preferences.maxWidth : 8192
   const requestedHeight = clamp(contentSize.height || (preferences.doubleLine === false ? 32 : 42), 24, 120)
@@ -28,9 +29,7 @@ function taskbarLayout({ display, bar, preferences = {}, contentSize = {} }) {
     const usable = free.filter(([left, right]) => right - left >= 120)
     interval = preferences.region === 'start' ? usable[0] : preferences.region === 'end' ? usable.at(-1) : usable.sort((a, b) => (b[1] - b[0]) - (a[1] - a[0]))[0]
   }
-  const taskbarVisible = bar?.visible !== false && validRect(bar?.bounds) &&
-    bar.bounds.y >= area.y && bar.bounds.y + bar.bounds.height <= area.y + area.height
-  const inTaskbar = Boolean(interval) && taskbarVisible
+  const inTaskbar = Boolean(interval)
   const embedded = preferences.embed !== false && inTaskbar
   let width, height, x, y
   const align = preferences.windowAlignment || 'auto'
@@ -51,7 +50,7 @@ function taskbarLayout({ display, bar, preferences = {}, contentSize = {} }) {
   }
   return { bounds: { x: Math.round(x), y: Math.round(y), width, height }, embedded, edge,
     availableWidth: interval ? Math.floor(interval[1] - interval[0]) : work.width,
-    warning: !bar ? '未检测到任务栏，已使用悬浮模式。' : !['top', 'bottom'].includes(edge) ? '竖向任务栏使用悬浮模式。' : !taskbarVisible ? '任务栏已隐藏或正在移动，暂时使用悬浮模式。' : !interval ? '任务栏没有足够的可用空间，已使用悬浮模式。' : '' }
+    warning: !bar ? '未检测到任务栏，已使用悬浮模式。' : !['top', 'bottom'].includes(edge) ? '竖向任务栏使用悬浮模式。' : !interval ? '任务栏没有足够的可用空间，已使用悬浮模式。' : '' }
 }
 
 /** Owns one auxiliary window and one bounded native helper; playback stays in the main player. */
@@ -91,7 +90,8 @@ function createTaskbarLyricService({ BrowserWindow, screen, preload, page, scrip
 
   /** Serialize layout and native parenting; newer settings are coalesced after an in-flight request. */
   async function fit(state) {
-    if (current !== state || state.closing || state.nativeRecovering || !state.loaded) return
+    // The initial window and preview must wait for the first taskbar observation.
+    if (current !== state || state.closing || state.nativeRecovering || !state.loaded || (!state.sampled && !state.nativeFailed)) return
     if (state.fitting) { state.refit = true; return }
     state.fitting = true
     try {
@@ -99,8 +99,23 @@ function createTaskbarLyricService({ BrowserWindow, screen, preload, page, scrip
         state.refit = false
         if (current !== state || state.closing || state.nativeRecovering || state.window.isDestroyed()) break
         const display = selectedDisplay()
-        const bar = findBar(state, display)
+        const measuredBar = findBar(state, display)
+        const bar = state.nativeFailed && !measuredBar?.hidden ? undefined : measuredBar
         let layout = taskbarLayout({ display, bar, preferences: state.nativeFailed ? { ...preferences, embed: false } : preferences, contentSize })
+        if (layout.hidden) {
+          // Keep the parent and relative placement so an embedded lyric can move with the bar.
+          if (state.nativeDetached) state.window.hide()
+          else if (state.nativeVisible) {
+            await state.bridge.request('hide')
+            if (current !== state || state.closing || state.nativeRecovering) break
+            state.nativeVisible = false
+            if (state.lastPlacement) state.lastPlacement = { ...state.lastPlacement, visible: false }
+          }
+          if (state.refit) continue
+          publish({ visible: false, embedded: !state.nativeDetached, status: 'taskbar-hidden', edge: layout.edge, availableWidth: 0,
+            warning: state.nativeFailed ? '任务栏检测不可用；关闭后重新启用可重试。' : '' })
+          continue
+        }
         const shouldShow = visible(state)
         if (state.nativeReady && !state.nativeFailed) {
           if (layout.embedded) {
@@ -111,6 +126,7 @@ function createTaskbarLyricService({ BrowserWindow, screen, preload, page, scrip
               state.needsFloatingBounds = true
               const result = await state.bridge.request('apply', command)
               if (current !== state || state.closing || state.nativeRecovering) break
+              state.nativeVisible = result.embedded && shouldShow
               if (!result.embedded) {
                 layout = taskbarLayout({ display, bar, preferences: { ...preferences, embed: false }, contentSize })
                 layout.warning = result.warning === 'dpi-mismatch' ? '任务栏与窗口的缩放模式不同，已安全切换到悬浮模式。' : '系统未允许嵌入任务栏，已切换到悬浮模式。'
@@ -129,9 +145,8 @@ function createTaskbarLyricService({ BrowserWindow, screen, preload, page, scrip
             if (current !== state || state.closing || state.nativeRecovering) break
             state.nativeDetached = true
           }
-        } else {
-          layout = taskbarLayout({ display, preferences: { ...preferences, embed: false }, contentSize })
         }
+        if (state.refit) continue
         if (!layout.embedded) {
           // Frameless Electron owns its non-client sizing. Raw SetWindowPos can remove
           // the hidden caption height, so floating placement only runs after detach.
@@ -174,9 +189,10 @@ function createTaskbarLyricService({ BrowserWindow, screen, preload, page, scrip
         : result.warning === 'sampling-failed' ? '任务栏检测暂时不可用，已使用悬浮模式。' : ''
       const convert = rect => screen.screenToDipRect ? screen.screenToDipRect(null, rect) : rect
       state.bars = (Array.isArray(result.bars) ? result.bars : []).filter(bar => /^\d+$/.test(bar?.handle) && validRect(bar.bounds) && validRect(bar.monitor)).map(bar => ({
-        handle: bar.handle, edge: ['top', 'bottom', 'left', 'right'].includes(bar.edge) ? bar.edge : 'bottom', visible: bar.visible === true, reliable: bar.reliable === true,
+        handle: bar.handle, edge: ['top', 'bottom', 'left', 'right'].includes(bar.edge) ? bar.edge : 'bottom', hidden: bar.hidden === true, reliable: bar.reliable === true,
         bounds: convert(bar.bounds), monitor: convert(bar.monitor), occupied: (Array.isArray(bar.occupied) ? bar.occupied : []).filter(validRect).map(convert)
       }))
+      state.sampled = true
       publish({ dark: result.dark !== false })
       await fit(state)
     } catch (error) { await nativeFailure(state, error) } finally { state.sampling = false }
@@ -288,7 +304,6 @@ function createTaskbarLyricService({ BrowserWindow, screen, preload, page, scrip
       if (current !== state || state.closing || isQuitting()) return
       state.loaded = true
       onReady()
-      void fit(state)
       state.finish(true)
       state.bridge = createBridge({ scriptPath, handle: win.getNativeWindowHandle(), onError: error => { void nativeFailure(state, error) } })
       void state.bridge.start().then(() => {

@@ -11,6 +11,7 @@ const bar = { handle: '123', edge: 'bottom', visible: true, reliable: true, moni
   bounds: { x: 0, y: 1032, width: 1920, height: 48 }, occupied: [
     { x: 700, y: 1032, width: 500, height: 48 }, { x: 1700, y: 1032, width: 220, height: 48 }
   ] }
+const hiddenBar = { ...bar, hidden: true, reliable: false, bounds: { ...bar.bounds, y: 1078 }, occupied: [] }
 async function settle() { for (let i = 0; i < 32; i++) await Promise.resolve() }
 
 test('embedding uses measured free space without covering task buttons or notification controls', () => {
@@ -49,16 +50,15 @@ test('unverified, crowded and vertical taskbars fall back inside the selected wo
   }
 })
 
-test('auto-hidden taskbars with reliable UIA geometry stay above the bar for both parent modes', () => {
+test('a confirmed hidden taskbar has no lyric placement in either mode', () => {
   const fullWorkArea = { ...display, workArea: display.bounds }
   for (const embed of [true, false]) {
-    for (const [edge, y] of [['bottom', 1078], ['top', -46]]) {
-      const hidden = { ...bar, edge, bounds: { ...bar.bounds, y }, occupied: [] }
-      const layout = taskbarLayout({ display: fullWorkArea, bar: hidden, preferences: { embed } })
+    for (const edge of ['bottom', 'top', 'left', 'right']) {
+      const layout = taskbarLayout({ display: fullWorkArea, bar: { ...hiddenBar, edge }, preferences: { embed } })
+      assert.equal(layout.hidden, true)
       assert.equal(layout.embedded, false)
-      assert.match(layout.warning, /隐藏或正在移动/)
-      assert.ok(layout.bounds.y >= 48)
-      assert.ok(layout.bounds.y + layout.bounds.height <= 1032)
+      assert.equal(layout.bounds, undefined)
+      assert.equal(layout.warning, '')
     }
   }
 })
@@ -73,7 +73,7 @@ function fixture(t, { platform = 'win32', request, stop } = {}) {
     setBounds(rect) { assert.equal(this.destroyed, false); this.bounds = rect; this.boundsWrites = (this.boundsWrites || 0) + 1 }
     getNativeWindowHandle() { return Buffer.from([1, 0, 0, 0, 0, 0, 0, 0]) }
     setIgnoreMouseEvents(value) { this.ignoresMouse = value }
-    showInactive() { assert.equal(this.destroyed, false); this.visible = true }
+    showInactive() { assert.equal(this.destroyed, false); this.visible = true; this.showCalls = (this.showCalls || 0) + 1 }
     hide() { this.visible = false }
     isDestroyed() { return this.destroyed }
     destroy() { this.destroyed = true; this.emit('closed') }
@@ -86,7 +86,7 @@ function fixture(t, { platform = 'win32', request, stop } = {}) {
           requests.push({ command, value })
           if (request) { const custom = request(command, value); if (custom) return custom }
           if (command === 'sample') return { bars: [bar], dark: false }
-          if (command === 'detach') return { ok: true }
+          if (command === 'detach' || command === 'hide') return { ok: true }
           placements.push(value)
           return { embedded: value.embed }
         }, stop: async options => { bridge.stops++; if (stop) await stop(options) } }
@@ -96,6 +96,101 @@ function fixture(t, { platform = 'win32', request, stop } = {}) {
   return { service, windows, bridges, messages, screen, placements, requests,
     async show() { const promise = service.show(); await settle(); windows.at(-1).emit('ready-to-show'); const ready = await promise; await settle(); return ready } }
 }
+
+test('startup and preview keep lyrics hidden while the first taskbar sample is pending or confirms hiding', async t => {
+  let resolveSample
+  const sample = new Promise(resolve => { resolveSample = resolve })
+  const f = fixture(t, { request(command) { if (command === 'sample') return sample } })
+  f.service.configure({ embed: true })
+  const showing = f.service.show()
+  await settle()
+  const win = f.windows[0]
+  win.emit('ready-to-show')
+  f.service.send('taskbar-lyric:song-update', { hash: 'sample' })
+  f.service.send('taskbar-lyric:playback-update', { playing: true })
+  f.service.preview()
+  await settle()
+  assert.ok(f.requests.some(item => item.command === 'sample'))
+  assert.equal(win.showCalls || 0, 0)
+  assert.equal(win.boundsWrites || 0, 0)
+  assert.equal(f.service.getState().visible, false)
+
+  resolveSample({ bars: [hiddenBar], dark: false })
+  assert.equal(await showing, true)
+  await settle()
+  assert.equal(f.service.getState().status, 'taskbar-hidden')
+  assert.equal(f.service.getState().visible, false)
+  assert.equal(win.showCalls || 0, 0)
+  assert.equal(win.boundsWrites || 0, 0)
+  assert.equal(f.placements.length, 0)
+})
+
+for (const embed of [true, false]) {
+  test(`${embed ? 'embedded' : 'floating'} lyrics hide and restore with the taskbar`, async t => {
+    let poll, barSample = bar
+    t.mock.method(global, 'setInterval', callback => { poll = callback; return { unref() {} } })
+    t.mock.method(global, 'clearInterval', () => { poll = null })
+    const f = fixture(t, { request(command) { if (command === 'sample') return Promise.resolve({ bars: [barSample], dark: false }) } })
+    f.service.configure({ embed, autoHide: true })
+    f.service.send('taskbar-lyric:song-update', { hash: 'sample' })
+    f.service.send('taskbar-lyric:playback-update', { playing: true })
+    await f.show()
+    const win = f.windows[0]
+    assert.equal(f.service.getState().visible, true)
+    assert.equal(f.service.getState().embedded, embed)
+    const showCalls = win.showCalls || 0
+    const boundsWrites = win.boundsWrites || 0
+    const requestStart = f.requests.length
+
+    barSample = hiddenBar
+    poll()
+    await settle()
+    f.service.send('taskbar-lyric:playback-update', { playing: false })
+    f.service.setContentSize({ width: 320, height: 34 })
+    f.service.preview()
+    poll()
+    await settle()
+    assert.equal(f.service.getState().status, 'taskbar-hidden')
+    assert.equal(f.service.getState().visible, false)
+    assert.equal(win.showCalls || 0, showCalls)
+    assert.equal(win.boundsWrites || 0, boundsWrites)
+    if (!embed) assert.equal(win.visible, false)
+    assert.deepEqual(f.requests.slice(requestStart).filter(item => item.command !== 'sample').map(item => item.command), embed ? ['hide'] : [])
+    assert.deepEqual(f.messages.filter(([channel]) => channel === 'taskbar-lyric:runtime-state').at(-1)?.[1], { hidden: true })
+
+    barSample = bar
+    poll()
+    await settle()
+    assert.equal(f.service.getState().visible, true)
+    assert.equal(f.service.getState().embedded, embed)
+    if (embed) assert.equal(f.placements.at(-1)?.visible, true)
+    else assert.equal(win.visible, true)
+    assert.deepEqual(f.messages.filter(([channel]) => channel === 'taskbar-lyric:runtime-state').at(-1)?.[1], { hidden: false })
+  })
+}
+
+test('losing the selected display hides the embedded lyric when the new taskbar is already hidden', async t => {
+  const secondary = { ...display, id: 2, bounds: { ...display.bounds, x: 1920 }, workArea: { ...display.workArea, x: 1920 } }
+  const secondaryBar = { ...hiddenBar, handle: '456', bounds: { ...hiddenBar.bounds, x: 1920 }, monitor: secondary.bounds }
+  let primary = display
+  const f = fixture(t, { request(command) {
+    if (command === 'sample') return Promise.resolve({ bars: primary === display ? [bar, secondaryBar] : [secondaryBar] })
+  } })
+  f.screen.getAllDisplays = () => primary === display ? [display, secondary] : [secondary]
+  f.screen.getPrimaryDisplay = () => primary
+  f.service.configure({ embed: true, displayId: String(display.id) })
+  await f.show()
+  assert.equal(f.service.getState().visible, true)
+  assert.equal(f.service.getState().embedded, true)
+  const requestStart = f.requests.length
+
+  primary = secondary
+  f.screen.emit('display-removed')
+  await settle()
+  assert.equal(f.service.getState().status, 'taskbar-hidden')
+  assert.equal(f.service.getState().visible, false)
+  assert.deepEqual(f.requests.slice(requestStart).filter(item => item.command !== 'sample').map(item => item.command), ['hide'])
+})
 
 test('window service replays visibility, restores display fallback and rejects stale IPC senders', async t => {
   const f = fixture(t)
@@ -221,7 +316,9 @@ test('close waits for helper cleanup and late apply cannot reopen an old window'
   assert.equal(f.windows.length, 2)
   f.windows[1].emit('ready-to-show')
   assert.equal(await reopened, true)
-  assert.equal(f.service.getState().status === 'closed', false)
+  await settle()
+  assert.equal(f.service.getState().status, 'embedded')
+  assert.equal(f.service.getState().visible, true)
 })
 
 test('unsupported systems expose the limit and create no native window/helper', async t => {

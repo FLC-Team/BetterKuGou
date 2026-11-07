@@ -19,7 +19,7 @@ public static class BKTaskbar {
   [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
   [StructLayout(LayoutKind.Sequential)] struct MONITORINFO { public int Size; public RECT Monitor, Work; public uint Flags; }
   public class Box { public int x, y, width, height; public Box(RECT r) { x=r.Left; y=r.Top; width=r.Right-r.Left; height=r.Bottom-r.Top; } }
-  public class Bar { public string handle, edge; public Box bounds, monitor; public bool visible, reliable; public List<Box> occupied = new List<Box>(); }
+  public class Bar { public string handle, edge; public Box bounds, monitor; public bool visible, hidden, reliable; public List<Box> occupied = new List<Box>(); }
   public class Placement { public bool embedded; public string warning; }
   delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr parameter);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);
@@ -72,10 +72,12 @@ public static class BKTaskbar {
     if(!job.Thread.Join(700)) { SampleWarning="sampling-timeout"; return new List<Bar>(); }
     sampling=null;
     if(job.Failed || job.Result==null) { SampleWarning="sampling-failed"; return new List<Bar>(); }
-    foreach(var bar in job.Result) knownBars.Add(new IntPtr(Int64.Parse(bar.handle)));
+    foreach(var bar in job.Result) if(!bar.hidden) knownBars.Add(new IntPtr(Int64.Parse(bar.handle)));
     return job.Result;
   }
-  static List<Bar> SampleCore() {
+  // Geometry does not need UI Automation. Re-read it after a UIA timeout so a
+  // hidden bar cannot be mistaken for a missing one and replaced by a floating lyric.
+  public static List<Bar> ReadBars() {
     IntPtr previous=SetThreadDpiAwarenessContext(new IntPtr(-4));
     if(previous==IntPtr.Zero) previous=SetThreadDpiAwarenessContext(new IntPtr(-3));
     var result=new List<Bar>();
@@ -87,6 +89,25 @@ public static class BKTaskbar {
         if(!GetMonitorInfo(MonitorFromWindow(hwnd,2),ref info)) return true;
         var bar=new Bar { handle=hwnd.ToInt64().ToString(), bounds=new Box(rect), monitor=new Box(info.Monitor), visible=IsWindowVisible(hwnd) };
         bar.edge=rect.Right-rect.Left >= rect.Bottom-rect.Top ? (rect.Top < info.Monitor.Top+(info.Monitor.Bottom-info.Monitor.Top)/2 ? "top":"bottom") : (rect.Left < info.Monitor.Left+(info.Monitor.Right-info.Monitor.Left)/2 ? "left":"right");
+        bool horizontal=bar.edge=="top" || bar.edge=="bottom";
+        // WS_VISIBLE can remain set while Explorer slides most of the HWND off-screen.
+        // Also treat a window shrunk to the thin reveal strip as hidden.
+        bar.hidden=!bar.visible || (horizontal
+          ? bar.bounds.height<=4 || rect.Top<info.Monitor.Top || rect.Bottom>info.Monitor.Bottom
+          : bar.bounds.width<=4 || rect.Left<info.Monitor.Left || rect.Right>info.Monitor.Right);
+        result.Add(bar); return true;
+      },IntPtr.Zero);
+      return result;
+    } finally { if(previous!=IntPtr.Zero) SetThreadDpiAwarenessContext(previous); }
+  }
+  static List<Bar> SampleCore() {
+    IntPtr previous=SetThreadDpiAwarenessContext(new IntPtr(-4));
+    if(previous==IntPtr.Zero) previous=SetThreadDpiAwarenessContext(new IntPtr(-3));
+    try {
+      var result=ReadBars();
+      foreach(var bar in result) {
+        if(bar.hidden) continue;
+        IntPtr hwnd=new IntPtr(Int64.Parse(bar.handle));
         // Tray, clock and start controls are protected even if UI Automation is incomplete.
         EnumChildWindows(hwnd,delegate(IntPtr child,IntPtr ignored) {
           string kind=Kind(child); RECT childRect;
@@ -106,10 +127,14 @@ public static class BKTaskbar {
           }
           bar.reliable=controls.Count>0 && controls.Count<=512;
         } catch { bar.reliable=false; }
-        result.Add(bar); return true;
-      },IntPtr.Zero);
+      }
       return result;
     } finally { if(previous!=IntPtr.Zero) SetThreadDpiAwarenessContext(previous); }
+  }
+  // Hide only our window without changing its taskbar parent, coordinates or Z order.
+  public static void Hide() {
+    AssertOwner();
+    if(!SetWindowPos(owner,IntPtr.Zero,0,0,0,0,0x0001|0x0002|0x0004|0x0010|0x0080)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
   }
   public static void Detach() {
     IntPtr previous=SetThreadDpiAwarenessContext(new IntPtr(-4));
@@ -170,10 +195,14 @@ try {
         $theme = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name SystemUsesLightTheme -ErrorAction SilentlyContinue
         if ($null -ne $theme) { $dark = $theme.SystemUsesLightTheme -eq 0 }
         $bars = @([BKTaskbar]::Sample())
+        if ([BKTaskbar]::SampleWarning) { $bars = @([BKTaskbar]::ReadBars()) }
         $response = @{ id=$request.id; ok=$true; bars=$bars; dark=$dark; warning=[BKTaskbar]::SampleWarning }
       } elseif ($request.command -eq 'apply') {
         $placement = [BKTaskbar]::Apply([string]$request.parent, [bool]$request.embed, [int]$request.x, [int]$request.y, [int]$request.width, [int]$request.height, [bool]$request.visible)
         $response = @{ id=$request.id; ok=$true; embedded=$placement.embedded; warning=$placement.warning }
+      } elseif ($request.command -eq 'hide') {
+        [BKTaskbar]::Hide()
+        $response = @{ id=$request.id; ok=$true }
       } elseif ($request.command -eq 'detach') {
         [BKTaskbar]::Detach()
         $response = @{ id=$request.id; ok=$true }

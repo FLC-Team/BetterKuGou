@@ -94,11 +94,21 @@ test('real native sampling wrapper bounds blocked UIA, keeps one worker and reje
   assert.equal(result.stdout.trim(), 'bounded-single-flight-recovery-ok')
 })
 
-test('a permanently blocked native sampler still responds to sample, detach and orderly EXIT', windowsOnly, async t => {
+test('a permanently blocked UIA sampler still reports fresh geometry and responds to detach and EXIT', windowsOnly, async t => {
   const script = fs.readFileSync(scriptPath, 'utf8')
   const signature = /static List<Bar> SampleCore\(\)\s*\{/
+  const geometry = /public static List<Bar> ReadBars\(\)\s*\{/
   assert.match(script, signature)
-  const blocked = script.replace(signature, '$&\n    Thread.Sleep(Timeout.Infinite);')
+  assert.match(script, geometry)
+  // The real protocol can exercise its fallback even when the test session has no Explorer.
+  const blocked = script.replace(signature, '$&\n    Thread.Sleep(Timeout.Infinite);').replace(geometry, `public static List<Bar> ReadBars() {
+    return new List<Bar> { new Bar {
+      handle="123", edge="bottom", visible=true, hidden=true,
+      bounds=new Box(new RECT { Top=1078, Right=1920, Bottom=1126 }),
+      monitor=new Box(new RECT { Right=1920, Bottom=1080 })
+    } };
+  }
+  static List<Bar> UncalledReadBars() {`)
   const errors = [], exits = []
   let kills = 0
   const bridge = createWindowsTaskbarBridge({ scriptPath, handle: Buffer.alloc(8), readScript: () => blocked,
@@ -116,7 +126,8 @@ test('a permanently blocked native sampler still responds to sample, detach and 
   for (let index = 0; index < 3; index++) {
     const result = await bridge.request('sample')
     assert.equal(result.ok, true)
-    assert.deepEqual(result.bars, [])
+    assert.deepEqual(result.bars, [{ handle: '123', edge: 'bottom', visible: true, hidden: true, reliable: false, occupied: [],
+      bounds: { x: 0, y: 1078, width: 1920, height: 48 }, monitor: { x: 0, y: 0, width: 1920, height: 1080 } }])
     assert.equal(result.warning, 'sampling-timeout')
     assert.equal(typeof result.dark, 'boolean')
   }
