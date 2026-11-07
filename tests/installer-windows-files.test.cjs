@@ -15,8 +15,8 @@ const requireNative = process.env.BK_REQUIRE_INSTALLER_FILES_TESTS === '1'
 let folderRenameAvailable
 
 function fixture(t) {
-  // Use the system volume for real Windows renames, independently of the checkout volume.
-  const temporary = fs.realpathSync(os.tmpdir())
+  // Expand Windows short names in TEMP while keeping renames on the system volume.
+  const temporary = fs.realpathSync.native(os.tmpdir())
   const directory = fs.mkdtempSync(path.join(temporary, 'betterkugou-installer-files-'))
   assert.equal(path.dirname(directory), temporary)
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -99,6 +99,7 @@ test('Windows installer requires a dedicated path and refuses system roots and u
   assert.match(run('validate', { success: false }), /目标文件夹已有文件/)
   assert.equal(fs.readFileSync(path.join(target, 'photos.txt'), 'utf8'), 'personal file')
   assert.match(run('validate', { success: false, BK_INSTALL_TARGET: path.join(directory, 'NUL.txt') }), /无效的文件或文件夹名称/)
+  assert.match(run('validate', { success: false, BK_INSTALL_TARGET: path.join(directory, 'BETTER~1') }), /无效的文件或文件夹名称/)
   assert.match(run('validate', { success: false, BK_INSTALL_TARGET: process.env.USERPROFILE }), /专用的安装子目录/)
   assert.match(run('validate', { success: false, BK_INSTALL_TARGET: process.env.windir }), /Windows 和 Program Files/)
   assert.match(run('validate', {
