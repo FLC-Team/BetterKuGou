@@ -59,6 +59,7 @@ Var BKUnOrigin
 
 ; An uninstaller must never fall back to electron-builder's taskkill branch.
 !macro customHeader
+  !include "${PROJECT_DIR}\installer\windows-architecture.nsh"
   !include "${PROJECT_DIR}\installer\install-mode.nsh"
 Function un.BKCheckRunning
   bkUnRetry:
@@ -347,6 +348,7 @@ Var BKParseHadPre
 !macroend
 
 !macro customHeader
+  !include "${PROJECT_DIR}\installer\windows-architecture.nsh"
   !include "${PROJECT_DIR}\installer\install-mode.nsh"
   !include "${PROJECT_DIR}\installer\windows-functions.nsh"
 !macroend

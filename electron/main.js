@@ -13,6 +13,7 @@ if (process.platform === 'win32' && !process.env.BK_SKIP_CHCP && !app.isPackaged
   }
 }
 const path = require('path')
+const { existsSync, readFileSync } = require('fs')
 const { pathToFileURL } = require('url')
 const { createBackendService } = require('./services/backendService')
 const { createUpdateService } = require('./services/updateService')
@@ -269,7 +270,7 @@ function getAppTrayIcon() {
     path.join(process.resourcesPath, 'assets/logo.png')
   ]
   for (const c of candidates) {
-    if (require('fs').existsSync(c)) return c
+    if (existsSync(c)) return c
   }
   return bundledIcon
 }
@@ -1001,6 +1002,20 @@ function initializeAudioEffects() {
   void audioEffectsIntegration.initialize().catch(error => logger.error('audio-effects', '初始化音频效果失败', error))
 }
 
+/** AppImage 的启动环境优先于 DEB/RPM 由打包器写入的格式标记。 */
+function getInstalledUpdateFormat() {
+  if (!app.isPackaged || process.platform !== 'linux') return null
+  const appImage = process.env.APPIMAGE
+  if (appImage && path.isAbsolute(appImage) && path.extname(appImage).toLowerCase() === '.appimage') return 'AppImage'
+  try {
+    const format = readFileSync(path.join(process.resourcesPath, 'package-type'), 'utf8').trim()
+    return ['deb', 'rpm'].includes(format) ? format : null
+  } catch (error) {
+    if (error.code !== 'ENOENT') logger.trace('updates', '读取 Linux 安装格式失败', { code: error.code })
+    return null
+  }
+}
+
 /** 更新网络、文件和校验在 Worker 中执行，窗口启动无需等待。 */
 function initializeUpdateService() {
   updateService = createUpdateService({
@@ -1011,6 +1026,7 @@ function initializeUpdateService() {
     currentVersion: app.getVersion(),
     platform: process.platform,
     arch: process.arch,
+    preferredFormat: getInstalledUpdateFormat(),
     logger,
     onState: (state) => {
       if (!isQuitting && mainWindow && !mainWindow.isDestroyed()) {
@@ -1226,7 +1242,8 @@ ipcMain.handle('updates:install', async (event) => {
     if (response !== 1) return { canceled: true }
     getUpdatesForSender(event)
     const confirmed = await updates.getDownloadedFile()
-    if (confirmed.path !== file.path || confirmed.assetId !== file.assetId || confirmed.version !== file.version) {
+    if (confirmed.path !== file.path || confirmed.assetId !== file.assetId || confirmed.version !== file.version
+      || confirmed.format !== file.format || confirmed.digest !== file.digest) {
       throw new Error('更新包已改变，请重新确认安装。')
     }
     getUpdatesForSender(event)

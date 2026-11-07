@@ -12,7 +12,9 @@ const { FileMatcher, copyFiles } = require('app-builder-lib/out/fileMatcher')
 const { default: FpmTarget } = require('app-builder-lib/out/targets/FpmTarget')
 const { default: AppImageTarget } = require('app-builder-lib/out/targets/AppImageTarget')
 const { validateConfiguration } = require('app-builder-lib/out/util/config/config')
-const { selectAssets } = require('../electron/services/updateWorker.cjs')
+const { configureBuildCommand, createYargs, normalizeOptions } = require('electron-builder/out/builder')
+const { releaseAssetGroups, selectAssets } = require('../electron/services/updateAssets.cjs')
+const { distributionCommands } = require('../scripts/build-distribution.cjs')
 const { validateReleaseAssets, verifyReleaseTag, publishRelease } = require('../scripts/publish-release.cjs')
 const manifest = require('../package.json')
 
@@ -20,26 +22,37 @@ const root = path.resolve(__dirname, '..')
 const config = manifest.build
 const workflow = load(fs.readFileSync(path.join(root, '.github/workflows/release.yml'), 'utf8'))
 const methods = ['artifactPatternConfig', 'computeArtifactName', 'expandMacro', 'expandArtifactNamePattern']
+const builderTargets = { windows: 'win', linux: 'linux', macos: 'mac' }
+const updatePlatforms = { windows: 'win32', linux: 'linux', macos: 'darwin' }
+const assetGroups = releaseAssetGroups(manifest.version)
 
-function makePackager(platform, onArtifact) {
+function makePackager(platform, onArtifact, overrides) {
   return {
     config,
     appInfo: { ...manifest, productName: config.productName, sanitizedProductName: config.productName },
     platform: { buildConfigurationKey: platform },
-    platformSpecificBuildOptions: config[platform],
+    platformSpecificBuildOptions: { ...config[platform], ...overrides },
     info: { callArtifactBuildStarted: onArtifact },
     ...Object.fromEntries(methods.map(name => [name, PlatformPackager.prototype[name]]))
   }
+}
+
+function builderOptions(command) {
+  return normalizeOptions(configureBuildCommand(createYargs()).parse(command))
 }
 
 /** Stop the real builder target immediately after it calculates the artifact name, before any file writes. */
 async function targetFilename(target, arch) {
   let filename
   const stopped = new Error('artifact-name-only')
-  const packager = makePackager(target === 'dmg' ? 'mac' : 'linux', async event => {
+  const platform = target === 'exe' ? 'win' : target === 'dmg' ? 'mac' : 'linux'
+  const [command] = distributionCommands([`--${platform}`, `--${Arch[arch]}`, '--publish', 'never'])
+  const options = builderOptions(command)
+  const packager = makePackager(platform, async event => {
     filename = path.basename(event.file)
     throw stopped
-  })
+  }, options.config?.[platform])
+  if (target === 'exe') return packager.expandArtifactNamePattern(config.nsis, target, arch)
   if (target === 'dmg' && process.platform !== 'darwin') {
     // The macOS builder target loads platform-specific dmg-license on import.
     return packager.expandArtifactNamePattern(config.dmg, target, arch, '${productName}-${version}-${arch}.${ext}', true)
@@ -63,21 +76,48 @@ function testDirectory(t) {
 }
 
 async function stageInstallerFiles(directory) {
-  const groups = {
-    windows: [makePackager('win').expandArtifactNamePattern(config.nsis, 'exe', Arch.x64)],
-    linux: await Promise.all(['AppImage', 'deb', 'rpm'].map(format => targetFilename(format, Arch.x64))),
-    macos: await Promise.all([Arch.x64, Arch.arm64].map(arch => targetFilename('dmg', arch)))
-  }
-  return Object.entries(groups).flatMap(([platform, files]) => {
-    const folder = path.join(directory, `BetterKuGou-${platform}`)
+  const files = []
+  for (const [group, expected] of Object.entries(assetGroups)) {
+    const [, arch] = group.split('-')
+    const names = await Promise.all(expected.map(name => targetFilename(path.extname(name).slice(1), Arch[arch])))
+    assert.deepEqual(names, expected, group)
+    const folder = path.join(directory, `BetterKuGou-${group}`)
     fs.mkdirSync(folder)
-    return files.map(name => {
+    for (const name of names) {
       const file = path.join(folder, name)
       fs.writeFileSync(file, 'fixture')
-      return file
-    })
-  })
+      files.push(file)
+    }
+  }
+  return files
 }
+
+test('local distribution commands give each builder process a single architecture', () => {
+  const verifyInvocations = (commands, expectedArchs) => {
+    assert.deepEqual(commands.map(command => {
+      const { targets, publish } = builderOptions(command)
+      assert.equal(publish, 'never')
+      assert.equal(targets.size, 1)
+      const [arches] = targets.values()
+      assert.equal(arches.size, 1)
+      return Arch[arches.keys().next().value]
+    }), expectedArchs)
+  }
+  const flags = ['--publish', 'never']
+  verifyInvocations(distributionCommands(flags, 'win32', 'x64'), ['x64', 'ia32', 'arm64'])
+  verifyInvocations(distributionCommands(['--win', '--ia32', ...flags]), ['ia32'])
+  verifyInvocations(distributionCommands(['--mac', ...flags]), ['x64', 'arm64'])
+  verifyInvocations(distributionCommands(['--linux', ...flags], 'linux', 'arm64'), ['arm64'])
+  verifyInvocations(distributionCommands(['--dir', ...flags], 'win32', 'arm64'), ['arm64'])
+  verifyInvocations(distributionCommands(['--win', '--x64']), ['x64'])
+  verifyInvocations(distributionCommands(['--win', '--x64=false']), ['ia32', 'arm64'])
+  assert.throws(() => distributionCommands(['--linux', '--arm64=false'], 'linux', 'arm64'), /至少选择一个/)
+  assert.equal(builderOptions(distributionCommands(['--win', '--x64', '--publish', 'always'])[0]).publish, 'always')
+  assert.throws(() => distributionCommands(['--mac', '--universal']), /不支持/)
+  assert.throws(() => distributionCommands(['--win', '--prepackaged', 'unpacked']), /明确的架构/)
+  assert.equal(config.win.target, 'nsis')
+  assert.equal(config.mac.target, 'dmg')
+})
 
 test('release waits for every matrix build and validates all real installer names and the package tag', async t => {
   const { build, release } = workflow.jobs
@@ -92,34 +132,45 @@ test('release waits for every matrix build and validates all real installer name
   assert.doesNotThrow(() => verifyReleaseTag(`v${manifest.version}`))
   assert.throws(() => verifyReleaseTag(`v${manifest.version}-mismatched`), /不一致/)
 
-  const uploadPatterns = upload.with.path.trim().split(/\r?\n/)
-  for (const arch of [Arch.x64, Arch.arm64]) {
-    for (const format of ['deb', 'rpm', 'AppImage']) {
-      const name = await targetFilename(format, arch)
-      assert.ok(uploadPatterns.some(pattern => minimatch(`release/${name}`, pattern)), `workflow uploads ${name}`)
-      assert.equal(selectAssets([{ id: 1, name, format }], { platform: 'linux', arch: Arch[arch], releaseVersion: manifest.version }).length, 1, `updater accepts ${name}`)
+  const matrix = build.strategy.matrix.include
+  assert.deepEqual(matrix.map(entry => entry.artifact).sort(), Object.keys(assetGroups).sort())
+  assert.equal(matrix.find(entry => entry.artifact === 'linux-arm64').os, 'ubuntu-24.04-arm')
+  const packageStep = build.steps.find(step => step.name === 'Package one architecture')
+  assert.match(packageStep.run, /"dist:\$BK_TARGET" -- "--\$BK_ARCH" --publish never/)
+  const patterns = arch => upload.with.path.replaceAll('${{ matrix.arch }}', arch).trim().split(/\r?\n/)
+  for (const entry of matrix) {
+    const [platform, arch] = entry.artifact.split('-')
+    assert.equal(entry.target, builderTargets[platform])
+    assert.equal(entry.arch, arch)
+    for (const name of assetGroups[entry.artifact]) {
+      const format = path.extname(name).slice(1)
+      assert.ok(patterns(arch).some(pattern => minimatch(`release/${name}`, pattern)), `workflow uploads ${name}`)
+      const selected = selectAssets([{ id: 1, name, format }], { platform: updatePlatforms[platform], arch, releaseVersion: manifest.version })
+      assert.equal(selected[0]?.name, name, `updater accepts ${name}`)
+      assert.equal(selected[0]?.arch, arch)
     }
   }
-  const packager = makePackager('win')
-  const names = [Arch.x64, Arch.ia32, Arch.arm64].map(arch => packager.expandArtifactNamePattern(config.nsis, 'exe', arch))
-  assert.equal(new Set(names).size, 1, 'Windows architectures share one installer')
   const directory = testDirectory(t)
   const staged = await stageInstallerFiles(directory)
-  for (const file of staged) assert.ok(uploadPatterns.some(pattern => minimatch(`release/${path.basename(file)}`, pattern)))
+  assert.equal(staged.length, 11)
+  assert.equal(new Set(staged.map(file => path.basename(file))).size, 11)
   assert.deepEqual(validateReleaseAssets(directory), staged)
 
   const missing = staged.at(-1)
   fs.unlinkSync(missing)
-  assert.throws(() => validateReleaseAssets(directory), /macos 安装包不完整/)
+  assert.throws(() => validateReleaseAssets(directory), /macos-arm64 安装包不完整/)
   fs.writeFileSync(missing, '')
   assert.throws(() => validateReleaseAssets(directory), /安装包为空/)
   fs.writeFileSync(missing, 'fixture')
   const unexpected = path.join(path.dirname(missing), 'BetterKuGou-foreign.dmg')
   fs.writeFileSync(unexpected, 'fixture')
   assert.throws(() => validateReleaseAssets(directory), /存在多余文件/)
+  fs.unlinkSync(unexpected)
+  fs.mkdirSync(path.join(directory, 'BetterKuGou-windows'))
+  assert.throws(() => validateReleaseAssets(directory), /存在多余目录/)
 
-  for (const name of ['BetterKuGou-portable.exe', 'BetterKuGou.zip', 'builder-debug.yml']) {
-    assert.equal(uploadPatterns.some(pattern => minimatch(`release/${name}`, pattern)), false)
+  for (const name of [`BetterKuGou-v${manifest.version}-setup.exe`, 'BetterKuGou-portable.exe', 'BetterKuGou.zip', 'builder-debug.yml']) {
+    assert.equal(patterns('x64').some(pattern => minimatch(`release/${name}`, pattern)), false)
   }
 })
 
@@ -216,6 +267,16 @@ test('actual backend resource copy retains runtime files and excludes local sett
   for (const name of local) assert.equal(fs.existsSync(path.join(output, name)), false, name)
 })
 
+test('the packaged updater can load its architecture catalog from the resource directory', async t => {
+  const output = testDirectory(t)
+  const resource = config.extraResources.find(entry => entry.to === 'updater')
+  await copyFiles([new FileMatcher(path.join(root, resource.from), output, value => value, resource.filter)])
+  assert.deepEqual(fs.readdirSync(output).sort(), ['updateAssets.cjs', 'updateWorker.cjs'])
+  const worker = require(path.join(output, 'updateWorker.cjs'))
+  const [name] = assetGroups['windows-arm64']
+  assert.equal(worker.selectAssets([{ name, format: 'exe' }], { platform: 'win32', arch: 'arm64', releaseVersion: manifest.version })[0]?.name, name)
+})
+
 async function renderLinuxRemove(directory, format) {
   const packager = makePackager('linux')
   packager.projectDir = root
@@ -234,6 +295,28 @@ test('the real builder configures both DEB and RPM to remove the registered prog
   assert.equal(deb, rpm)
   assert.match(deb, /^target='\/opt\/BetterKuGou\/betterkugou'$/m)
   assert.match(deb, /update-alternatives --remove 'betterkugou' "\$target"/)
+})
+
+test('DEB and RPM write their own package markers without consulting a Git remote', async t => {
+  const directory = testDirectory(t)
+  const stopped = new Error('package-marker-only')
+  const packager = makePackager('linux', async () => {})
+  packager.packagerOptions = {}
+  Object.assign(packager.info, { config, appInfo: packager.appInfo })
+  packager.getResourcesDir = appDir => path.join(appDir, 'resources')
+  Object.defineProperty(packager.info, 'repositoryInfo', { get() { assert.fail('Packaged format metadata uses the fixed repository') } })
+  for (const name of ['deb', 'rpm']) {
+    const target = {
+      name, packager, options: config[name], outDir: directory,
+      supportsAutoUpdate: FpmTarget.prototype.supportsAutoUpdate,
+      get scriptFiles() { throw stopped }
+    }
+    await assert.rejects(FpmTarget.prototype.build.call(target, 'unused-app-directory', Arch.x64), error => error === stopped)
+    const resources = path.join(directory, 'linux-unpacked', 'resources')
+    assert.equal(fs.readFileSync(path.join(resources, 'package-type'), 'utf8'), name)
+    const metadata = load(fs.readFileSync(path.join(resources, 'app-update.yml'), 'utf8'))
+    assert.deepEqual([metadata.provider, metadata.owner, metadata.repo], ['github', 'FLC-Team', 'BetterKuGou'])
+  }
 })
 
 test('Linux removal cleans the registered target and its fallback only on final removal', { skip: process.platform === 'win32' }, async t => {

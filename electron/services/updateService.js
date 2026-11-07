@@ -25,9 +25,13 @@ function publicRelease(release) {
     publishedAt: release.publishedAt,
     defaultAssetId: release.defaultAssetId ?? null,
     assets: (release.assets || []).map(asset => ({
-      id: asset.id, name: asset.name, size: asset.size, format: asset.format
+      id: asset.id, name: asset.name, size: asset.size, format: asset.format, arch: asset.arch
     }))
   }
+}
+
+function publicDownload(file) {
+  return file ? { name: file.assetName, version: file.version, format: file.format, arch: file.arch } : null
 }
 
 /** Own one background worker and committed update preferences without performing installation. */
@@ -37,10 +41,12 @@ function createUpdateService({
   currentVersion,
   platform = process.platform,
   arch = process.arch,
+  preferredFormat = null,
   onState = () => {},
   logger = defaultLogger,
   Worker = NodeWorker
 }) {
+  const installedFormat = platform === 'linux' && ['AppImage', 'deb', 'rpm'].includes(preferredFormat) ? preferredFormat : null
   let preferences = { autoCheck: true, autoDownload: false, channel: 'stable' }
   let configured = false
   let worker = null
@@ -56,6 +62,7 @@ function createUpdateService({
     revision: 0,
     status: 'idle',
     currentVersion,
+    target: { platform, arch, installedFormat },
     channel: 'stable',
     release: null,
     selectedAssetId: null,
@@ -162,7 +169,8 @@ function createUpdateService({
   }
 
   function canAutoDownload() {
-    return preferences.autoDownload && candidate?.defaultAssetId != null
+    const asset = candidate?.assets?.find(item => item.id === candidate.defaultAssetId)
+    return preferences.autoDownload && asset && (platform !== 'linux' || asset.format === installedFormat)
       && !cancelledVersions.has(candidate.version) && !downloadedFile && !task && !stopped
   }
 
@@ -190,19 +198,17 @@ function createUpdateService({
     task = null
     const result = message.result || {}
     if (completed.action === 'check') {
-      const previousVersion = downloadedFile?.version
       candidate = result.release || null
-      if (!candidate || previousVersion !== candidate.version) downloadedFile = null
-      let selectedAssetId = candidate?.defaultAssetId ?? null
-      if (downloadedFile && candidate.assets?.some(asset => asset.id === downloadedFile.assetId)) {
-        selectedAssetId = downloadedFile.assetId
-      } else if (downloadedFile) {
+      if (downloadedFile && (candidate?.id !== downloadedFile.releaseId || candidate?.version !== downloadedFile.version
+        || !candidate.assets?.some(asset => asset.id === downloadedFile.assetId && asset.name === downloadedFile.assetName
+          && asset.size === downloadedFile.size && asset.format === downloadedFile.format && asset.arch === downloadedFile.arch))) {
         downloadedFile = null
       }
+      const selectedAssetId = downloadedFile?.assetId ?? candidate?.defaultAssetId ?? null
       publish({
         status: downloadedFile ? 'downloaded' : candidate ? 'available' : 'upToDate',
         release: publicRelease(candidate), selectedAssetId, progress: null,
-        downloaded: downloadedFile ? { name: downloadedFile.assetName, version: downloadedFile.version, format: downloadedFile.format } : null,
+        downloaded: publicDownload(downloadedFile),
         source: result.source || null, checkedAt: result.checkedAt || null, error: null,
         message: downloadedFile ? '更新包已下载，请手动安装。'
           : candidate ? selectedAssetId == null ? `发现新版本 ${candidate.version}，暂无适合当前系统的安装包。` : `发现新版本 ${candidate.version}`
@@ -213,7 +219,7 @@ function createUpdateService({
       downloadedFile = copy(result)
       publish({
         status: 'downloaded', selectedAssetId: result.assetId, progress: null,
-        downloaded: { name: result.assetName, version: result.version, format: result.format },
+        downloaded: publicDownload(downloadedFile),
         source: result.source || state.source, error: null,
         message: '更新包已下载，请手动安装。'
       })
@@ -227,7 +233,7 @@ function createUpdateService({
   function startCheck(origin) {
     if (stopped || task) return getState()
     publish({ status: 'checking', progress: null, error: null, message: '正在检查更新…' })
-    sendTask('check', { currentVersion, channel: preferences.channel, platform, arch }, origin)
+    sendTask('check', { currentVersion, channel: preferences.channel, platform, arch, preferredFormat: installedFormat }, origin)
     return getState()
   }
 

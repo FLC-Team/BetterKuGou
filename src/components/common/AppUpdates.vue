@@ -7,7 +7,7 @@
 
     <div class="updates-result" :class="{ 'is-error': state.status === 'error' || actionError, 'is-ready': state.status === 'downloaded' }" :aria-busy="isBusy">
       <div class="updates-overview">
-        <div class="current-version"><span class="version-label">当前版本</span><strong>v{{ state.currentVersion }}</strong><span class="version-product">BetterKuGou</span></div>
+        <div class="current-version"><span class="version-label">当前版本</span><strong>v{{ state.currentVersion }}</strong><span class="version-product">{{ targetLabel || 'BetterKuGou' }}</span></div>
         <div class="updates-summary">
           <div class="updates-state-line"><span class="version-label">{{ state.release ? '可用版本' : '更新状态' }}</span><span class="updates-channel">{{ channelLabel }}</span></div>
           <Transition name="ui-fade" mode="out-in"><h4 :key="available ? statusTitle : 'browser'" class="updates-version">{{ available ? statusTitle : '桌面客户端专属' }}</h4></Transition>
@@ -29,6 +29,7 @@
         <div v-if="assets.length > 1" class="asset-choice"><label for="update-asset">安装包格式</label><AnimatedSelect id="update-asset" class="updates-select" v-model="chosenAssetId" label="安装包格式" :options="assetOptions" :disabled="isBusy || !!actionPending" /></div>
         <p v-else-if="assets.length === 1 && !state.downloaded" class="asset-detail">{{ assetLabel(assets[0]) }}</p>
         <p v-else-if="state.release && !assets.length" class="updates-note asset-empty">此版本没有适用于当前系统和架构的安装包，可在发布页查看。</p>
+        <p v-if="offersAlternateFormat" class="updates-note">此版本暂无 {{ state.target.installedFormat }} 包。你可以手动下载其他格式。</p>
 
         <Transition name="updates-expand"><div v-if="state.downloaded" class="updates-stage"><div class="updates-stage-inner"><div class="downloaded-file"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1-1V8zM14 3v5h5M9 13h6M9 17h4" /></svg><div><span class="downloaded-label">更新包已下载</span><strong>{{ state.downloaded.name }}</strong><p>{{ canInstall ? '点击手动安装并确认后才会打开安装包。' : '请打开所在文件夹，自行处理安装包。' }}</p></div></div></div></div></Transition>
 
@@ -60,12 +61,12 @@
         <label class="updates-switch"><input id="update-auto-check" type="checkbox" :checked="preferences.autoCheck" aria-describedby="update-auto-check-desc" @change="setPreference('autoCheck', $event.target.checked)"><span></span></label>
       </div>
       <div class="updates-row">
-        <div><label for="update-auto-download">自动下载更新包</label><p id="update-auto-download-desc">新版本在后台下载，安装时由你确认。</p></div>
+        <div><label for="update-auto-download">自动下载更新包</label><p id="update-auto-download-desc">{{ state.target?.platform === 'linux' ? '匹配当前架构和安装格式的包会在后台下载，安装时由你确认。' : '匹配当前架构的包会在后台下载，安装时由你确认。' }}</p></div>
         <label class="updates-switch"><input id="update-auto-download" type="checkbox" :checked="preferences.autoDownload" aria-describedby="update-auto-download-desc" @change="setPreference('autoDownload', $event.target.checked)"><span></span></label>
       </div>
     </fieldset>
     <p class="updates-footnote">安装由你手动发起，不会自动退出应用。</p>
-    <details class="updates-routing"><summary>更新来源</summary><p>优先通过 git.tangbai.cc 获取更新，失败后尝试 GitHub 原站。</p></details>
+    <details class="updates-routing"><summary>更新来源</summary><p>优先通过 git.tangbai.cc 获取更新，失败后尝试 GitHub 原站。安装包的校验信息由 GitHub 提供。</p></details>
   </section>
 </template>
 
@@ -106,6 +107,17 @@ onBeforeUnmount(() => disclosureMotions.forEach(motion => motion.dispose()))
 
 const isBusy = computed(() => ['checking', 'downloading'].includes(state.value.status))
 const assets = computed(() => state.value.release?.assets || [])
+const architectureLabels = { x64: 'x64', ia32: 'x86', arm64: 'ARM64', armv7l: 'ARMv7', universal: '通用包' }
+const platformLabels = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }
+const targetLabel = computed(() => {
+  const target = state.value.target
+  if (!target) return ''
+  return [platformLabels[target.platform], architectureLabels[target.arch], target.installedFormat].filter(Boolean).join(' · ')
+})
+const offersAlternateFormat = computed(() => {
+  const format = state.value.target?.installedFormat
+  return format && assets.value.length && !assets.value.some(asset => asset.format === format)
+})
 const assetOptions = computed(() => assets.value.map(asset => ({ value: String(asset.id), label: assetLabel(asset) })))
 const selectedAsset = computed(() => assets.value.find(asset => String(asset.id) === chosenAssetId.value))
 const canDownload = computed(() => assets.value.length > 0 && (state.value.status !== 'downloaded'
@@ -135,7 +147,7 @@ const statusText = computed(() => ({
   idle: state.value.message || '随时检查是否有新版本。',
   checking: '正在检查新版本…',
   upToDate: '当前渠道暂无更高版本。',
-  available: '新版本已发布，可以下载更新包。',
+  available: assets.value.length ? '新版本已发布，可以下载更新包。' : '新版本已发布，暂无匹配的安装包。',
   downloading: '正在下载更新包…',
   downloaded: '更新包已准备好，等待你手动安装。',
   error: state.value.message || '更新操作未完成，请重试。'
@@ -159,7 +171,7 @@ function formatBytes(value) {
 }
 
 function assetLabel(asset) {
-  return `${asset.format || asset.name} · ${formatBytes(asset.size)}`
+  return [asset.format || asset.name, architectureLabels[asset.arch], formatBytes(asset.size)].filter(Boolean).join(' · ')
 }
 
 /** Subscribe before the initial snapshot and reject older IPC responses by revision. */
@@ -170,9 +182,11 @@ function acceptState(next) {
   if (next.currentVersion) emit('current-version', next.currentVersion)
 }
 
-watch(() => [state.value.release?.id, state.value.release?.defaultAssetId, state.value.selectedAssetId], () => {
-  const next = state.value.selectedAssetId ?? state.value.release?.defaultAssetId ?? assets.value[0]?.id
-  if (next != null) chosenAssetId.value = String(next)
+watch(() => [state.value.release?.id, state.value.selectedAssetId, assets.value], ([releaseId, selectedId, options], previous) => {
+  const sameSelection = previous?.[0] === releaseId && previous?.[1] === selectedId
+  if (sameSelection && options.some(asset => String(asset.id) === chosenAssetId.value)) return
+  const next = options.find(asset => asset.id === (selectedId ?? state.value.release?.defaultAssetId)) ?? options[0]
+  chosenAssetId.value = next ? String(next.id) : ''
 }, { immediate: true })
 
 /** Flush the parent settings transaction before actions consume the saved update channel. */

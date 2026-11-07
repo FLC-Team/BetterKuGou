@@ -7,6 +7,7 @@ const { EventEmitter, once } = require('node:events')
 const { Readable, PassThrough, Writable } = require('node:stream')
 const { Worker } = require('node:worker_threads')
 const { parseVersion, compareVersions, selectAssets, createTransport, createUpdateEngine, attachWorker } = require('../electron/services/updateWorker.cjs')
+const { releaseAssetGroups } = require('../electron/services/updateAssets.cjs')
 
 const repository = 'FLC-Team/BetterKuGou'
 const target = { currentVersion: '1.0.0', channel: 'stable', platform: 'win32', arch: 'x64' }
@@ -18,14 +19,21 @@ function rawRelease(version = '1.1.0', changes = {}) {
   const name = `BetterKuGou-v${version}-setup.exe`
   return {
     id: 51, tag_name: tag, name: version, draft: false, prerelease: false, body: 'Release notes', published_at: '2026-10-16T00:00:00Z',
-    assets: [{ id: 71, name, size: packageBytes.length, digest: packageDigest, state: 'uploaded', browser_download_url: `https://github.com/${repository}/releases/download/${tag}/${name}` }],
+    assets: [rawAsset(tag, name, 71)],
     ...changes
   }
 }
 
+function rawAsset(tag, name, id) {
+  return { id, name, size: packageBytes.length, digest: packageDigest, state: 'uploaded', browser_download_url: `https://github.com/${repository}/releases/download/${tag}/${name}` }
+}
+
 function normalizedPackage(version = '1.1.0') {
   const raw = rawRelease(version)
-  return { release: { id: raw.id, version, tag: raw.tag_name, channel: 'stable' }, asset: { id: raw.assets[0].id, name: raw.assets[0].name, size: raw.assets[0].size, url: raw.assets[0].browser_download_url, digest: packageDigest, format: 'exe' } }
+  return {
+    release: { id: raw.id, version, tag: raw.tag_name, channel: 'stable', platform: 'win32', arch: 'x64' },
+    asset: { id: raw.assets[0].id, name: raw.assets[0].name, size: raw.assets[0].size, url: raw.assets[0].browser_download_url, digest: packageDigest, format: 'exe', platform: 'win32', arch: 'universal' }
+  }
 }
 
 /** 控制传输而保留真实 Node 流、文件系统和哈希流程，完全不访问外网。 */
@@ -93,14 +101,59 @@ test('asset matching keeps Windows universal setup and strictly matches macOS/Li
     { id: 5, name: 'betterkugou_1.0.0_amd64.deb', format: 'deb' },
     { id: 6, name: 'betterkugou-1.0.0.aarch64.rpm', format: 'rpm' },
     { id: 7, name: 'BetterKuGou-1.0.0-arm64.AppImage', format: 'AppImage' },
-    { id: 8, name: 'BetterKuGou-1.0.0-riscv64.AppImage', format: 'AppImage' }
+    { id: 8, name: 'BetterKuGou-1.0.0-riscv64.AppImage', format: 'AppImage' },
+    { id: 9, name: 'betterkugou-1.0.0.x86_64.rpm', format: 'rpm' }
   ]
-  assert.deepEqual(selectAssets(assets, { platform: 'win32', arch: 'arm64' }).map(a => a.id), [1])
-  assert.deepEqual(selectAssets(assets, { platform: 'darwin', arch: 'arm64' }).map(a => a.id), [2])
+  assert.deepEqual(selectAssets(assets, { platform: 'win32', arch: 'arm64', releaseVersion: '1.0.0' }).map(a => a.id), [1])
+  assert.deepEqual(selectAssets(assets, { platform: 'darwin', arch: 'arm64', releaseVersion: '1.0.0' }).map(a => a.id), [2])
   assert.deepEqual(selectAssets(assets, { platform: 'darwin', arch: 'x64', releaseVersion: '1.0.0' }).map(a => a.id), [3])
-  assert.deepEqual(selectAssets(assets, { platform: 'linux', arch: 'x64', releaseVersion: '1.0.0' }).map(a => a.id), [4, 5])
-  assert.deepEqual(selectAssets(assets, { platform: 'linux', arch: 'arm64' }).map(a => a.id), [7, 6])
-  assert.deepEqual(selectAssets(assets, { platform: 'linux', arch: 'ia32' }), [])
+  assert.deepEqual(selectAssets(assets, { platform: 'linux', arch: 'x64', releaseVersion: '1.0.0' }).map(a => a.id), [4, 5, 9])
+  assert.deepEqual(selectAssets(assets, { platform: 'linux', arch: 'arm64', releaseVersion: '1.0.0' }).map(a => a.id), [7, 6])
+  assert.deepEqual(selectAssets(assets, { platform: 'linux', arch: 'ia32', releaseVersion: '1.0.0' }), [])
+})
+
+test('the release catalog gives every supported architecture its own package names', () => {
+  const version = '2.0.0-beta.arm64'
+  const groups = releaseAssetGroups(version)
+  assert.deepEqual(groups, {
+    'windows-x64': [`BetterKuGou-v${version}-win-x64-setup.exe`],
+    'windows-ia32': [`BetterKuGou-v${version}-win-ia32-setup.exe`],
+    'windows-arm64': [`BetterKuGou-v${version}-win-arm64-setup.exe`],
+    'linux-x64': [`BetterKuGou-v${version}-linux-x64.AppImage`, `BetterKuGou-v${version}-linux-x64.deb`, `BetterKuGou-v${version}-linux-x64.rpm`],
+    'linux-arm64': [`BetterKuGou-v${version}-linux-arm64.AppImage`, `BetterKuGou-v${version}-linux-arm64.deb`, `BetterKuGou-v${version}-linux-arm64.rpm`],
+    'macos-x64': [`BetterKuGou-v${version}-mac-x64.dmg`],
+    'macos-arm64': [`BetterKuGou-v${version}-mac-arm64.dmg`]
+  })
+  const assets = Object.values(groups).flat().map((name, index) => ({ id: index + 1, name }))
+  for (const [group, expected] of Object.entries(groups)) {
+    const [os, arch] = group.split('-')
+    const platform = { windows: 'win32', linux: 'linux', macos: 'darwin' }[os]
+    const packages = selectAssets(assets, { platform, arch, releaseVersion: version })
+    assert.deepEqual(packages.map(asset => asset.name), expected)
+    assert.ok(packages.every(asset => asset.platform === platform && asset.arch === arch))
+  }
+})
+
+test('split packages take priority and only exact historical filenames can fall back', () => {
+  const releaseVersion = '2.0.0-beta.arm64'
+  const compatible = [
+    { id: 1, name: `BetterKuGou-v${releaseVersion}-Setup.exe` },
+    { id: 2, name: `BetterKuGou-v${releaseVersion}-x64-setup.exe` },
+    { id: 3, name: `BetterKuGou-v${releaseVersion}-win-x64-setup.exe` }
+  ]
+  const unknown = [
+    `AnotherApp-v${releaseVersion}-setup.exe`,
+    `BetterKuGou-v${releaseVersion}-unknown-setup.exe`,
+    `BetterKuGou-v${releaseVersion}-win-arm64-setup.exe`,
+    `BetterKuGou-v${releaseVersion}-mac-x64-setup.exe`,
+    'BetterKuGou-v2.0.0-beta.ARM64-win-x64-setup.exe',
+    'BetterKuGou-v1.0.0-win-x64-setup.exe'
+  ].map((name, index) => ({ id: index + 4, name }))
+  const select = assets => selectAssets(assets, { platform: 'win32', arch: 'x64', releaseVersion })
+  assert.deepEqual(select([...unknown, ...compatible]), [{ ...compatible[2], platform: 'win32', arch: 'x64', format: 'exe' }])
+  assert.deepEqual(select(compatible.slice(0, 2)).map(asset => asset.id), [2])
+  assert.equal(select(compatible.slice(0, 1))[0].arch, 'universal')
+  assert.deepEqual(select(unknown), [])
 })
 
 test('check uses the fixed proxy first, sorts versions and excludes draft and tag prereleases on stable', async t => {
@@ -128,7 +181,8 @@ test('check paginates before choosing latest instead of trusting release publica
 })
 
 test('a newer release without a matching package does not hide a compatible update', async t => {
-  const { engine } = createEngine(t, () => jsonResponse([rawRelease('2.0.0', { assets: [] }), rawRelease('1.1.0'), rawRelease('1.2.0')]))
+  const otherArch = rawAsset('v2.0.0', 'BetterKuGou-v2.0.0-win-arm64-setup.exe', 72)
+  const { engine } = createEngine(t, () => jsonResponse([rawRelease('2.0.0', { assets: [otherArch] }), rawRelease('1.1.0'), rawRelease('1.2.0')]))
   const available = await engine.check(target)
   assert.equal(available.latestVersion, '2.0.0')
   assert.equal(available.release.version, '1.2.0')
@@ -136,6 +190,34 @@ test('a newer release without a matching package does not hide a compatible upda
   const unavailable = await engine.check({ ...target, currentVersion: '1.2.0' })
   assert.equal(unavailable.release.version, '2.0.0')
   assert.equal(unavailable.release.defaultAssetId, null)
+  assert.equal((await engine.check({ ...target, arch: 'arm64' })).release.defaultAssetId, 72)
+})
+
+test('Linux checks prefer a newer release of the installed format and retain same-arch manual alternatives', async t => {
+  const { engine } = createEngine(t, () => jsonResponse([
+    rawRelease('3.0.0', { assets: [
+      rawAsset('v3.0.0', 'BetterKuGou-v3.0.0-linux-arm64.AppImage', 30),
+      rawAsset('v3.0.0', 'BetterKuGou-v3.0.0-linux-x64.deb', 31)
+    ] }),
+    rawRelease('2.0.0', { assets: [
+      rawAsset('v2.0.0', 'BetterKuGou-v2.0.0-linux-arm64.AppImage', 20),
+      rawAsset('v2.0.0', 'BetterKuGou-v2.0.0-linux-arm64.deb', 21),
+      rawAsset('v2.0.0', 'BetterKuGou-v2.0.0-linux-arm64.rpm', 22)
+    ] })
+  ]))
+  const linux = { ...target, platform: 'linux', arch: 'arm64' }
+  const installedDeb = await engine.check({ ...linux, preferredFormat: 'deb' })
+  assert.equal(installedDeb.latestVersion, '3.0.0')
+  assert.equal(installedDeb.release.version, '2.0.0')
+  assert.equal(installedDeb.release.defaultAssetId, 21)
+  assert.deepEqual(installedDeb.release.assets.map(asset => asset.format), ['deb', 'AppImage', 'rpm'])
+  assert.equal((await engine.check({ ...linux, preferredFormat: 'rpm' })).release.defaultAssetId, 22)
+  assert.equal((await engine.check({ ...linux, preferredFormat: 'AppImage' })).release.defaultAssetId, 30)
+  assert.equal((await engine.check(linux)).release.defaultAssetId, 30)
+  const manualAlternative = await engine.check({ ...linux, currentVersion: '2.0.0', preferredFormat: 'deb' })
+  assert.equal(manualAlternative.release.version, '3.0.0')
+  assert.equal(manualAlternative.release.defaultAssetId, 30)
+  assert.ok(manualAlternative.release.assets.every(asset => asset.arch === 'arm64'))
 })
 
 test('current/newer installed version yields no update; absent channel releases remain distinguishable', async t => {
@@ -207,6 +289,8 @@ test('downloads stream to a dedicated file and reuse intact cache after official
   assert.equal(record.source, 'proxy')
   assert.equal(record.digest, packageDigest)
   assert.equal(record.format, 'exe')
+  assert.equal(record.platform, 'win32')
+  assert.equal(record.arch, 'universal')
   assert.deepEqual(fs.readFileSync(record.path), packageBytes)
   assert.equal(progress[0].percent, 0)
   assert.equal(progress.at(-1).percent, 100)
@@ -217,6 +301,40 @@ test('downloads stream to a dedicated file and reuse intact cache after official
   assert.match(calls[1].url, /^https:\/\/git\.tangbai\.cc\//)
   assert.equal(calls[2].url, calls[0].url, 'cache reuse still authenticates the official package')
   assert.equal(fs.readdirSync(directory).filter(name => name.endsWith('.part')).length, 0)
+})
+
+test('download authenticates the selected native asset and rejects a spoofed architecture before access', async t => {
+  const version = '2.0.0'
+  const official = rawRelease(version, { assets: [
+    rawAsset(`v${version}`, `BetterKuGou-v${version}-win-arm64-setup.exe`, 73),
+    rawAsset(`v${version}`, `BetterKuGou-v${version}-win-x64-setup.exe`, 74)
+  ] })
+  const { engine, calls } = createEngine(t, url => url.includes('api.github.com/')
+    ? jsonResponse([official]) : { headers: {}, body: packageBytes }, { officialResponse: () => jsonResponse(official) })
+  const { release } = await engine.check(target)
+  assert.equal(release.platform, 'win32')
+  assert.equal(release.arch, 'x64')
+  assert.equal(release.defaultAssetId, 74)
+  const [asset] = release.assets
+  const wrong = official.assets[0]
+  await assert.rejects(engine.download({ release, asset: { ...asset, id: wrong.id, name: wrong.name, url: wrong.browser_download_url } }), { code: 'INVALID_INPUT' })
+  await assert.rejects(engine.download({ release, asset: { ...asset, arch: 'arm64' } }), { code: 'INVALID_INPUT' })
+  assert.equal(calls.length, 1)
+  const result = await engine.download({ release, asset })
+  assert.equal(result.assetId, 74)
+  assert.equal(result.arch, 'x64')
+  assert.equal(calls.length, 3)
+})
+
+test('a proxy cannot advertise a different architecture for an official asset ID', async t => {
+  const version = '2.0.0'
+  const discovery = rawRelease(version, { assets: [rawAsset(`v${version}`, `BetterKuGou-v${version}-win-x64-setup.exe`, 74)] })
+  const official = rawRelease(version, { assets: [rawAsset(`v${version}`, `BetterKuGou-v${version}-win-arm64-setup.exe`, 74)] })
+  const { engine, calls, directory } = createEngine(t, () => jsonResponse([discovery]), { officialResponse: () => jsonResponse(official) })
+  const { release } = await engine.check(target)
+  await assert.rejects(engine.download({ release, asset: release.assets[0] }), { code: 'UNVERIFIED_RELEASE' })
+  assert.equal(calls.length, 2)
+  assert.deepEqual(fs.readdirSync(directory), [])
 })
 
 for (const failure of [

@@ -14,14 +14,14 @@
     "test": "node --test",
     "preview": "vite preview",
     "electron:dev": "vite",
-    "electron:build": "npm run build && electron-builder",
+    "electron:build": "npm run build && node scripts/build-distribution.cjs",
     "install-backend-deps": "cd KuGouMusicApi && npm install --omit=dev",
     "postinstall": "npm run install-backend-deps",
-    "dist": "npm run electron:build",
-    "dist:win": "npm run build && electron-builder --win --x64 --ia32 --arm64",
-    "dist:linux": "npm run build && electron-builder --linux",
-    "dist:mac": "npm run build && electron-builder --mac",
-    "build:win": "npm run build && electron-builder --win"
+    "dist": "npm run electron:build --",
+    "dist:win": "npm run build && node scripts/build-distribution.cjs --win",
+    "dist:linux": "npm run build && node scripts/build-distribution.cjs --linux",
+    "dist:mac": "npm run build && node scripts/build-distribution.cjs --mac",
+    "build:win": "npm run dist:win --"
   },
   "build": {
     "beforePack": "scripts/prepare-audio-effects.cjs",
@@ -61,8 +61,12 @@
         "to": "playlist-cache/playlistCacheWorker.cjs"
       },
       {
-        "from": "electron/services/updateWorker.cjs",
-        "to": "updater/updateWorker.cjs"
+        "from": "electron/services",
+        "to": "updater",
+        "filter": [
+          "updateWorker.cjs",
+          "updateAssets.cjs"
+        ]
       },
       {
         "from": "KuGouMusicApi",
@@ -82,16 +86,7 @@
     ],
     "win": {
       "signAndEditExecutable": true,
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64",
-            "ia32",
-            "arm64"
-          ]
-        }
-      ],
+      "target": "nsis",
       "icon": "public/logo.ico",
       "verifyUpdateCodeSignature": false
     },
@@ -101,6 +96,12 @@
         "deb",
         "rpm"
       ],
+      "publish": {
+        "provider": "github",
+        "owner": "FLC-Team",
+        "repo": "BetterKuGou",
+        "publishAutoUpdate": false
+      },
       "icon": "public/logo.png",
       "category": "AudioVideo;Audio;Player",
       "maintainer": "鸢夏 <1925019494@qq.com>",
@@ -123,18 +124,11 @@
       "afterRemove": "installer/linux-after-remove.tpl"
     },
     "mac": {
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ],
+      "target": "dmg",
       "icon": "public/logo.png"
     },
     "dmg": {
+      "artifactName": "${productName}-v${version}-mac-${arch}.${ext}",
       "background": "installer/assets/dmg-background.png",
       "window": {
         "width": 640,
@@ -172,7 +166,7 @@
       "installerIcon": "public/logo.ico",
       "uninstallerIcon": "public/logo.ico",
       "installerHeaderIcon": "public/logo.ico",
-      "artifactName": "${productName}-v${version}-setup.${ext}"
+      "artifactName": "${productName}-v${version}-win-${arch}-setup.${ext}"
     }
   },
   "dependencies": {

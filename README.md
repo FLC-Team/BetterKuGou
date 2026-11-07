@@ -24,16 +24,19 @@
 
 ### 下载安装
 
-前往 [Releases](https://github.com/FLC-Team/BetterKuGou/releases) 页面，下载适合你系统的安装包：
-- Windows: `BetterKuGou-*.exe`
-- macOS: `BetterKuGou-*.dmg`
-- Linux: `BetterKuGou-*.AppImage`、`*.deb`、`*.rpm`
+前往 [Releases](https://github.com/FLC-Team/BetterKuGou/releases)，按系统和架构选包。新版发布的文件名带平台和架构。
+
+| 平台 | 架构 | 文件名 |
+| --- | --- | --- |
+| Windows | x64、x86（文件名 `ia32`）、ARM64 | `BetterKuGou-v<版本>-win-<架构>-setup.exe` |
+| macOS | Intel（x64）、Apple Silicon（ARM64） | `BetterKuGou-v<版本>-mac-<架构>.dmg` |
+| Linux | x64、ARM64 | `BetterKuGou-v<版本>-linux-<架构>` 加 `.AppImage`、`.deb` 或 `.rpm` |
 
 ### 检查与下载更新
 
 桌面客户端中打开“设置 → 更新与备份 → 应用更新”，可手动检查版本、查看更新说明、下载更新包或取消任务。版本发现和下载传输优先使用 [git.tangbai.cc](https://git.tangbai.cc/)，失败后尝试 GitHub 原站。下载或复用缓存前必须从 [FLC-Team/BetterKuGou 官方发布](https://github.com/FLC-Team/BetterKuGou/releases) 核对资产与 SHA-256。GitHub 无法提供校验信息时，应用会提示下载失败。
 
-默认开启自动检查，启动 10 秒后检查，此后每 24 小时一次；自动下载默认关闭，可在此开启。更新渠道默认“正式版”，会排除版本号含 alpha 等预发布后缀的版本，即使 GitHub 未将其标记为预发布；“测试版”同时包含正式版与预发布。渠道与开关保存成功后生效，应用只提供高于当前版本的更新。
+默认开启自动检查，启动 10 秒后检查，此后每 24 小时一次。自动下载默认关闭，可在此开启。更新按当前运行的客户端架构选包，历史 Windows 通用安装包也可识别。Linux 优先选择当前安装格式的最新可用版本，自动下载需要匹配已识别的安装格式。更新渠道默认“正式版”，同时排除 GitHub 预发布标记和版本号中的预发布后缀。“测试版”同时包含正式版与预发布。渠道与开关保存成功后生效，应用只提供高于当前版本的更新。
 
 下载完成不会自动安装或退出应用。点击“手动安装”并在系统对话框明确确认后，才会打开已复核的安装包；AppImage 请通过“打开所在文件夹”自行处理。Linux 可选择发布中适配当前架构的 AppImage、DEB 或 RPM。离开设置页继续下载，重新进入可查看进度；下载文件位于应用用户数据目录下的 updates 文件夹。
 

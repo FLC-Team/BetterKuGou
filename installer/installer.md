@@ -54,6 +54,8 @@ macOS 保留 Finder 拖放；DMG 背景说明首次安装与退出后替换。Li
 
 打包入口由根 `package.json` 维护，Windows include 指向 `windows.nsh`。Windows 打包通过构建钩子校验并缓存官方 NSIS 3.12 工具包，CI 用同一编译器运行原生回归。
 
+`windows-architecture.nsh` 在读取安装范围和路径前选择与旧通用包一致的注册表视图，64 位 Windows 上的各架构安装与卸载共用 64 位视图。独立 ARM64 安装包校验系统架构并使用该架构的解包大小检查空间，独立 x64 安装包也支持系统明确启用了 x64 用户态仿真的 ARM64 Windows。
+
 静态图像由 `pwsh -NoProfile -File scripts/generate-installer-assets.ps1` 在 Windows PowerShell 7 下从公共 Logo 生成，附加 `-WindowsOnly` 仅更新 NSIS 深浅 Logo；其他平台直接打包已提交的 640 × 420 与 1280 × 840 DMG 背景。Windows 的实际版本比较由 `tests/installer-nsis.test.cjs` 提取原函数编译并执行验证。
 
 `node scripts/generate-installer-motion.cjs` 使用纯 Node 生成全部静音原生动画资源，无外部编码器或新增依赖；打包直接读取已提交 AVI。

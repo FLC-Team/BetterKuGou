@@ -55,6 +55,83 @@ function nsisString(value) {
   return String(value).replace(/\$/g, () => '$$').replace(/"/g, () => '$\\"')
 }
 
+test('split NSIS payloads keep the universal registry view, check host support and account for ARM64 size', { timeout: 20000 }, async t => {
+  if (process.platform !== 'win32') {
+    t.skip('NSIS architecture probe requires Windows')
+    return
+  }
+  const compiler = findCompiler()
+  if (!compiler) {
+    assert.notEqual(process.env.BK_REQUIRE_NSIS_TESTS, '1', 'NSIS architecture probe requires the packaging compiler')
+    t.skip('No cached NSIS compiler; run Windows packaging first or set BK_NSIS_COMPILER')
+    return
+  }
+
+  const tools = path.join(root, '.agent/tools')
+  fs.mkdirSync(tools, { recursive: true })
+  const directory = fs.mkdtempSync(path.join(tools, 'installer-arch-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const builder = require.resolve('app-builder-lib/templates/nsis/common.nsh')
+  const architecture = path.join(root, 'installer/windows-architecture.nsh')
+  const sizes = { APP_32: 101, APP_64: 201, APP_ARM64: 301 }
+  const machine = { ia32: '332', x64: '34404', arm64: '43620' }
+  const programFiles = 'HKLM "Software\\Microsoft\\Windows\\CurrentVersion" ProgramFilesDir'
+
+  for (const [name, packages, uninstaller] of [
+    ['ia32', ['APP_32']], ['x64', ['APP_64']], ['arm64', ['APP_ARM64']],
+    ['universal', Object.keys(sizes)], ['arm64 uninstaller', ['APP_ARM64'], true]
+  ]) {
+    await t.test(name, () => {
+      const source = path.join(directory, `${name}.nsi`)
+      const executable = path.join(directory, `${name}.exe`)
+      const report = path.join(directory, `${name}.txt`)
+      fs.writeFileSync(source, [
+        'Unicode true', 'RequestExecutionLevel user', 'SilentInstall silent', 'AutoCloseWindow true',
+        `OutFile "${nsisString(executable)}"`, '!define PRODUCT_NAME "BetterKuGou architecture probe"',
+        '!define PRODUCT_FILENAME "BKArchitectureProbe"', '!define VERSION "1.0.0"',
+        ...packages.flatMap(payload => [`!define ${payload}`, `!define ${payload}_UNPACKED_SIZE ${sizes[payload]}`]),
+        ...(uninstaller ? ['!define BUILD_UNINSTALLER'] : []),
+        `!include "${nsisString(builder)}"`, `!include "${nsisString(architecture)}"`,
+        'LangString win7Required 1033 "Windows 7 required"', 'Var ProbeReport',
+        'Section "Probe" ProbeSection', '  !insertmacro setSpaceRequired ${ProbeSection}',
+        '  SectionGetSize ${ProbeSection} $5', `  FileOpen $ProbeReport "${nsisString(report)}" a`,
+        '  FileSeek $ProbeReport 0 END', '  FileWrite $ProbeReport "$5"', '  FileClose $ProbeReport', 'SectionEnd',
+        'Function .onInit', '  ${GetNativeMachineArchitecture} $2', '  StrCpy $3 0',
+        '  ${If} ${IsNativeARM64}', '    StrCpy $1 -1',
+        "    System::Call 'kernel32::GetMachineTypeAttributes(i 0x8664, *i .r3)i.r1'",
+        '    ${If} $1 != 0', '      StrCpy $3 0', '    ${EndIf}', '    IntOp $3 $3 & 1', '  ${EndIf}',
+        '  ${IfNot} ${IsNativeIA32}', '    SetRegView 64', '  ${EndIf}',
+        `  ReadRegStr $6 ${programFiles}`, '  SetRegView 32',
+        `  FileOpen $ProbeReport "${nsisString(report)}" w`, '  FileWrite $ProbeReport "$2,$3,"',
+        '  FileClose $ProbeReport', '  !insertmacro check64BitAndSetRegView',
+        `  ReadRegStr $8 ${programFiles}`, `  FileOpen $ProbeReport "${nsisString(report)}" a`,
+        '  FileSeek $ProbeReport 0 END', '  ${If} $6 == $8', '    FileWrite $ProbeReport "same,"',
+        '  ${Else}', '    FileWrite $ProbeReport "different,"', '  ${EndIf}',
+        '  FileClose $ProbeReport', 'FunctionEnd', ''
+      ].join('\n'), 'utf8')
+      const compiled = spawnSync(compiler, ['/V2', '/WX', '/INPUTCHARSET', 'UTF8', source], {
+        cwd: root, encoding: 'utf8', timeout: 10000, windowsHide: true
+      })
+      assert.ifError(compiled.error)
+      assert.equal(compiled.status, 0, `NSIS architecture probe compilation failed:\n${compiled.stdout}\n${compiled.stderr}`)
+      const executed = spawnSync(executable, [], { cwd: directory, encoding: 'utf8', timeout: 3000, windowsHide: true })
+      assert.ifError(executed.error)
+      const [host, emulatedX64, registryView, size] = fs.readFileSync(report, 'utf8').split(',')
+      assert.ok(Object.values(machine).includes(host), `Unexpected native Windows architecture ${host}`)
+      const blocked = name === 'arm64' ? host !== machine.arm64
+        : name === 'x64' && host !== machine.x64 && !(host === machine.arm64 && emulatedX64 === '1')
+      assert.equal(executed.status, blocked ? 2 : 0)
+      if (blocked) {
+        assert.equal(registryView, '', 'wrong architecture stops before installation work')
+      } else {
+        assert.equal(registryView, 'same', 'use the OS registry view shared with universal installers')
+        const payload = name === 'universal' ? { [machine.ia32]: 'APP_32', [machine.x64]: 'APP_64', [machine.arm64]: 'APP_ARM64' }[host] : packages[0]
+        assert.equal(Number(size), sizes[payload], 'space check uses the selected payload size')
+      }
+    })
+  }
+})
+
 const comparisons = [
   ['same hyphenated prerelease terminates', '0.1.6-alpha-pre1', '0.1.6-alpha-pre1', '0'],
   ['numeric prerelease ordering', '1.0.0-alpha.2', '1.0.0-alpha.10', '-1'],

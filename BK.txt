@@ -81,6 +81,7 @@ Windows 任务栏歌词等待 `windowsTaskbar.ps1` 提供首个任务栏快照�
 - Windows 安装包：`npm run build:win`
 - 输出：`dist/`、`dist-electron/`、`release/`
   Windows NSIS 先校验目录和空间，在目标卷严格解包并替换程序目录。安装失败恢复旧文件，卸载按清单清理，保留额外文件。
+  GitHub 按 Windows x64/x86/ARM64、macOS x64/ARM64、Linux x64/ARM64 分开发布。更新随客户端架构选包，Linux 优先同安装格式。
   应用内更新先由 GitHub 官方发布核对资产及 SHA-256。代理用于发现和传输。
 
 ## 最近变更记录

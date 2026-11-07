@@ -332,6 +332,21 @@ test('missing platform packages link to the fixed project releases and release n
   assert.deepEqual(ui.opened, ['https://github.com/FLC-Team/BetterKuGou/releases'])
 })
 
+test('architecture and installed Linux format are visible and a missing matching format explains the manual alternative', async t => {
+  const ui = mountUpdates(t, {
+    snapshot: state(1, {
+      status: 'available',
+      target: { platform: 'linux', arch: 'arm64', installedFormat: 'deb' },
+      release: release([{ id: 23, name: 'linux-arm64.AppImage', format: 'AppImage', arch: 'arm64', size: 4096 }])
+    })
+  })
+  await flush()
+  assert.match(ui.text(), /Linux · ARM64 · deb/)
+  assert.match(ui.text(), /AppImage · ARM64 · 4\.0 KB/)
+  assert.match(ui.text(), /暂无 deb 包/)
+  assert.ok(ui.button('下载更新包'))
+})
+
 test('unknown download progress stays indeterminate and a real zero is distinct from missing progress', async t => {
   const ui = mountUpdates(t, { snapshot: state(1, { status: 'downloading', release: release(), progress: { received: 0, total: 0, percent: null } }) })
   await flush()

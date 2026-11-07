@@ -5,6 +5,7 @@ const crypto = require('node:crypto')
 const { Transform } = require('node:stream')
 const { pipeline } = require('node:stream/promises')
 const { isMainThread, parentPort, workerData } = require('node:worker_threads')
+const { selectAssets } = require('./updateAssets.cjs')
 
 const REPOSITORY = 'FLC-Team/BetterKuGou'
 const PROXY = 'https://git.tangbai.cc/'
@@ -61,33 +62,8 @@ function compareVersions(left, right) {
   return 0
 }
 
-function assetFormat(name) {
-  if (/-setup\.exe$/i.test(name)) return 'exe'
-  if (/\.dmg$/i.test(name)) return 'dmg'
-  if (/\.AppImage$/i.test(name)) return 'AppImage'
-  if (/\.deb$/i.test(name)) return 'deb'
-  if (/\.rpm$/i.test(name)) return 'rpm'
-  return null
-}
-
-function assetArchitecture(name, format, releaseVersion) {
-  const tokens = name.toLowerCase().split(/[^a-z0-9]+/)
-  if (tokens.includes('universal')) return 'universal'
-  if (tokens.includes('arm64') || tokens.includes('aarch64')) return 'arm64'
-  if (tokens.includes('armv7l') || tokens.includes('armv7') || tokens.includes('armhf') || tokens.includes('arm')) return 'armv7l'
-  if (tokens.includes('x64') || tokens.includes('amd64') || /(?:^|[-_.])x86_64(?:[-_.]|$)/i.test(name)) return 'x64'
-  if (tokens.includes('ia32') || tokens.includes('i386') || tokens.includes('i686') || tokens.includes('x86')) return 'ia32'
-  if (format === 'exe') return 'universal'
-  // 仅精确匹配已知无架构历史名；未知架构后缀绝不能当作 x64。
-  if (releaseVersion && (format === 'AppImage' || format === 'dmg')) {
-    const expected = [`BetterKuGou-${releaseVersion}.${format}`, `BetterKuGou-v${releaseVersion}.${format}`]
-    if (expected.some(value => value.toLowerCase() === name.toLowerCase())) return 'x64'
-  }
-  return null
-}
-
 function validAssetName(name) {
-  return typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9._ ()-]{0,179}$/.test(name) && !name.endsWith('.') && !name.endsWith(' ')
+  return typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9.+_-]{0,179}$/.test(name) && !name.endsWith('.')
 }
 
 function validDownloadUrl(value, tag, name) {
@@ -98,24 +74,13 @@ function validDownloadUrl(value, tag, name) {
   } catch { return false }
 }
 
-/** 只向主进程返回当前平台可安装的资产；历史无架构 Linux 包仅视为 x64。 */
-function selectAssets(assets, { platform, arch, releaseVersion }) {
-  const formats = platform === 'win32' ? ['exe'] : platform === 'darwin' ? ['dmg'] : platform === 'linux' ? ['AppImage', 'deb', 'rpm'] : []
-  return assets.filter(asset => {
-    if (!formats.includes(asset.format)) return false
-    const assetArch = assetArchitecture(asset.name, asset.format, releaseVersion)
-    return assetArch === arch || assetArch === 'universal'
-  }).sort((a, b) => formats.indexOf(a.format) - formats.indexOf(b.format) || (assetArchitecture(a.name, a.format, releaseVersion) === arch ? 0 : 1) - (assetArchitecture(b.name, b.format, releaseVersion) === arch ? 0 : 1) || a.name.localeCompare(b.name))
-}
-
 function normalizeAsset(asset, tag) {
   if (!asset || !Number.isSafeInteger(asset.id) || asset.id <= 0 || !validAssetName(asset.name)
     || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > 10 * 1024 ** 3
+    || (asset.state != null && asset.state !== 'uploaded')
     || !validDownloadUrl(asset.browser_download_url, tag, asset.name)) return null
-  const format = assetFormat(asset.name)
-  if (!format) return null
   const digest = typeof asset.digest === 'string' && /^sha256:[a-f0-9]{64}$/i.test(asset.digest) ? asset.digest.toLowerCase() : null
-  return { id: asset.id, name: asset.name, size: asset.size, url: asset.browser_download_url, digest, format }
+  return { id: asset.id, name: asset.name, size: asset.size, url: asset.browser_download_url, digest }
 }
 
 function normalizeRelease(raw, target) {
@@ -125,6 +90,7 @@ function normalizeRelease(raw, target) {
   const assets = selectAssets(raw.assets.map(asset => normalizeAsset(asset, raw.tag_name)).filter(Boolean), { ...target, releaseVersion: version.version })
   return {
     id: raw.id, version: version.version, tag: raw.tag_name, channel: target.channel,
+    platform: target.platform, arch: target.arch,
     name: typeof raw.name === 'string' ? raw.name.slice(0, 500) : raw.tag_name,
     notes: typeof raw.body === 'string' ? raw.body.slice(0, 50000) : '',
     publishedAt: typeof raw.published_at === 'string' ? raw.published_at : null,
@@ -214,15 +180,17 @@ function createUpdateEngine({ downloadRoot, request, now = Date.now, fsApi = fs,
     return { value, bytes }
   }
 
-  /** 优先选择有当前平台安装包的新版，保留无包发布的说明作为回退。 */
+  /** 优先选择当前架构与已装格式的新版，保留兼容格式和无包说明作为回退。 */
   async function check(target, { signal } = {}) {
     const current = parseVersion(target?.currentVersion)
     if (!current || !['stable', 'beta'].includes(target.channel) || !['win32', 'darwin', 'linux'].includes(target.platform) || !['x64', 'ia32', 'arm64', 'armv7l'].includes(target.arch)) throw updateError('INVALID_INPUT', '检查更新参数无效')
+    const preferredFormat = target.platform === 'linux' ? target.preferredFormat : null
     let lastError
     for (const source of ['proxy', 'github']) {
       try {
         let latest = null
         let latestCompatible = null
+        let latestPreferred = null
         let totalBytes = 0
         for (let page = 1; page <= MAX_PAGES; page += 1) {
           assertNotCancelled(signal)
@@ -236,13 +204,15 @@ function createUpdateEngine({ downloadRoot, request, now = Date.now, fsApi = fs,
             const candidate = normalizeRelease(item, target)
             if (candidate && (!latest || compareVersions(candidate.version, latest.version) > 0)) latest = candidate
             if (candidate?.assets.length && (!latestCompatible || compareVersions(candidate.version, latestCompatible.version) > 0)) latestCompatible = candidate
+            if (preferredFormat && candidate?.assets[0]?.format === preferredFormat
+              && (!latestPreferred || compareVersions(candidate.version, latestPreferred.version) > 0)) latestPreferred = candidate
           }
           if (raw.length < PAGE_SIZE) break
           if (page === MAX_PAGES) throw updateError('INVALID_METADATA', '更新版本分页超过限制')
         }
         assertNotCancelled(signal)
-        const next = latestCompatible && compareVersions(latestCompatible.version, current) > 0 ? latestCompatible : latest
-        return { release: next && compareVersions(next.version, current) > 0 ? next : null, hasReleases: Boolean(latest), latestVersion: latest?.version ?? null, source, checkedAt: new Date(now()).toISOString() }
+        const next = [latestPreferred, latestCompatible, latest].find(candidate => candidate && compareVersions(candidate.version, current) > 0)
+        return { release: next ?? null, hasReleases: Boolean(latest), latestVersion: latest?.version ?? null, source, checkedAt: new Date(now()).toISOString() }
       } catch (error) {
         assertNotCancelled(signal)
         if (error.code === 'CANCELLED') throw error
@@ -265,8 +235,10 @@ function createUpdateEngine({ downloadRoot, request, now = Date.now, fsApi = fs,
     if (official?.id !== release.id || official.tag_name !== release.tag || official.draft !== false
       || typeof official.prerelease !== 'boolean' || (release.channel === 'stable' && official.prerelease)
       || !Array.isArray(official.assets)) throw updateError('UNVERIFIED_RELEASE', '安装包对应的版本与 GitHub 官方发布不一致，请重新检查更新')
-    const published = normalizeAsset(official.assets.find(item => item?.id === asset.id && item.state === 'uploaded'), release.tag)
-    if (!published || published.name !== asset.name || published.size !== asset.size) throw updateError('UNVERIFIED_RELEASE', '安装包信息与 GitHub 官方发布不一致，请重新检查更新')
+    const officialAsset = normalizeAsset(official.assets.find(item => item?.id === asset.id && item.state === 'uploaded'), release.tag)
+    const [published] = selectAssets(officialAsset ? [officialAsset] : [], { platform: release.platform, arch: release.arch, releaseVersion: release.version })
+    if (!published || published.name !== asset.name || published.size !== asset.size || published.format !== asset.format
+      || published.platform !== asset.platform || published.arch !== asset.arch) throw updateError('UNVERIFIED_RELEASE', '安装包信息与 GitHub 官方发布不一致，请重新检查更新')
     if (!published.digest) throw updateError('UNVERIFIED_RELEASE', 'GitHub 官方发布未提供安装包的 SHA256 校验值，无法安全下载')
     return published
   }
@@ -319,12 +291,19 @@ function createUpdateEngine({ downloadRoot, request, now = Date.now, fsApi = fs,
     if (!version || version.version !== release.version || !['stable', 'beta'].includes(release.channel)
       || (release.channel === 'stable' && version.prerelease.length)
       || !Number.isSafeInteger(release.id) || release.id <= 0 || !asset || !Number.isSafeInteger(asset.id) || asset.id <= 0
-      || !validAssetName(asset.name) || !assetFormat(asset.name) || asset.format !== assetFormat(asset.name)
+      || !validAssetName(asset.name)
       || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > 10 * 1024 ** 3 || !validDownloadUrl(asset.url, release.tag, asset.name)) throw updateError('INVALID_INPUT', '更新安装包信息无效')
+    const [compatible] = selectAssets([asset], { platform: release.platform, arch: release.arch, releaseVersion: version.version })
+    if (!compatible || compatible.format !== asset.format || compatible.platform !== asset.platform || compatible.arch !== asset.arch) {
+      throw updateError('INVALID_INPUT', '更新安装包与当前平台或架构不匹配')
+    }
     const published = await authenticateAsset(release, asset, signal)
     await ensureRoot()
     const filename = containedFile(path.join(root, `${release.id}-${published.id}-${published.name}`))
-    const baseRecord = { path: filename, assetId: published.id, assetName: published.name, version: release.version, format: published.format, size: published.size, digest: published.digest }
+    const baseRecord = {
+      path: filename, releaseId: release.id, assetId: published.id, assetName: published.name, version: release.version,
+      format: published.format, platform: published.platform, arch: published.arch, size: published.size, digest: published.digest
+    }
     try { return await verify({ file: { ...baseRecord, source: 'cache' } }, { signal }) } catch (error) {
       if (error.code === 'CANCELLED' || error.code === 'INVALID_PATH' || (error.code === 'DISK_ERROR' && error.causeCode !== 'ENOENT')) throw error
       // 仅本服务按资产身份生成的缓存可失效重下；不会读取或覆盖任意用户路径。

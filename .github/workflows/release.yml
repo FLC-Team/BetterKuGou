@@ -21,11 +21,33 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact: windows
+            target: win
+            arch: x64
+            artifact: windows-x64
+          - os: windows-latest
+            target: win
+            arch: ia32
+            artifact: windows-ia32
+          - os: windows-latest
+            target: win
+            arch: arm64
+            artifact: windows-arm64
           - os: ubuntu-24.04
-            artifact: linux
-          - os: macos-latest
-            artifact: macos
+            target: linux
+            arch: x64
+            artifact: linux-x64
+          - os: ubuntu-24.04-arm
+            target: linux
+            arch: arm64
+            artifact: linux-arm64
+          - os: macos-15-intel
+            target: mac
+            arch: x64
+            artifact: macos-x64
+          - os: macos-15
+            target: mac
+            arch: arm64
+            artifact: macos-arm64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,20 +62,21 @@ jobs:
       - name: Install Linux native plugin window dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxcb1-dev libxkbcommon-x11-dev
+      - name: Install Linux ARM64 packaging tools
+        if: matrix.artifact == 'linux-arm64'
+        run: |
+          sudo apt-get install -y ruby ruby-dev build-essential rpm squashfs-tools
+          sudo gem install fpm --version 1.17.0 --no-document
+          fpm --version
       - run: npm run check
       - run: npm run build:audio-effects
       - run: npm test
-      - run: |
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            npm run dist:win -- --publish never
-          elif [ "${{ runner.os }}" = "Linux" ]; then
-            npm run dist:linux -- --publish never
-          elif [ "${{ runner.os }}" = "macOS" ]; then
-            npm run dist:mac -- --publish never
-          fi
+      - name: Package one architecture
+        run: npm run "dist:$BK_TARGET" -- "--$BK_ARCH" --publish never
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BK_TARGET: ${{ matrix.target }}
+          BK_ARCH: ${{ matrix.arch }}
       - name: Verify native installer protocol, UI and file transactions
         if: runner.os == 'Windows'
         shell: pwsh
@@ -71,11 +94,11 @@ jobs:
           name: BetterKuGou-${{ matrix.artifact }}
           overwrite: true
           path: |
-            release/BetterKuGou-*-setup.exe
-            release/BetterKuGou-*.AppImage
-            release/betterkugou_*.deb
-            release/betterkugou-*.rpm
-            release/BetterKuGou-*.dmg
+            release/BetterKuGou-v*-win-${{ matrix.arch }}-setup.exe
+            release/BetterKuGou-v*-linux-${{ matrix.arch }}.AppImage
+            release/BetterKuGou-v*-linux-${{ matrix.arch }}.deb
+            release/BetterKuGou-v*-linux-${{ matrix.arch }}.rpm
+            release/BetterKuGou-v*-mac-${{ matrix.arch }}.dmg
           if-no-files-found: error
 
   release:

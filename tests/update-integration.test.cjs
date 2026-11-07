@@ -8,7 +8,7 @@ const vue = require('vue')
 
 const quiet = Object.fromEntries(['trace', 'log', 'debug', 'info', 'warn', 'error'].map(key => [key, () => {}]))
 
-function loadMain({ packaged = false } = {}) {
+function loadMain({ packaged = false, platform = 'linux', arch = 'x64', appImage, packageType } = {}) {
   const windows = [], handlers = new Map(), timeline = []
   let options, listener, confirmation = 0, verifyHook, stopCalls = 0
   const file = { path: '/user-data/updates/1/setup.exe', assetId: 7, assetName: 'setup.exe', version: '1.0.0', format: 'exe' }
@@ -59,6 +59,15 @@ function loadMain({ packaged = false } = {}) {
         nativeImage: { createFromPath: () => ({}) }, Tray: class {}, Menu: {}
       }
       if (name === './logger') return quiet
+      if (name === 'fs') return {
+        ...fs,
+        readFileSync(file, encoding) {
+          assert.equal(file, path.join('/resources', 'package-type'))
+          assert.equal(encoding, 'utf8')
+          if (packageType === undefined) throw Object.assign(new Error('missing marker'), { code: 'ENOENT' })
+          return packageType
+        }
+      }
       if (name === './services/lyricLibraryService') return { createLyricLibraryService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/playlistCacheService') return { createPlaylistCacheService: () => ({ configure() {}, stop: async () => {} }) }
       if (name === './services/musicDownloadService') return { createMusicDownloadService: () => ({ configure: async () => {}, setSession: async () => {}, stop: async () => {} }) }
@@ -69,7 +78,7 @@ function loadMain({ packaged = false } = {}) {
       return require(name)
     },
     __dirname: path.join(__dirname, '../electron'),
-    process: { platform: 'linux', arch: 'x64', resourcesPath: '/resources', env: {} },
+    process: { platform, arch, resourcesPath: '/resources', env: { APPIMAGE: appImage, BK_SKIP_CHCP: '1' } },
     console: quiet, global: {}, setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {}
   })
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../electron/main.js'), 'utf8'), context)
@@ -96,6 +105,21 @@ test('update resources resolve in development and packaged apps; startup and shu
     await Promise.all([f.api.performApplicationCleanup(), f.api.performApplicationCleanup()])
     assert.equal(f.stopCalls(), 1)
     assert.equal(f.timeline.some(([name]) => ['open', 'confirm', 'quit'].includes(name)), false)
+  }
+})
+
+test('packaged Linux passes its native package marker to the updater, with AppImage launch taking precedence', () => {
+  for (const [settings, expected] of [
+    [{ packageType: 'deb\n' }, 'deb'],
+    [{ packageType: 'rpm' }, 'rpm'],
+    [{ packageType: 'rpm', appImage: '/opt/BetterKuGou.AppImage' }, 'AppImage'],
+    [{ packageType: 'unknown' }, null],
+    [{ packageType: 'deb', packaged: false }, null],
+    [{ packageType: 'deb', platform: 'darwin' }, null]
+  ]) {
+    const f = loadMain({ packaged: true, arch: 'arm64', ...settings })
+    assert.equal(f.options().arch, 'arm64')
+    assert.equal(f.options().preferredFormat, expected)
   }
 })
 

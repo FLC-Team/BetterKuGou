@@ -9,10 +9,10 @@ const release = {
   id: 5, version: '0.2.0', tag: 'v0.2.0', name: 'Version 0.2.0', notes: 'Release notes',
   publishedAt: '2026-10-17T00:00:00Z', url: 'https://github.com/example/project/releases/tag/v0.2.0',
   defaultAssetId: 7,
-  assets: [{ id: 7, name: 'BetterKuGou-v0.2.0-x64-setup.exe', size: 100, format: 'exe', url: 'https://github.com/example/package.exe', digest: 'sha256:placeholder' }]
+  assets: [{ id: 7, name: 'BetterKuGou-v0.2.0-x64-setup.exe', size: 100, format: 'exe', arch: 'x64', url: 'https://github.com/example/package.exe', digest: 'sha256:placeholder' }]
 }
 
-function fixture({ terminateExits = true } = {}) {
+function fixture({ terminateExits = true, platform = 'win32', arch = 'x64', preferredFormat } = {}) {
   const timers = new Set()
   const workers = []
   const states = []
@@ -54,7 +54,7 @@ function fixture({ terminateExits = true } = {}) {
   const exported = context.module.exports
   const service = exported.createUpdateService({
     workerPath: '/resources/updater/updateWorker.cjs', downloadRoot: '/user-data/updates',
-    currentVersion: '0.1.0', platform: 'win32', arch: 'x64', Worker: MockWorker,
+    currentVersion: '0.1.0', platform, arch, preferredFormat, Worker: MockWorker,
     logger, onState: snapshot => states.push(snapshot)
   })
   return {
@@ -73,8 +73,8 @@ function fixture({ terminateExits = true } = {}) {
     downloaded() {
       const worker = workers.at(-1)
       const record = {
-        path: '/user-data/updates/package.exe', assetId: 7, assetName: release.assets[0].name,
-        version: release.version, format: 'exe', source: 'proxy', size: 100, digest: 'sha256:placeholder'
+        path: '/user-data/updates/package.exe', releaseId: release.id, assetId: 7, assetName: release.assets[0].name,
+        version: release.version, format: 'exe', arch: 'x64', source: 'proxy', size: 100, digest: 'sha256:placeholder'
       }
       worker.result(worker.last('download'), record)
       return record
@@ -176,6 +176,28 @@ test('automatic download uses eligible metadata, reports progress and never intr
   assert.equal(f.service.getState().status, 'downloaded')
   assert.equal(f.service.download(7).status, 'downloaded')
   assert.deepEqual(worker.commands.map(item => item.action), ['check', 'download'])
+})
+
+test('Linux automatically downloads only a known matching install format and leaves alternatives manual', () => {
+  const appImage = { id: 11, name: 'BetterKuGou-v0.2.0-linux-arm64.AppImage', format: 'AppImage', arch: 'arm64', size: 100 }
+  const deb = { id: 12, name: 'BetterKuGou-v0.2.0-linux-arm64.deb', format: 'deb', arch: 'arm64', size: 80 }
+  for (const preferredFormat of ['deb', 'rpm', undefined]) {
+    const f = fixture({ platform: 'linux', arch: 'arm64', preferredFormat })
+    f.service.configure({ autoCheck: false, autoDownload: true })
+    f.service.check()
+    const assets = preferredFormat === 'deb' ? [deb, appImage] : [appImage, deb]
+    const worker = f.checked({ ...release, assets, defaultAssetId: assets[0].id })
+    assert.equal(worker.last('check').preferredFormat, preferredFormat ?? null)
+    assert.equal(f.service.getState().target.arch, 'arm64')
+    assert.equal(f.service.getState().release.assets[0].arch, 'arm64')
+    if (preferredFormat === 'deb') {
+      assert.equal(worker.last('download').asset.id, deb.id)
+    } else {
+      assert.equal(worker.last('download'), undefined)
+      f.service.download(appImage.id)
+      assert.equal(worker.last('download').asset.id, appImage.id)
+    }
+  }
 })
 
 test('missing matching package does not auto-download and invalid IDs cannot inject a download URL', () => {
@@ -369,6 +391,18 @@ test('rechecking the same release retains the downloaded file and failed verific
   await assert.rejects(verification, error => error.code === 'HASH_MISMATCH')
   assert.equal(f.service.getState().downloaded, null)
   assert.equal(f.service.getState().error.code, 'HASH_MISMATCH')
+  await assert.rejects(f.service.getDownloadedFile(), error => error.code === 'UPDATE_NOT_DOWNLOADED')
+})
+
+test('a refreshed asset with the same ID and a changed filename no longer authorizes the old download', async () => {
+  const f = fixture()
+  f.service.check()
+  f.checked()
+  f.service.download(7)
+  f.downloaded()
+  f.service.check()
+  f.checked({ ...release, assets: [{ ...release.assets[0], name: 'BetterKuGou-v0.2.0-win-x64-setup.exe' }] })
+  assert.equal(f.service.getState().downloaded, null)
   await assert.rejects(f.service.getDownloadedFile(), error => error.code === 'UPDATE_NOT_DOWNLOADED')
 })
 

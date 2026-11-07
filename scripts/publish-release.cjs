@@ -3,6 +3,7 @@ const path = require('node:path')
 const { createHash } = require('node:crypto')
 const { execFileSync } = require('node:child_process')
 const { version } = require('../package.json')
+const { releaseAssetGroups } = require('../electron/services/updateAssets.cjs')
 
 function verifyReleaseTag(tag) {
   if (tag !== `v${version}`) {
@@ -10,18 +11,19 @@ function verifyReleaseTag(tag) {
   }
 }
 
-/** Check the exact Windows, Linux x64 and macOS asset set before GitHub publishes it. */
+/** Check each platform and architecture's exact asset set before publishing. */
 function validateReleaseAssets(directory) {
-  const groups = {
-    windows: [`BetterKuGou-v${version}-setup.exe`],
-    linux: [`BetterKuGou-${version}.AppImage`, `betterkugou_${version}_amd64.deb`, `betterkugou-${version}.x86_64.rpm`],
-    macos: [`BetterKuGou-${version}.dmg`, `BetterKuGou-${version}-arm64.dmg`]
+  const groups = releaseAssetGroups(version)
+  const expectedFolders = new Set(Object.keys(groups).map(group => `BetterKuGou-${group}`))
+  const folders = fs.readdirSync(directory, { withFileTypes: true })
+  if (folders.length !== expectedFolders.size || folders.some(folder => !folder.isDirectory() || !expectedFolders.has(folder.name))) {
+    throw new Error('发布产物缺少约定的平台与架构目录，或存在多余目录。')
   }
-  return Object.entries(groups).flatMap(([platform, expected]) => {
-    const folder = path.join(directory, `BetterKuGou-${platform}`)
+  return Object.entries(groups).flatMap(([group, expected]) => {
+    const folder = path.join(directory, `BetterKuGou-${group}`)
     const files = fs.readdirSync(folder, { withFileTypes: true })
     if (files.length !== expected.length || files.some(file => !file.isFile() || !expected.includes(file.name))) {
-      throw new Error(`${platform} 安装包不完整或存在多余文件。应包含 ${expected.join(', ')}。`)
+      throw new Error(`${group} 安装包不完整或存在多余文件。应包含 ${expected.join(', ')}。`)
     }
     return expected.map(name => {
       const file = path.join(folder, name)

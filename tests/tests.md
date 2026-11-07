@@ -67,7 +67,7 @@
 - `preload.test.cjs`：白名单桥接、事件隐藏、订阅解绑和播放时间输入边界。
 - `install-quit-service.test.cjs`：真实本机命名管道能力探测、保存确认后退出、断开/超时/失败/并发取消及资源释放。
 - `install-quit-integration.test.cjs`：仅 Windows 打包版启动协作、主窗口顶层 frame/请求代次、重载/崩溃取消与保存中托盘操作拦截。
-- `installer-packaging.test.cjs` 核对平台打包文件名、更新器架构识别、版本标签与完整产物门槛。使用实际打包复制规则检查后端运行文件和本机配置的取舍，验证 DEB/RPM 卸载脚本生成及 Linux 下的删除范围，并保留 DMG/NSIS 配置和资源尺寸检查。
+- `installer-packaging.test.cjs` 核对七个架构任务和十一种文件名、版本标签与完整产物门槛。使用实际打包复制规则检查更新 Worker 及共享清单、后端运行文件和本机配置，验证 DEB/RPM 格式标记与卸载，并保留 DMG/NSIS 配置和资源尺寸检查。
 - `installer-install-mode.test.cjs`：原生保护页结合 ReadProcessMemory 的合法范围正控和跨边界失败负控，不依赖特定 NSIS 插件的异常退出码；禁止生产宏回退到旧固定宽度指针读取，并执行真实宏验证安全拷贝、已有路径、回退、`/D` 和寄存器/栈保护。不安装、不修改真实安装记录，Windows CI 打包后要求执行。
 - `installer-windows-files.test.cjs` 在隔离目录运行实际 Windows 文件辅助脚本，覆盖专用目录和链接校验、Unicode 路径、暂存不完整、同卷替换与恢复、历史备份确认、卸载保留额外文件。Windows 发布构建要求原生用例通过。
 - `installer-completion.test.cjs`：真实初始化、文件提取、进度离场和完成页衔接；成功后自动进入真实完成页，不以测试专用自动关闭设置或替代完成页掩盖生产行为，不执行系统安装。

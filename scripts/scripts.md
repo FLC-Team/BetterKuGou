@@ -9,6 +9,7 @@
 - `build-audio-effects.cjs`：获取并核对固定提交的 VST3 SDK、KISS FFT 与 JSON 依赖，使用 CMake 编译目标平台/架构宿主并生成第三方许可；本机架构构建后运行原生自检。依赖及编译缓存位于 `.cache/audio-effects/`，支持 `CMAKE` 与 `BK_NATIVE_GENERATOR` 指定现有工具链。
 - `prepare-audio-effects.cjs`：electron-builder beforePack 钩子，构建目标架构并只将对应宿主/许可放入分发暂存目录；二进制及 Worker 通过 extraResources 放在 ASAR 外。
 - `prepare-windows-nsis.cjs` 为 Windows 安装打包下载并校验官方 NSIS 3.12 工具包，缓存到 `.cache/nsis/3.12/`，同时兼容锁定版 electron-builder 的目录约定。
+- `build-distribution.cjs` 按目标架构逐次启动打包器，默认仅生成本地产物。Windows 和 macOS 安装包可一次请求多个架构，Linux 使用匹配的本机架构。Linux ARM64 使用本机的 FPM、RPM 和 mksquashfs 工具，安装包文件名统一标明目标架构。
 - `generate-installer-assets.ps1`：在 Windows PowerShell 7 使用现有公共 Logo 生成两份适配暖白/暖炭品牌栏的 NSIS BMP 和 DMG 1×/2× PNG，支持 `-WindowsOnly` 仅更新 NSIS 资源；打包直接读取已提交资源，其他平台无需执行此工具。
 - `generate-installer-motion.cjs`：使用纯 Node 绘制音乐波形与完成勾形，编码为 Windows 原生动画控件支持的单视频流、无声、固定调色板 RLE8 AVI；输出深浅色及 96/120/144/192 DPI 资源，不依赖外部编码器。
 - `publish-release.cjs` 核对发布标签与 `package.json` 版本及三平台的完整安装包。发布任务使用 GitHub CLI 建立草稿，验证远端文件的大小和 SHA-256 后才公开；重试只给一致的草稿补齐文件，保留已公开发布。
