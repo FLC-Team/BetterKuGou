@@ -24,6 +24,7 @@
 - `musicTransfer.cjs`：下载网络边界、受限重定向、公网地址与封面校验、强 ETag/Range 续传、实际容器检查及 SHA256；与下载 Worker 一同发布。
 
 - `lyricLibraryService.js`：在固定私有目录独立保存曲目歌词版本，提供列表、读取、在线保存、编辑副本与版本选择；异步串行读写，临时文件原子发布，不与离线缓存配额或账号清理混用。
+- `backgroundImageService.js`：校验有界 WebP 快照，按内容摘要原子发布到固定图片目录；本地协议只提供校验后的图片 GET 响应。
 - `audioEffectsIntegration.js`：固定主窗口音效 IPC、一次性 MessagePort、目录选择及窗口生命周期清理，集中解析开发/打包平台架构路径。
 - `audioEffectsService.js`：插件发现与注册表、效果链事务、独立原生窗口、自动参数保存和当前曲目 BPM；偏好复用 settingsStore，私有状态位于 userData/audio-effects。
 - `audioEffectsWorker.cjs` / `audioEffectsProtocol.cjs`：Utility Process 与原生宿主的有界二进制协议、独立扫描子进程、超时和故障旁通；直接接收 Worklet 的 PCM，不由主进程转发。

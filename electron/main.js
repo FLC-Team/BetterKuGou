@@ -38,11 +38,13 @@ const {
 // 检查是否在开发环境中（手动检测，避免 ESM 依赖问题）
 const isDev = !app.isPackaged
 
-// 音频协议在 ready 前注册，开发页面和打包页面共用受限的流式资源入口。
+// 本地媒体协议在 ready 前注册，开发页面和打包页面共用受限的资源入口。
 protocol?.registerSchemesAsPrivileged([{
   scheme: 'bk-cache', privileges: { standard: true, secure: true, stream: true, corsEnabled: true, supportFetchAPI: true }
 }, {
   scheme: 'bk-audio', privileges: { standard: true, secure: true, stream: true, corsEnabled: true, supportFetchAPI: true }
+}, {
+  scheme: 'bk-background', privileges: { standard: true, secure: true }
 }])
 
 // 禁用 GPU 缓存以避免权限错误
@@ -1738,6 +1740,17 @@ app.whenReady().then(async () => {
     initializeLyricLibraryService()
   } catch (error) {
     logger.error('lyric-library', '初始化歌词管理失败', error)
+  }
+  try {
+    const { createBackgroundImageService } = require('./services/backgroundImageService')
+    const backgroundImages = await createBackgroundImageService(app.getPath('userData'), logger)
+    protocol.handle('bk-background', backgroundImages.handleRequest)
+    ipcMain.handle('background-image:store', (event, bytes) => {
+      if (isQuitting || !isMainWindowSender(event)) throw new Error('背景图片只能从应用主窗口更改。')
+      return backgroundImages.store(bytes)
+    })
+  } catch (error) {
+    logger.error('background-image', '初始化背景图片服务失败', error)
   }
 
   // 启动后端服务器

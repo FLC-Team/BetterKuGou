@@ -4,6 +4,7 @@ import { useSettingsStore } from '../../stores/settingsStore.js'
 import { readLyricRomanization } from '../../utils/lyricProcessing.js'
 import { parseDesktopLyrics } from '../../utils/desktopLyrics.js'
 import { getSongSearchKeyword } from '../../utils/songMetadata.js'
+import { backgroundImageUrl } from '../../../electron/backgroundImage.mjs'
 import ContextMenu from '../common/ContextMenu.vue'
 import ArtistLinks from '../common/ArtistLinks.vue'
 import ArtworkCover from '../common/ArtworkCover.vue'
@@ -16,6 +17,7 @@ import shuffleIcon from '../../assets/icons/shuffle.svg'
 
 // DOM 与帧缓存不进入 Vue 响应式依赖，避免桥段每帧重建整首歌词的虚拟节点。
 const bridgeAnimationFrames = new WeakMap()
+const backgroundMotionFrames = new WeakMap()
 const lyricAnimationFrames = new WeakMap()
 const lyricCharacters = new WeakMap()
 const lyricSegmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null
@@ -24,6 +26,8 @@ export default {
   name: 'LyricView',
   components: { ContextMenu, ArtistLinks, ArtworkCover, VolumeControl, LibraryActions },
   props: {
+    readBackgroundBeat: Function,
+    stopBackgroundBeat: Function,
     favoritePending: { type: Boolean, default: false },
     qualitySwitchAvailable: { type: Boolean, default: true },
     volume: { type: Number, default: 80 },
@@ -228,6 +232,30 @@ export default {
       const cover = this.song?.cover || this.song?.album_img
       return !this.coverFailed && typeof cover === 'string' ? cover.replace('{size}', '400') : ''
     },
+    fullscreenPreferences() {
+      return this.settingsStore?.settings?.fullscreenLyrics ?? {}
+    },
+    karaokeEnabled() {
+      return this.fullscreenPreferences.karaokeEnabled !== false
+    },
+    showPlaybackControls() {
+      return this.fullscreenPreferences.showControls !== false
+    },
+    backgroundMode() {
+      return this.fullscreenPreferences.backgroundMode ?? 'frosted'
+    },
+    backgroundMotion() {
+      return this.fullscreenPreferences.backgroundMotion ?? 'static'
+    },
+    backgroundUsesCover() {
+      return ['frosted', 'acrylic', 'cover'].includes(this.backgroundMode)
+    },
+    backgroundUrl() {
+      if (this.backgroundUsesCover) return this.coverUrl
+      const image = this.backgroundMode === 'main' ? this.settingsStore?.settings?.custom?.backgroundImage
+        : this.fullscreenPreferences.backgroundImage
+      return image ? backgroundImageUrl(image) : ''
+    },
     displayPlayTime() {
       const time = this.seekPreviewTime ?? this.previewTime ?? this.currentPlayTime
       return Number.isFinite(time) ? Math.max(0, Math.min(time, this.duration || 0)) : 0
@@ -250,14 +278,26 @@ export default {
         default: return '列表循环'
       }
     },
-    lyricLineHeight() {
-      let height = Math.min(80, Math.max(48, this.viewportHeight * 0.08))
-      if (this.showTranslation && this.parsedLyrics.some(line => line.translation)) {
-        height = Math.min(140, Math.max(84, this.viewportHeight * 0.12))
+    lyricFontSize() {
+      const size = this.fullscreenPreferences.fontSize ?? 32
+      const widthScale = Math.max(0.625, this.viewportWidth * 0.022 / 32)
+      const heightScale = Math.max(0.7, this.viewportHeight / 800)
+      return size * Math.min(1, widthScale, heightScale)
+    },
+    lyricTypography() {
+      const font = this.fullscreenPreferences.fontFamily
+      return {
+        '--base-font-size': `${this.lyricFontSize}px`,
+        '--current-font-size': `${this.lyricFontSize * 1.125}px`,
+        '--fullscreen-lyric-font': font ? `${JSON.stringify(font)}, var(--font-family)` : undefined
       }
-      if (this.romanizationLines.size) height += 26
-      if (this.viewportWidth < 900 || this.viewportHeight < 600) height *= 0.7
-      return height
+    },
+    /** 用最大字号预留两行译文和一行音译，浏览、滚动及桥段共用该行距。 */
+    lyricLineHeight() {
+      const size = this.lyricFontSize * 1.125
+      const translation = this.showTranslation && this.hasTranslation ? size * 0.55 * 1.4 * 2 + 4 : 0
+      const romanization = this.romanizationLines.size ? size * 0.48 * 1.45 + 4 : 0
+      return Math.ceil(size * 1.35 + 20 + translation + romanization + (this.fullscreenPreferences.lineSpacing ?? 12))
     },
     romanizationLines() {
       if (this.settingsStore?.settings?.playback?.romanization !== 'on') return new Map()
@@ -356,6 +396,12 @@ export default {
   },
   watch: {
     qualitySwitchAvailable(value) { if (!value) this.closeQualityMenu() },
+    showPlaybackControls(value) { if (!value) this.closeQualityMenu() },
+    karaokeEnabled() {
+      this.clearLyricAnimationFrame()
+      if (this.visible && !this.pauseUpdates) this.syncDisplayedTime()
+    },
+    backgroundMotion(value) { if (value !== 'beat') this.clearBackgroundMotion() },
     parsedLyrics() {
       // 同一首歌的 ready 层可能复用 DOM；等 Vue 补齐新字节点后再缓存。
       this.$nextTick(() => {
@@ -869,6 +915,7 @@ export default {
       this.updateKaraokeStylesDirectly(time)
       this.syncLongLyric(time)
       this.updateBridgeAnimation()
+      if (this.backgroundMotion === 'beat') this.updateBackgroundMotion()
       
       // 性能监控
       if (process.env.NODE_ENV === 'development') {
@@ -918,6 +965,7 @@ export default {
     // 停止更新循环
     stopUpdateLoop() {
       bridgeAnimationFrames.delete(this)
+      this.clearBackgroundMotion()
       this.clearLyricAnimationFrame()
       if (this.updateLoopRafId) {
         if (process.env.NODE_ENV === 'development') {
@@ -926,6 +974,31 @@ export default {
         cancelAnimationFrame(this.updateLoopRafId)
         this.updateLoopRafId = null
       }
+    },
+
+    /** 鼓点模式复用现有 RAF，只更新背景层，暂停及减少动态时释放分析器。 */
+    updateBackgroundMotion() {
+      const element = this.$refs.backgroundLayer
+      if (!element) return
+      let frame = backgroundMotionFrames.get(this)
+      if (!frame) {
+        frame = { element, reduced: window.matchMedia?.('(prefers-reduced-motion: reduce)'), intensity: 0, reading: false }
+        backgroundMotionFrames.set(this, frame)
+      }
+      const reading = this.isPlaying && !frame.reduced?.matches
+      if (frame.reading && !reading) this.stopBackgroundBeat?.()
+      frame.reading = reading
+      const intensity = reading ? Math.round((this.readBackgroundBeat?.() ?? 0) * 100) / 100 : 0
+      if (frame.intensity === intensity) return
+      frame.intensity = intensity
+      element.style.setProperty('--lyric-beat', String(intensity))
+    },
+    clearBackgroundMotion() {
+      const frame = backgroundMotionFrames.get(this)
+      if (!frame) return
+      if (frame.reading) this.stopBackgroundBeat?.()
+      frame.element.style.removeProperty('--lyric-beat')
+      backgroundMotionFrames.delete(this)
     },
     
     /** 桥段状态直接由播放时间确定，前后跳转无需等待旧歌词索引追上。 */
@@ -1053,6 +1126,8 @@ export default {
         scale = Math.max(0.85, 1 - (relativeDistance * 0.08))
       }
 
+      const blurPercent = this.fullscreenPreferences.blurPercent ?? 25
+      const blurEnabled = this.fullscreenPreferences.blurEnabled !== false && blurPercent > 0
       return {
         position: 'absolute',
         top: '50%',
@@ -1061,7 +1136,7 @@ export default {
         transform: `translate(-50%, -50%) translateY(${translateY}px) scale(${scale})`,
         opacity: distance > maxVisibleDistance ? 0 : opacity,
         visibility: distance > maxVisibleDistance ? 'hidden' : 'visible',
-        filter: `blur(${blur}px)`,
+        filter: blurEnabled && blur > 0 ? `blur(${blur * blurPercent / 25}px)` : 'none',
         fontSize: isCurrent ? 'var(--current-font-size)' : 'var(--base-font-size)',
         fontWeight: fontWeight,
         zIndex: isCurrent ? 10 : 1,
@@ -1519,7 +1594,7 @@ export default {
     resetKaraokeCharacters() {
       const frame = lyricAnimationFrames.get(this)
       frame?.entries.forEach(entry => {
-        entry.element.style.color = 'var(--lyric-line)'
+        entry.element.style.color = ''
         entry.element.dataset.fillState = ''
         entry.progress = null
       })
@@ -1544,6 +1619,8 @@ export default {
       }
       const newIndex = this.isBridgeActive && this.bridgeInfo
         ? Math.max(0, this.bridgeInfo.startLyricIndex) : Math.max(0, low - 1)
+      if (newIndex !== this.currentLyricIndex) this.currentLyricIndex = newIndex
+      if (!this.karaokeEnabled) return
       const frame = this.getLyricAnimationFrame()
       const line = this.parsedLyrics[newIndex]
       if (frame.index !== newIndex || frame.line !== line || frame.container !== container || !frame.entries.length) {
@@ -1553,7 +1630,6 @@ export default {
         frame.container = container
         frame.entries = Array.from(container.querySelectorAll(`[data-line-index="${newIndex}"]`), element => ({ element, progress: null }))
       }
-      if (newIndex !== this.currentLyricIndex) this.currentLyricIndex = newIndex
       if (this.isBridgeActive) return
       const nextTime = this.parsedLyrics[newIndex + 1]?.time ?? this.duration
       const count = this.getLyricCharacters(line).length

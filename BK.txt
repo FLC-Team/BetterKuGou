@@ -4,7 +4,7 @@
 
 ## 更新日期：2026-11-07
 
-全屏与桌面歌词采用逐字左右填亮；全屏复用真实音频逐帧采样，桌面用有上限的权威时间插值，下一句保持句首并自然上移。当前时序、缓存和生命周期说明见 src/components/player/player.md 与 electron/electron.md。
+全屏与桌面歌词默认逐字左右填亮。全屏复用真实音频逐帧采样，可在“歌词窗口”的“全屏歌词”面板调整高亮、模糊强度、控件、排版和背景来源及动效。桌面用有上限的权威时间插值，下一句保持句首并自然上移。当前时序、缓存和生命周期说明见 src/components/player/player.md 与 electron/electron.md。
 桌面歌词设置由 DesktopLyricSettings 编辑原有草稿，双端 normalizeDesktopLyrics 校验后持久化；独立窗口消费显示/动效/字体配色/阴影，主进程策略处理暂停与同屏全屏隐藏、悬停透明、置顶和解锁热点。Windows 外部全屏观察器按需运行，隐藏窗口停止绘制，节能模式降低刷新频率。详见 electron/services/services.md 与 src/stores/stores.md。
 Windows 任务栏歌词等待 `windowsTaskbar.ps1` 提供首个任务栏快照；`taskbarLyricService.js` 在所选任务栏收起时隐藏歌词并保留已有嵌入，展开后按设置与播放状态恢复。详见 electron/services/services.md。
 
@@ -21,7 +21,7 @@ Windows 任务栏歌词等待 `windowsTaskbar.ps1` 提供首个任务栏快照�
 - `src/api/`：登录与音乐 HTTP 封装，目标为 `localhost:6500`；识别酷狗认证失效响应并通知根组件退出假登录状态。
 - `src/stores/settingsStore.js`：渲染侧设置、迁移和播放会话快照。
 - `src/themes/`：内置深色/浅色主题包、共享校验目录及可导入示例；完整文件格式见 themes.md。
-- `src/components/common/ThemePackages.vue`：主题切换、文件导入更新、移除及独立视觉快照导出。
+- `src/components/common/ThemePackages.vue`：主题切换、文件导入更新、移除、独立视觉快照导出及主界面背景选择。
 - `electron/main.js`：窗口、托盘、IPC、快捷键和应用退出编排。
 - `electron/services/backendService.js`：本地 API 启停、健康检查和超时清理。
 - `electron/settingsStore.js`：主进程设置的串行原子持久化与损坏文件备份。
@@ -56,6 +56,7 @@ Windows 任务栏歌词等待 `windowsTaskbar.ps1` 提供首个任务栏快照�
 5. `MusicPlayer.js` 管理音频、歌词和队列；状态经 `saveSessionSnapshot()` 写回主进程。
 6. 应用退出时统一停止本地 API，不保留端口监听进程。
 7. 主题文件校验后进入 custom.themePackages，选择的 ID 写入 custom.theme；themeManager 解析完整变量应用到根元素，切换和启动恢复共用设置流程。
+8. 主界面与全屏背景选择共用 `BackgroundImageSetting`。图片解码后通过固定 IPC 保存为本机 WebP，设置中只提交图片 ID。`App` 和 `LyricView` 读取成功保存的 ID；全屏鼓点模式按需采集现有音频输出的低频变化。
 
 ## 依赖关系
 

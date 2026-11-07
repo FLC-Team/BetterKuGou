@@ -1173,6 +1173,14 @@ export default {
       return this.presentedPlaybackSnapshot ? this.readPresentedTime() : this.presentationTime(audio)
     },
 
+    /** Expose the audible mix to the full-screen animation without starting an audio graph or timer. */
+    readBackgroundBeat() {
+      return this.audioEffectsEngine?.readBackgroundBeat() ?? 0
+    },
+    stopBackgroundBeat() {
+      this.audioEffectsEngine?.stopBackgroundBeat()
+    },
+
     /** 仅采集已确认歌曲；替换音源期间沿用替换前的状态，避免临时零值污染会话。 */
     getPlaybackSnapshot() {
       const audio = this.getActiveAudio()

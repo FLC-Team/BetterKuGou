@@ -120,7 +120,7 @@ async function apply() {
 function loadCurrent() { cancelPreview(); snapshot.value = createThemePackage(settings); css.value = snapshot.value.css || ''; desktopCss.value = snapshot.value.desktopCss || ''; readProperties(); notify('已载入当前保存的主题。') }
 function clearCss() { activeCss.value = ''; readProperties(); if (target.value === 'main') preview(); else notify('已清空本窗口 CSS 草稿，应用后保存。') }
 async function restoreDefault() {
-  try { cancelPreview(); saving.value = true; const result = await updateSettings({ custom: { theme: snapshot.value.base } }); if (result?.error) throw result.error; loadCurrent(); notify('已恢复内置外观，已安装主题仍可重新选择。') } catch (reason) { fail(reason) } finally { saving.value = false }
+  try { cancelPreview(); saving.value = true; const result = await updateSettings({ custom: { theme: snapshot.value.base, backgroundImage: '' } }); if (result?.error) throw result.error; loadCurrent(); notify('已恢复内置外观，已安装主题仍可重新选择。') } catch (reason) { fail(reason) } finally { saving.value = false }
 }
 function trackPointer(event) {
   if (!picking.value || event.target.closest?.('[data-bk-theme-safety]')) { highlight.value = null; return }

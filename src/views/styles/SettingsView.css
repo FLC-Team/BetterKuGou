@@ -69,8 +69,14 @@
 .setting-switch input:checked + .slider { background: var(--color-primary); border-color: transparent; }
 .setting-switch input:checked + .slider::before { transform: translateX(15px); background: var(--color-on-primary); }
 .setting-switch input:focus-visible + .slider { outline: 2px solid var(--color-primary); outline-offset: 3px; }
-.settings-view :deep(.setting-select), .path-input, .number-input { max-width: 100%; min-height: 36px; padding: 8px 11px; color: var(--color-text); background: var(--color-background-light); border: 1px solid var(--color-border); border-radius: var(--radius-sm); font-size: var(--font-size-xs); }
+.settings-view :deep(.setting-select), .path-input, .number-input, .setting-font-input { max-width: 100%; min-height: 36px; padding: 8px 11px; color: var(--color-text); background: var(--color-background-light); border: 1px solid var(--color-border); border-radius: var(--radius-sm); font-size: var(--font-size-xs); }
 .settings-view :deep(.setting-select) { min-width: 140px; max-width: 230px; }
+.setting-range { display: flex; align-items: center; gap: 10px; width: min(190px, 48%); }
+.setting-range input { min-width: 0; width: 100%; height: 24px; accent-color: var(--color-primary); cursor: pointer; }
+.setting-range input:disabled { cursor: default; }
+.setting-range output { min-width: 4ch; text-align: right; white-space: nowrap; color: var(--color-text-secondary); font-size: var(--font-size-xs); font-variant-numeric: tabular-nums; }
+.setting-range-disabled .setting-range { opacity: .5; }
+.setting-font-input { width: min(190px, 48%); min-width: 0; }
 .path-input { width: 50%; text-overflow: ellipsis; }
 .number-input { width: 75px; }
 .setting-item--column { display: block; border: 0; padding: 15px 0; min-width: 0; }

@@ -92,6 +92,7 @@ test('normal playback has no recovery entry; the shortcut restores the current b
   await flush()
   assert.equal(ui.writes.length, 1)
   assert.equal(ui.writes[0].custom.theme, 'light')
+  assert.equal(ui.writes[0].custom.backgroundImage, '')
   assert.equal(ui.previews[0].custom.theme, 'light')
   assert.equal(ui.cancelledPreviews(), 1)
   assert.equal(ui.notices.entries[0].type, 'success')

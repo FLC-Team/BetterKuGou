@@ -58,7 +58,12 @@ function mount(t, options = {}) {
     const utilitySource = fs.readFileSync(path.join(__dirname, '../src/utils/objectUtils.js'), 'utf8')
       .replace(/^import[^\n]*$/gm, '').replace(/export (?=function)/g, '')
     Object.assign(globals, new Function('isReactive', 'toRaw', `${utilitySource}\nreturn { cloneDeep, mergeDeep, replaceReactive }`)(vue.isReactive, vue.toRaw))
-    const defaults = () => ({ playback: { lyricLibrary: { enabled: true } }, download: {}, custom: {}, shortcuts: { keys: {} }, software: {}, desktopLyrics: {}, islandLyrics: {}, taskbarLyrics: {} })
+    const defaults = () => ({
+      playback: { lyricLibrary: { enabled: true }, fullscreenLyrics: false },
+      download: {}, custom: {}, shortcuts: { keys: {} }, software: {},
+      fullscreenLyrics: { blurEnabled: true, blurPercent: 25, backgroundMode: 'frosted', backgroundImage: '' },
+      desktopLyrics: {}, islandLyrics: {}, taskbarLyrics: {}
+    })
     settings = vue.reactive(defaults())
     globals.useSettingsStore = () => ({ settings, ready: vue.ref(true), revision: vue.ref(0), defaults,
       async updateSettings(patch) { calls.push(['saveSettings']); globals.mergeDeep(settings, patch) },
@@ -69,9 +74,16 @@ function mount(t, options = {}) {
         return {}
       }
     })
+    const BackgroundImageSetting = {
+      props: ['modelValue'],
+      emits: ['update:modelValue'],
+      setup(props, { emit }) {
+        return () => vue.h('background-image-stub', { value: props.modelValue, onChoose: image => emit('update:modelValue', image) })
+      }
+    }
     Object.assign(globals, { packageInfo: { version: '0.0.0' }, applyTheme() {}, ThemePackages: emptyComponent,
       ThemeAdjustments: emptyComponent, AppUpdates: emptyComponent, PlaylistCacheSettings: emptyComponent, MusicDownloadSettings: emptyComponent, AudioEffectsSettings: emptyComponent,
-      DesktopLyricSettings: emptyComponent, IslandLyricSettings: emptyComponent, TaskbarLyricSettings: emptyComponent })
+      DesktopLyricSettings: emptyComponent, IslandLyricSettings: emptyComponent, TaskbarLyricSettings: emptyComponent, BackgroundImageSetting })
     globals.LyricLibrary = compile('components/common/LyricLibrary.vue', globals)
     globals.LyricSettings = compile('components/common/LyricSettings.vue', globals)
   }
@@ -111,6 +123,7 @@ function mount(t, options = {}) {
   const text = item => item.text + item.children.map(text).join('')
   const find = predicate => nodes(root).find(predicate)
   return { calls, protection, preferences, settings, unmount, prepareLeave: () => componentRef.value.prepareLeave(), publish: event => listener(event), closed: () => closed, unsubscribed: () => unsubscribed,
+    flushSettings: () => componentRef.value.flushEditableSettings(),
     text: () => text(root), button: label => find(item => item.type === 'button' && text(item).includes(label)),
     field: type => find(item => item.type === type), byId: id => find(item => item.props.id === id),
     lyricSettings: () => find(item => item.type === 'div' && String(item.props.class).split(' ').includes('lyric-settings')),
@@ -130,6 +143,26 @@ test('library reads wait for persisted settings, failed persistence stops reads 
   await flush()
   assert.deepEqual(ui.calls.slice(-2), [['saveSettings'], ['list']])
   assert.match(ui.text(), /测试曲目/)
+})
+
+test('fullscreen lyric options save separately from playback auto-open and retain disabled blur strength', async t => {
+  const ui = mount(t, { settingsViewMode: true })
+  ui.button('全屏歌词').props.onClick()
+  await flush()
+  assert.equal(ui.byId('fullscreen-section').props.hidden, false)
+
+  const slider = ui.byId('fullscreen-blur-percent')
+  slider.props['onUpdate:modelValue'](65)
+  ui.byId('fullscreen-blur').props['onUpdate:modelValue'](false)
+  ui.byId('fullscreen-background-image').props.onChoose('placeholder-managed-image')
+  await flush()
+  assert.equal(slider.props.disabled, true)
+  assert.equal(slider.props.value, 65)
+  assert.equal(await ui.flushSettings(), true)
+  assert.equal(ui.settings.playback.fullscreenLyrics, false)
+  assert.deepEqual(ui.settings.fullscreenLyrics, {
+    blurEnabled: false, blurPercent: 65, backgroundMode: 'custom', backgroundImage: 'placeholder-managed-image'
+  })
 })
 
 test('previewing a version does not select it until explicitly used', async t => {

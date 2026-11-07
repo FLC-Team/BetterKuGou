@@ -51,6 +51,29 @@ function normalizeDesktopLyrics(raw) {
   return result
 }
 
+/** 旧设置补全全屏外观，限制数值与本机图片引用的格式。 */
+function normalizeFullscreenLyrics(raw) {
+  const value = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+  const bool = key => typeof value[key] === 'boolean' ? value[key] : true
+  const number = (key, fallback, min, max) => Number.isFinite(value[key])
+    ? Math.round(Math.max(min, Math.min(max, value[key]))) : fallback
+  const font = value.fontFamily
+  return {
+    karaokeEnabled: bool('karaokeEnabled'), blurEnabled: bool('blurEnabled'),
+    blurPercent: number('blurPercent', 25, 0, 100), showControls: bool('showControls'),
+    position: value.position === 'left' ? 'left' : 'right',
+    fontSize: number('fontSize', 32, 16, 64), lineSpacing: number('lineSpacing', 12, 0, 40),
+    fontFamily: typeof font === 'string' && font.length <= 128 && !/[\u0000-\u001f\u007f]/.test(font) ? font.trim() : '',
+    backgroundMode: ['frosted', 'acrylic', 'cover', 'custom', 'main'].includes(value.backgroundMode) ? value.backgroundMode : 'frosted',
+    backgroundMotion: ['static', 'beat', 'quicksand'].includes(value.backgroundMotion) ? value.backgroundMotion : 'static',
+    backgroundImage: normalizeBackgroundImageId(value.backgroundImage)
+  }
+}
+
+function normalizeBackgroundImageId(value) {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : ''
+}
+
 const baseDefaultSettings = Object.freeze({
   schemaVersion: CURRENT_SCHEMA_VERSION,
   playback: {
@@ -69,6 +92,7 @@ const baseDefaultSettings = Object.freeze({
     showProfanity: false,
     quality: '128'
   },
+  fullscreenLyrics: normalizeFullscreenLyrics(),
   desktopLyrics: { ...desktopLyricDefaults },
   islandLyrics: normalizeIslandLyrics(),
   taskbarLyrics: normalizeTaskbarLyrics(),
@@ -87,6 +111,7 @@ const baseDefaultSettings = Object.freeze({
     playerStyle: 'default',
     theme: 'dark',
     themePackages: [],
+    backgroundImage: '',
     customTheme: {
       primary: '#667eea',
       hover: '#764ba2',
@@ -412,9 +437,12 @@ function migrateSettings(rawSettings, defaults) {
   normalized.download.quality = ['follow', '128', '320', 'flac', 'high'].includes(normalized.download.quality) ? normalized.download.quality : 'follow'
   if (typeof normalized.download.downloadPath !== 'string' || normalized.download.downloadPath.includes('\0')) normalized.download.downloadPath = defaults.download.downloadPath
   for (const key of ['embedMetadata', 'embedCover', 'saveLyrics']) normalized.download[key] = typeof normalized.download[key] === 'boolean' ? normalized.download[key] : true
+  normalized.fullscreenLyrics = normalizeFullscreenLyrics(normalized.fullscreenLyrics)
   normalized.desktopLyrics = normalizeDesktopLyrics(desktop)
   normalized.islandLyrics = normalizeIslandLyrics(normalized.islandLyrics)
   normalized.taskbarLyrics = normalizeTaskbarLyrics(normalized.taskbarLyrics)
+  if (!normalized.custom || typeof normalized.custom !== 'object' || Array.isArray(normalized.custom)) normalized.custom = cloneDeep(defaults.custom)
+  normalized.custom.backgroundImage = normalizeBackgroundImageId(normalized.custom.backgroundImage)
   if (!normalized.software || typeof normalized.software !== 'object' || Array.isArray(normalized.software)) normalized.software = cloneDeep(defaults.software)
   normalized.software.minimizeToTray = normalized.software.minimizeToTray === true
   normalized.software.promptBeforeClose = typeof normalized.software.promptBeforeClose === 'boolean' ? normalized.software.promptBeforeClose : true

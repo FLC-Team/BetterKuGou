@@ -58,6 +58,8 @@ export function createAudioEffectsEngine({ api = globalThis.window?.electronAPI?
   let worklet = null
   let mix = null
   let master = null
+  let beatTap = null
+  let beatSample = null
   let initialized = null
   let disposed = false
   let desiredEnabled = false
@@ -90,10 +92,18 @@ export function createAudioEffectsEngine({ api = globalThis.window?.electronAPI?
     else node.gain.setTargetAtTime(value, context.currentTime, 0.005)
   }
 
+  /** Release the silent analysis branch without disturbing any audible connection. */
+  const stopBackgroundBeat = () => {
+    if (beatTap) beatTap.input.disconnect(beatTap.analyser)
+    beatTap = null
+    beatSample = null
+  }
+
   /** A failed worklet is permanently silent, so reconnect the dry graph explicitly. */
   const failGraph = error => {
     if (disposed || graphFailed) return
     graphFailed = true
+    stopBackgroundBeat()
     mix?.disconnect()
     mix?.connect(master)
     worklet?.disconnect()
@@ -284,6 +294,7 @@ export function createAudioEffectsEngine({ api = globalThis.window?.electronAPI?
         try { decks.get(activeAudio)?.source.disconnect(worklet, 0, 1) } catch { /* The deck can already be detached during stop. */ }
       }
       activeAudio = null; activeTrackId = ''; playing = false; draining = false; presentation = null; automaticTempo = true
+      beatSample = null
       activeTrackToken++
       send({ type: 'clear' })
     },
@@ -295,6 +306,7 @@ export function createAudioEffectsEngine({ api = globalThis.window?.electronAPI?
           contextTime: context?.currentTime || 0, advancing: false }
       }
       playing = nextPlaying === true
+      if (!playing || seeking) beatSample = null
       draining = !playing && ended === true && desiredEnabled
       if (seeking) { presentation = null; presentationEpoch++ }
       send({ type: 'transport', playing, seeking: seeking === true, ended: ended === true,
@@ -335,6 +347,50 @@ export function createAudioEffectsEngine({ api = globalThis.window?.electronAPI?
       return Math.max(0, Math.min(raw, engine.getPresentedPlayback().position))
     },
 
+    /** Follow bass attacks in the presented mix, before user volume or mute. Called only by the visible animation. */
+    readBackgroundBeat() {
+      if (disposed || !playing || !activeAudio || !context?.createAnalyser) return 0
+      if (!beatTap) {
+        const input = graphFailed ? mix : worklet
+        if (!input) return 0
+        const analyser = context.createAnalyser()
+        // Keep about 20 Hz per bin even with high sample-rate devices.
+        analyser.fftSize = Math.max(2048, 2 ** Math.ceil(Math.log2(context.sampleRate / 24)))
+        analyser.smoothingTimeConstant = 0
+        input.connect(analyser)
+        const binWidth = context.sampleRate / analyser.fftSize
+        beatTap = { input, analyser, spectrum: new Float32Array(analyser.frequencyBinCount),
+          firstBin: Math.ceil(42 / binWidth), lastBin: Math.floor(150 / binWidth) }
+      }
+
+      const time = context.currentTime
+      if (beatSample?.time === time) return beatSample.pulse
+      const { analyser, spectrum, firstBin, lastBin } = beatTap
+      analyser.getFloatFrequencyData(spectrum)
+      let power = 0
+      for (let bin = firstBin; bin <= lastBin; bin++) power += 10 ** (spectrum[bin] / 10)
+      const energy = Math.sqrt(power / (lastBin - firstBin + 1))
+      const previous = beatSample
+      if (!previous || time - previous.time > 0.3) {
+        beatSample = { time, energy, baseline: energy, lastBeat: -Infinity, pulse: 0 }
+        return 0
+      }
+
+      const elapsed = time - previous.time
+      const attack = Math.min(energy - previous.energy, energy - previous.baseline)
+      const baseline = energy + (previous.baseline - energy) * Math.exp(-elapsed / 0.38)
+      let pulse = previous.pulse * Math.exp(-elapsed / 0.15)
+      let lastBeat = previous.lastBeat
+      if (time - lastBeat >= 0.13 && attack > Math.max(0.0025, previous.baseline * 0.24)) {
+        pulse = Math.max(pulse, Math.min(1, attack / Math.max(0.014, previous.baseline * 1.2)))
+        lastBeat = time
+      }
+      beatSample = { time, energy, baseline, lastBeat, pulse }
+      return pulse
+    },
+
+    stopBackgroundBeat,
+
     /** Output identity follows buffered samples, independently of the host's current input identity. */
     getPresentedPlayback() {
       if (!activeAudio) return null
@@ -358,6 +414,7 @@ export function createAudioEffectsEngine({ api = globalThis.window?.electronAPI?
     async dispose() {
       if (disposed) return
       disposed = true
+      stopBackgroundBeat()
       initializationAbort?.abort()
       unsubscribe?.()
       unsubscribe = null

@@ -167,6 +167,39 @@ test('previous near-end restart defaults off and persists only explicit boolean 
   }
 })
 
+test('fullscreen appearance migrates, validates imports and keeps the two image references independent', async () => {
+  const { store, app, files, settingsPath } = createStore()
+  await store.initSettingsStore(app)
+  const defaults = store.getSettings().fullscreenLyrics
+  assert.equal(defaults.position, 'right')
+  assert.equal(defaults.karaokeEnabled, true)
+  assert.equal(defaults.backgroundMode, 'frosted')
+
+  const mainImage = 'a'.repeat(64)
+  const lyricImage = 'b'.repeat(64)
+  await store.setSettings({ custom: { backgroundImage: mainImage }, playback: { fullscreenLyrics: false },
+    fullscreenLyrics: { backgroundImage: lyricImage, backgroundMode: 'custom', blurEnabled: false, blurPercent: 79 } })
+  await store.setSettings({ fullscreenLyrics: { showControls: false, fontFamily: ' Microsoft YaHei ' } })
+  const persisted = JSON.parse(files.get(settingsPath))
+  assert.equal(persisted.playback.fullscreenLyrics, false)
+  assert.equal(persisted.custom.backgroundImage, mainImage)
+  assert.deepEqual(persisted.fullscreenLyrics, { ...defaults, showControls: false, fontFamily: 'Microsoft YaHei',
+    backgroundMode: 'custom', backgroundImage: lyricImage, blurEnabled: false, blurPercent: 79 })
+
+  const invalid = { fontSize: 500, lineSpacing: -1, blurPercent: '90', karaokeEnabled: 'false', backgroundMode: 'other',
+    backgroundMotion: 'quicksand', backgroundImage: 'file:///wallpaper.webp' }
+  await store.overwriteSettings({ custom: { backgroundImage: '../../wallpaper.webp' }, fullscreenLyrics: invalid })
+  const settings = store.getSettings()
+  assert.equal(settings.custom.backgroundImage, '')
+  assert.deepEqual(settings.fullscreenLyrics, { ...defaults, fontSize: 64, lineSpacing: 0, backgroundMotion: 'quicksand' })
+
+  const renderer = fs.readFileSync(path.join(__dirname, '../src/stores/settingsStore.js'), 'utf8')
+  const start = renderer.indexOf('function normalizeFullscreenLyrics(')
+  const end = renderer.indexOf('const baseDefaultSettings', start)
+  const normalize = vm.runInNewContext(renderer.slice(start, end) + '\nnormalizeFullscreenLyrics')
+  assert.deepEqual(JSON.parse(JSON.stringify(normalize(invalid))), settings.fullscreenLyrics)
+})
+
 test('desktop lyric preferences supplement old settings and reject invalid display values', async () => {
   const fixture = createStore()
   await fixture.store.initSettingsStore(fixture.app)

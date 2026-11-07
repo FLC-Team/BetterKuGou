@@ -16,6 +16,7 @@ import { cloneDeep } from './utils/objectUtils.js'
 import { getSongSearchKeyword } from './utils/songMetadata.js'
 import { initializePlaylistCacheSession, getPlaylistCacheAPI, callPlaylistCache } from './utils/playlistCache.js'
 import ThemeRecovery from './components/common/ThemeRecovery.vue'
+import { backgroundImageUrl } from '../electron/backgroundImage.mjs'
 
 /** 非首页界面首次使用时加载，保留原组件名供 KeepAlive 缓存。 */
 function createLazyView(name, loader, options = {}) {
@@ -856,6 +857,7 @@ const {
   getSessionSnapshot,
   defaults: getSettingsDefaults
 } = useSettingsStore()
+const mainBackgroundUrl = computed(() => settings.custom?.backgroundImage ? backgroundImageUrl(settings.custom.backgroundImage) : '')
 
 const defaultSessionTemplate = cloneDeep(getSettingsDefaults().session)
 const hasAppliedDefaultPage = ref(false)
@@ -1583,7 +1585,10 @@ provide('songActions', songActionEvents)
   <Teleport to="body">
     <Transition name="ui-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><div v-if="preparingInstall" class="install-preparation" aria-hidden="true"></div></Transition>
   </Teleport>
-  <div class="app-container" :class="{ 'has-player': hasPlayer, 'has-floating-player': hasPlayer && settings.custom?.playerStyle === 'netease' }">
+  <div class="app-container" :class="{ 'has-player': hasPlayer, 'has-floating-player': hasPlayer && settings.custom?.playerStyle === 'netease', 'has-custom-background': mainBackgroundUrl }">
+    <Transition name="main-background">
+      <img v-if="mainBackgroundUrl" :key="mainBackgroundUrl" :src="mainBackgroundUrl" class="main-background" alt="" aria-hidden="true" draggable="false" />
+    </Transition>
     <TitleBar
       v-model="searchDraft"
       :can-go-back="canGoBack"

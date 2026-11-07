@@ -25,7 +25,7 @@ async function restore() {
     previewThemePackage(createThemePackage({ custom: { theme: base } }))
     release = await props.prepareRestore?.(base)
     if (disposed) return
-    await updateSettings({ custom: { theme: base } })
+    await updateSettings({ custom: { theme: base, backgroundImage: '' } })
     const finishRestore = release
     release = null
     await finishRestore?.()

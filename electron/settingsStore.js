@@ -117,6 +117,29 @@ function mergeDeep(target, source) {
   return output
 }
 
+/** 旧设置补全全屏外观，限制数值与本机图片引用的格式。 */
+function normalizeFullscreenLyrics(raw) {
+  const value = isPlainObject(raw) ? raw : {}
+  const bool = key => typeof value[key] === 'boolean' ? value[key] : true
+  const number = (key, fallback, min, max) => Number.isFinite(value[key])
+    ? Math.round(Math.max(min, Math.min(max, value[key]))) : fallback
+  const font = value.fontFamily
+  return {
+    karaokeEnabled: bool('karaokeEnabled'), blurEnabled: bool('blurEnabled'),
+    blurPercent: number('blurPercent', 25, 0, 100), showControls: bool('showControls'),
+    position: value.position === 'left' ? 'left' : 'right',
+    fontSize: number('fontSize', 32, 16, 64), lineSpacing: number('lineSpacing', 12, 0, 40),
+    fontFamily: typeof font === 'string' && font.length <= 128 && !/[\u0000-\u001f\u007f]/.test(font) ? font.trim() : '',
+    backgroundMode: ['frosted', 'acrylic', 'cover', 'custom', 'main'].includes(value.backgroundMode) ? value.backgroundMode : 'frosted',
+    backgroundMotion: ['static', 'beat', 'quicksand'].includes(value.backgroundMotion) ? value.backgroundMotion : 'static',
+    backgroundImage: normalizeBackgroundImageId(value.backgroundImage)
+  }
+}
+
+function normalizeBackgroundImageId(value) {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : ''
+}
+
 /** 补全灵动岛偏好并过滤非法导入值；窗口位置使用 DIP，视觉参数不接收字符串数值。 */
 function normalizeIslandLyrics(value) {
   const island = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
@@ -228,9 +251,12 @@ function ensureSchema(settings) {
   for (const key of ['embedMetadata', 'embedCover', 'saveLyrics']) normalized.download[key] = typeof normalized.download[key] === 'boolean' ? normalized.download[key] : true
   const offlineCachePath = normalized.download.offlineCachePath
   normalized.download.offlineCachePath = typeof offlineCachePath === 'string' && path.isAbsolute(offlineCachePath) && !offlineCachePath.includes('\0') ? path.resolve(offlineCachePath) : ''
+  normalized.fullscreenLyrics = normalizeFullscreenLyrics(normalized.fullscreenLyrics)
   normalized.desktopLyrics = normalizeDesktopLyrics(desktop)
   normalized.islandLyrics = normalizeIslandLyrics(normalized.islandLyrics)
   normalized.taskbarLyrics = normalizeTaskbarLyrics(normalized.taskbarLyrics)
+  if (!isPlainObject(normalized.custom)) normalized.custom = cloneDeep(defaultsCache.custom)
+  normalized.custom.backgroundImage = normalizeBackgroundImageId(normalized.custom.backgroundImage)
   normalized.audioEffects = normalizeAudioEffects(normalized.audioEffects)
   if (!isPlainObject(normalized.software)) normalized.software = cloneDeep(defaultsCache.software)
   normalized.software.minimizeToTray = normalized.software.minimizeToTray === true
@@ -319,6 +345,7 @@ function createDefaults(app) {
       showProfanity: false,
       quality: '128'
     },
+    fullscreenLyrics: normalizeFullscreenLyrics(),
     desktopLyrics: { ...desktopLyricDefaults },
     islandLyrics: normalizeIslandLyrics(),
     taskbarLyrics: normalizeTaskbarLyrics(),
@@ -336,6 +363,7 @@ function createDefaults(app) {
       playerStyle: 'default',
       theme: 'dark',
       themePackages: [],
+      backgroundImage: '',
       customTheme: {
         primary: '#667eea',
         hover: '#764ba2',

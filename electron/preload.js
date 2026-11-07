@@ -223,6 +223,7 @@ const electronAPI = {
   setConfig: (config) => ipcRenderer.invoke('config:set', config),
 
   // 主题管理 API
+  storeBackgroundImage: bytes => ipcRenderer.invoke('background-image:store', bytes),
   loadThemesConfig: () => ipcRenderer.invoke('theme:load-config'),
   getAvailableThemes: () => ipcRenderer.invoke('theme:get-available'),
   setActiveTheme: (themeName) => ipcRenderer.invoke('theme:set-active', themeName),

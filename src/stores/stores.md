@@ -12,12 +12,14 @@
 
 - `useSettingsStore()` 暴露稳定的 `settings` 引用和 ready/loading/error/revision 状态。
 - `initSettings()` 复用初始化 Promise，并发读取 `window.settingsAPI` 的默认设置、默认目录与已保存设置，再统一补全、应用主题并就绪；任一读取失败沿用对应回退，浏览器回退 LocalStorage。
-- 默认分组为 playback/audioEffects/desktopLyrics/islandLyrics/taskbarLyrics/download/custom/shortcuts/software/session，Schema 版本为 1。
+- 默认分组为 playback/audioEffects/fullscreenLyrics/desktopLyrics/islandLyrics/taskbarLyrics/download/custom/shortcuts/software/session，Schema 版本为 1。
 - `audioEffects` 默认 `{ enabled: false, bufferMs: 128, searchPaths: [], chain: [] }`，缓冲限定 64/128/256/512ms；主进程共用规范化模块白名单保存，沿现有设置事务及导入导出。插件扫描结果、二进制状态、节拍缓存、运行状态不进入设置；设置页由音效服务管理此分组，避免普通页面草稿回写覆盖链。
 - 当前版本的设置也按默认值补全缺失分组，保留已保存的用户选择。
 - 关闭偏好复用 software：`promptBeforeClose` 默认 true，缺失/非法类型回退 true；`minimizeToTray` 默认 false，仅布尔 true 表示托盘。关闭提示的成功写入会同步原 store，设置草稿仍保留未提交字段；导入、重置和保存使用相同双端补全规则。
 - 主题包列表保存在 `custom.themePackages`，选择的包 ID 使用原 `custom.theme`；旧配置自动补全空列表，不迁移或删除已有配色。
 - `custom.themeAdjustmentId` 仅标识设置页创建的个性主题包；精调保留原包并复用该 ID 更新，不创建另一套主题来源。
+- `custom.backgroundImage` 和 `fullscreenLyrics.backgroundImage` 保存本机托管图片的 SHA-256 ID，默认空字符串，只接受 64 位小写十六进制 ID。图片文件留在本机数据目录，主题包不含本机图片引用。
+- 双端 `normalizeFullscreenLyrics()` 补全独立于 `playback.fullscreenLyrics` 的外观偏好。默认启用逐字变亮、播放控件及 25% 模糊，右侧排版、32px 字号、12px 行距和默认字体，背景为静态毛玻璃。强度、字号和行距分别夹紧到 0–100、16–64 和 0–40；背景来源和动效使用明确的枚举。
 - `desktopLyrics` 由双端 `normalizeDesktopLyrics()` 补全与白名单校验；主进程导出此函数供窗口同步复用。保留 fontSize=medium、theme=classic、locked=false、bounds=null，默认开启双行、逐字高亮、换句动画及模糊、置顶和同屏全屏歌词隐藏。其余隐藏/节能/信息模式等布尔项默认关闭，严格保留布尔类型。
 - 桌面透明度/悬停透明度/阴影透明度限制 0–100%，描边 0–200%，阴影深度 0–30px、方向 0–360°、半径 0–40px；字体最多 128 字符且拒绝控制符，颜色仅六位十六进制，空文字色继承主题。对齐限制 left/center/right，阴影来源 cover/custom；未知字段丢弃。bounds 仅保留有限的 x/y/width/height 并取整，位置限定 ±100000、宽 420–8192、高 180–4096，实际显示时由主进程夹紧至屏幕工作区。
 - `islandLyrics` 双端按相同规则补全：enabled=false、showLogo=true、mode=mainland（另可选 floating）、displayId=primary、position=null；浮动位置只保留有限 x/y，夹紧至 ±100000 DIP 并取整。所有布尔项严格校验，未知字段过滤；只有成功保存的启用状态控制窗口，启动恢复已保存状态。

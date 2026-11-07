@@ -20,6 +20,20 @@
   position: relative;
 }
 
+.main-background {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.42;
+  pointer-events: none;
+}
+.main-background-enter-active, .main-background-leave-active { transition: opacity 240ms ease; }
+.main-background-enter-from, .main-background-leave-to { opacity: 0; }
+.has-custom-background .main-content,
+.has-custom-background .main-content > .page-view { background: transparent; }
+
 .content {
   flex: 1;
   min-height: 0;
@@ -70,7 +84,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .page-switch-enter-active, .page-switch-leave-active { transition: none; }
+  .page-switch-enter-active, .page-switch-leave-active,
+  .main-background-enter-active, .main-background-leave-active { transition: none; }
 }
 
 /* 自定义滚动条 */

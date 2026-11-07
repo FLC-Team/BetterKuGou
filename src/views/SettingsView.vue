@@ -53,6 +53,75 @@
           <LyricSettings ref="lyricSettingsRef" v-model="localSettings.playback" :before-action="flushEditableSettings" :inert="isImporting" />
         </section>
 
+        <section class="settings-section" id="fullscreen-section" :ref="sectionRefs.fullscreen" data-section="fullscreen" :hidden="!isSectionVisible('fullscreen')" :inert="!isSectionVisible('fullscreen') || isImporting" :class="{ 'is-active': isSectionVisible('fullscreen') }" aria-labelledby="fullscreen-heading">
+          <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="fullscreen-heading" tabindex="-1">全屏歌词</h2><p>调整播放界面的歌词、控件和背景。</p></div></header>
+          <div v-for="option in fullscreenLyricToggles" :key="option.key" class="setting-item">
+            <div class="setting-info">
+              <label class="setting-label" :for="option.id">{{ option.label }}</label>
+              <p class="setting-desc" :id="option.id + '-desc'">{{ option.description }}</p>
+            </div>
+            <label class="setting-switch">
+              <input :id="option.id" type="checkbox" v-model="localSettings.fullscreenLyrics[option.key]" :aria-describedby="option.id + '-desc'">
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="setting-item" :class="{ 'setting-range-disabled': !localSettings.fullscreenLyrics.blurEnabled }">
+            <div class="setting-info">
+              <label class="setting-label" for="fullscreen-blur-percent">模糊强度</label>
+              <p class="setting-desc" id="fullscreen-blur-percent-desc">开启歌词模糊后可调，0% 为清晰。</p>
+            </div>
+            <div class="setting-range">
+              <input id="fullscreen-blur-percent" type="range" min="0" max="100" step="1"
+                v-model.number="localSettings.fullscreenLyrics.blurPercent" :disabled="!localSettings.fullscreenLyrics.blurEnabled"
+                :aria-valuetext="localSettings.fullscreenLyrics.blurPercent + '%'" aria-describedby="fullscreen-blur-percent-desc">
+              <output for="fullscreen-blur-percent">{{ localSettings.fullscreenLyrics.blurPercent }}%</output>
+            </div>
+          </div>
+          <AnimatedDetails class="settings-disclosure">
+            <template #summary><span>歌词位置与字体</span></template>
+            <div class="setting-item">
+              <div class="setting-info"><label class="setting-label" for="fullscreen-position">歌词位置</label></div>
+              <AnimatedSelect id="fullscreen-position" class="setting-select" v-model="localSettings.fullscreenLyrics.position"
+                label="歌词位置" :options="fullscreenLyricPositions" />
+            </div>
+            <div v-for="option in fullscreenLyricRanges" :key="option.key" class="setting-item">
+              <div class="setting-info"><label class="setting-label" :for="option.id">{{ option.label }}</label></div>
+              <div class="setting-range">
+                <input :id="option.id" type="range" :min="option.min" :max="option.max" step="1"
+                  v-model.number="localSettings.fullscreenLyrics[option.key]" :aria-valuetext="localSettings.fullscreenLyrics[option.key] + ' 像素'">
+                <output :for="option.id">{{ localSettings.fullscreenLyrics[option.key] }} px</output>
+              </div>
+            </div>
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="fullscreen-font-family">歌词字体</label>
+                <p class="setting-desc" id="fullscreen-font-family-desc">输入本机已安装的字体名称，留空使用默认字体。</p>
+              </div>
+              <input id="fullscreen-font-family" class="setting-font-input" type="text" maxlength="100"
+                v-model.lazy="localSettings.fullscreenLyrics.fontFamily" placeholder="默认字体" aria-describedby="fullscreen-font-family-desc">
+            </div>
+          </AnimatedDetails>
+          <AnimatedDetails class="settings-disclosure">
+            <template #summary><span>歌词背景</span></template>
+            <div class="setting-item">
+              <div class="setting-info"><label class="setting-label" for="fullscreen-background-mode">背景模式</label></div>
+              <AnimatedSelect id="fullscreen-background-mode" class="setting-select" v-model="localSettings.fullscreenLyrics.backgroundMode"
+                label="背景模式" :options="fullscreenBackgroundModes" />
+            </div>
+            <BackgroundImageSetting id="fullscreen-background-image" :model-value="localSettings.fullscreenLyrics.backgroundImage"
+              label="自定义背景图片" description="选择图片后切换到自定义图片模式。" :disabled="isImporting"
+              @update:model-value="setFullscreenBackgroundImage" />
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="fullscreen-background-motion">背景动态</label>
+                <p class="setting-desc" id="fullscreen-background-motion-desc">鼓点跳动随音乐节奏起伏，流沙让背景缓慢流动。</p>
+              </div>
+              <AnimatedSelect id="fullscreen-background-motion" class="setting-select" v-model="localSettings.fullscreenLyrics.backgroundMotion"
+                label="背景动态" :options="fullscreenBackgroundMotions" aria-describedby="fullscreen-background-motion-desc" />
+            </div>
+          </AnimatedDetails>
+        </section>
+
         <section class="settings-section" id="desktop-section" :ref="sectionRefs.desktop" data-section="desktop" :hidden="!isSectionVisible('desktop')" :inert="!isSectionVisible('desktop')" :class="{ 'is-active': isSectionVisible('desktop') }" aria-labelledby="desktop-heading">
           <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="desktop-heading" tabindex="-1">桌面歌词</h2><p>在桌面上跟随每一句，自由调整显示方式。</p></div></header>
           <DesktopLyricSettings v-model="localSettings.desktopLyrics" :before-action="flushEditableSettings" />
@@ -124,6 +193,7 @@ import LyricSettings from '../components/common/LyricSettings.vue'
 import DesktopLyricSettings from '../components/common/DesktopLyricSettings.vue'
 import IslandLyricSettings from '../components/common/IslandLyricSettings.vue'
 import TaskbarLyricSettings from '../components/common/TaskbarLyricSettings.vue'
+import BackgroundImageSetting from '../components/common/BackgroundImageSetting.vue'
 import AnimatedSelect from '../components/common/AnimatedSelect.vue'
 import AnimatedDetails from '../components/common/AnimatedDetails.vue'
 import packageInfo from '../../package.json'
@@ -145,6 +215,8 @@ const sections = [
     icon: 'M4 4v16M12 4v16M20 4v16M1 9h6M9 15h6M17 7h6' },
   { id: 'lyrics', label: '歌词内容', description: '翻译、文字偏好与已保存的歌词。', group: '聆听',
     icon: 'M4 5h16M4 10h12M4 15h16M4 20h8' },
+  { id: 'fullscreen', label: '全屏歌词', description: '调整播放界面的歌词、控件和背景。', group: '歌词窗口',
+    icon: 'M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M8 9h8m-8 6h5' },
   { id: 'desktop', label: '桌面歌词', description: '在桌面上跟随每一句，自由调整显示方式。', group: '歌词窗口',
     icon: 'M3 4h18v13H3zM8 21h8M12 17v4' },
   { id: 'island', label: '灵动岛歌词', description: '屏幕上沿的音乐陪伴，也可以自由浮动。', group: '歌词窗口',
@@ -165,7 +237,7 @@ const sections = [
 const navigationGroups = [...new Set(sections.map(section => section.group))].map(label => ({
   label, sections: sections.filter(section => section.group === label)
 }))
-const editableGroups = ['playback', 'download', 'custom', 'shortcuts', 'software', 'desktopLyrics', 'islandLyrics', 'taskbarLyrics']
+const editableGroups = ['playback', 'download', 'custom', 'shortcuts', 'software', 'fullscreenLyrics', 'desktopLyrics', 'islandLyrics', 'taskbarLyrics']
 const islandLyricsAvailable = Boolean(window.electronAPI?.islandLyric?.show)
 const taskbarLyricsAvailable = Boolean(window.electronAPI?.taskbarLyric?.show)
 const qualityOptions = [
@@ -189,6 +261,31 @@ const softwareOptions = [
   { id: 'autoLaunch', label: '开机自启动', description: '登录系统时自动运行 BetterKuGou。' },
   { id: 'restorePlaylist', label: '恢复上次的播放列表与位置', description: '再次打开时，找回上一次的队列和歌曲进度。' },
   { id: 'restorePlaybackState', label: '恢复上次的播放状态', description: '记住播放或暂停、音量和循环模式。' }
+]
+const fullscreenLyricToggles = [
+  { key: 'karaokeEnabled', id: 'fullscreen-karaoke', label: '逐字变亮', description: '按演唱进度填亮歌词。关闭后高亮整句。' },
+  { key: 'showControls', id: 'fullscreen-controls', label: '显示播放控件', description: '显示播放进度、音量和曲目操作。' },
+  { key: 'blurEnabled', id: 'fullscreen-blur', label: '歌词模糊', description: '让当前句之外的歌词更柔和。' }
+]
+const fullscreenLyricPositions = [
+  { value: 'right', label: '右侧（默认）' },
+  { value: 'left', label: '左侧' }
+]
+const fullscreenLyricRanges = [
+  { key: 'fontSize', id: 'fullscreen-font-size', label: '歌词字号', min: 16, max: 64 },
+  { key: 'lineSpacing', id: 'fullscreen-line-spacing', label: '歌词行间距', min: 0, max: 40 }
+]
+const fullscreenBackgroundModes = [
+  { value: 'frosted', label: '毛玻璃（默认）' },
+  { value: 'acrylic', label: '亚克力' },
+  { value: 'cover', label: '专辑封面' },
+  { value: 'custom', label: '自定义图片' },
+  { value: 'main', label: '跟随主背景' }
+]
+const fullscreenBackgroundMotions = [
+  { value: 'static', label: '静态（默认）' },
+  { value: 'beat', label: '跟随音乐鼓点' },
+  { value: 'quicksand', label: '流沙' }
 ]
 const customColors = [{ id: 'primary', label: '主题色' }, { id: 'hover', label: '悬浮强调色' }, { id: 'background', label: '背景色' }]
 
@@ -337,6 +434,13 @@ let saveTask = null
 let recoveringAppearance = false
 const saveStatusText = computed(() => ({ saved: '所有更改已保存', pending: '等待保存…', saving: '正在保存…', error: '更改尚未保存' })[saveState.value])
 
+// 图片导入成功后连同显示模式一起进入同一份待保存草稿。
+function setFullscreenBackgroundImage(image) {
+  if (isImporting.value) return
+  localSettings.fullscreenLyrics.backgroundImage = image
+  if (image) localSettings.fullscreenLyrics.backgroundMode = 'custom'
+}
+
 // 只提交用户实际编辑的字段，保留同一分区中的外部更新。
 function collectSettingsPatch(current, baseline) {
   const patch = {}
@@ -450,7 +554,7 @@ async function prepareThemeRecovery(base) {
   // An existing transaction may still commit its captured theme; recovery is queued after it.
   if (saveTask) await saveTask
   const committed = ensureDefaults(settings).custom
-  const themeFields = ['theme', 'themePackages', 'themeAdjustmentId', 'customTheme']
+  const themeFields = ['theme', 'themePackages', 'themeAdjustmentId', 'customTheme', 'backgroundImage']
   isSyncingFromStore.value = true
   for (const field of themeFields) {
     localSettings.custom[field] = cloneDeep(committed[field])
@@ -458,6 +562,8 @@ async function prepareThemeRecovery(base) {
   }
   localSettings.custom.theme = base
   syncedSettings.custom.theme = base
+  localSettings.custom.backgroundImage = ''
+  syncedSettings.custom.backgroundImage = ''
   await nextTick()
   isSyncingFromStore.value = false
   if (saveTimer) clearTimeout(saveTimer)

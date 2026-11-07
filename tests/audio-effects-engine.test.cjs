@@ -282,6 +282,15 @@ function graphFixture({ getStatus = async () => ({ state: 'ready', audioConnecti
   class Context {
     constructor() { actualContext = this; this.sampleRate = 44100; this.currentTime = 0; this.destination = new Node('destination'); this.sources = 0; this.audioWorklet = { addModule: async () => {} } }
     createGain() { return new Node('gain') }
+    createAnalyser() {
+      const analyser = new Node('analyser')
+      Object.defineProperty(analyser, 'frequencyBinCount', { get: () => analyser.fftSize / 2 })
+      analyser.getFloatFrequencyData = spectrum => {
+        spectrum.fill(-Infinity)
+        for (const [bin, decibels] of this.spectrum || []) spectrum[bin] = decibels
+      }
+      return analyser
+    }
     createMediaElementSource() { this.sources++; return new Node('source') }
     async resume() { this.resumed = true }
     async close() { this.closed = true }
@@ -414,6 +423,43 @@ test('one media source survives detach/re-attach and master gain follows the eff
   await assert.rejects(fixture.engine.attach({ crossOrigin: null }), /跨域/)
   await fixture.engine.dispose()
   assert.equal(fixture.context().closed, true)
+})
+
+test('background beats use actual bass attacks on the presented mix and release the tap on close', async () => {
+  const fixture = graphFixture()
+  const { engine } = fixture
+  const audio = { crossOrigin: 'anonymous', currentTime: 3 }
+  await engine.attach(audio)
+  assert.equal(engine.readBackgroundBeat(), 0)
+  assert.ok(!fixture.nodes.some(node => node.kind === 'analyser'))
+  engine.setActiveTrack({ audio, trackId: 'A', playing: true })
+  const context = fixture.context()
+  const sample = (time, spectrum) => {
+    context.currentTime = time
+    context.spectrum = spectrum
+    return engine.readBackgroundBeat()
+  }
+  assert.equal(sample(0, []), 0)
+  assert.equal(sample(0.02, [[18, -5]]), 0, 'higher frequencies do not pulse the background')
+  assert.equal(sample(0.04, [[3, -15]]), 1)
+  const sustained = sample(0.22, [[3, -15]])
+  assert.ok(sustained > 0 && sustained < 0.4, 'sustained bass only decays after the attack')
+  engine.setMaster(0, true)
+  sample(0.24, [])
+  assert.equal(sample(0.26, [[3, -15]]), 1, 'volume and mute only affect the audible gain')
+
+  engine.transport({ playing: false })
+  assert.equal(sample(0.28, [[3, -15]]), 0)
+  engine.transport({ playing: true, seeking: true })
+  assert.equal(sample(0.30, [[3, -15]]), 0, 'resume and seek establish a fresh baseline')
+  engine.stopBackgroundBeat()
+  assert.deepEqual(fixture.worklet().links.map(link => link.node.kind), ['gain'])
+
+  fixture.worklet().onprocessorerror()
+  assert.equal(sample(0.32, []), 0)
+  assert.equal(sample(0.34, [[3, -15]]), 1, 'dry recovery also follows its real audio')
+  await engine.dispose()
+  assert.ok(fixture.nodes.every(node => node.links.every(link => link.node.kind !== 'analyser')))
 })
 
 test('presentation advances from worklet time and freezes at pause; processor failure reconnects dry audio', async () => {

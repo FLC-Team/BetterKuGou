@@ -263,6 +263,8 @@
           :lyric-data="displayLyric.rawData"
           :current-play-time="presentedTime"
           :read-playback-time="getAnimationPlaybackTime"
+          :read-background-beat="readBackgroundBeat"
+          :stop-background-beat="stopBackgroundBeat"
           :preview-time="seekPreviewTime"
           :duration="presentedDuration"
           :seek-enabled="!presentedPlaybackSnapshot"

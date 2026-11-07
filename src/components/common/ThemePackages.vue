@@ -1,5 +1,13 @@
 <template>
   <div class="theme-packages">
+    <div class="theme-share">
+      <BackgroundImageSetting
+        :model-value="modelValue.backgroundImage"
+        description="从本机选择一张图片，作为整个主界面的背景。"
+        @update:model-value="updateCustom({ backgroundImage: $event })"
+      />
+    </div>
+
     <div class="theme-heading">
       <div>
         <div class="theme-label">主题包</div>
@@ -107,6 +115,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import BackgroundImageSetting from './BackgroundImageSetting.vue'
 import { freezeGridLeave, clearGridLeave } from './motionLayout.js'
 import {
   BUILTIN_THEMES,

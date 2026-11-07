@@ -1,14 +1,17 @@
 <template>
-  <div class="lyric-view" v-if="visible" @click="closeLyricView" @keydown.esc.stop="handleLyricEscape" role="dialog" aria-label="歌曲歌词">
-    <!-- 模糊背景 -->
-    <div class="lyric-background">
-      <Transition name="track-background" @before-leave="retireTrackLayer">
-        <ArtworkCover v-if="coverUrl" image-only loading="eager"
-             :key="coverUrl"
-             :src="coverUrl"
-             alt=""
-             class="background-image" />
-      </Transition>
+  <div class="lyric-view" v-if="visible" :class="{ 'lyrics-on-left': fullscreenPreferences.position === 'left', 'whole-line-highlight': !karaokeEnabled, 'is-playing': isPlaying }"
+       :style="lyricTypography" :data-background-mode="backgroundMode" :data-background-motion="backgroundMotion"
+       @click="closeLyricView" @keydown.esc.stop="handleLyricEscape" role="dialog" aria-label="歌曲歌词">
+    <div ref="backgroundLayer" class="lyric-background" aria-hidden="true">
+      <div class="background-motion">
+        <Transition name="track-background">
+          <div v-if="backgroundUrl" :key="backgroundUrl" class="background-art">
+            <ArtworkCover v-if="backgroundUsesCover" image-only loading="eager" :src="backgroundUrl" alt="" class="background-image" />
+            <img v-else :src="backgroundUrl" class="background-image" alt="" draggable="false" />
+          </div>
+        </Transition>
+        <div class="background-flow"></div>
+      </div>
       <div class="background-overlay"></div>
     </div>
 
@@ -54,7 +57,7 @@
           </div>
         </div>
 
-        <div class="playback-panel">
+        <div v-if="showPlaybackControls" class="playback-panel">
           <input
             class="lyric-progress"
             type="range"
@@ -163,11 +166,11 @@
               <span class="translation-indicator" aria-hidden="true"></span>
             </button>
           </div>
-          <AppNotice :message="qualityMessage" type="error" title="音质切换" :busy="qualitySwitching"
-            :actions="[{ label: qualitySwitching ? '切换中…' : '重试', run: () => $emit('retry-quality') }]" />
-          <AppNotice :message="translationMessage" type="error" title="歌词翻译偏好"
-            :actions="[{ label: '重试', run: saveTranslationPreference }]" />
         </div>
+        <AppNotice :message="qualityMessage" type="error" title="音质切换" :busy="qualitySwitching"
+          :actions="[{ label: qualitySwitching ? '切换中…' : '重试', run: () => $emit('retry-quality') }]" />
+        <AppNotice :message="translationMessage" type="error" title="歌词翻译偏好"
+          :actions="[{ label: '重试', run: saveTranslationPreference }]" />
       </div>
 
       <!-- 右侧歌词 -->

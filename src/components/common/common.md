@@ -18,7 +18,8 @@
 - `AnimatedDetails.vue`：保留原生 details/summary 的折叠组件，提供 `summary` 具名插槽、默认内容插槽及 `open` 初始/外部开合参数；普通点击与键盘激活使用同一开合流程。
 - `detailsMotion.js`：原生折叠的可取消高度动画控制器；返回 `setOpen` / `dispose`，用于 AnimatedDetails 及应用更新。
 - `motionLayout.js`：网格离场坐标冻结及恢复的共享函数；移出正常布局后保留真实离场动画，允许其他项使用 FLIP 平滑移动，离场期间禁用交互和无障碍访问。
-- `ThemePackages.vue`：主题缩略预览、切换、文件导入更新、移除回退和当前主题导出。
+- `ThemePackages.vue`：主界面背景设置、主题缩略预览、切换、文件导入更新、移除回退和当前主题导出。
+- `BackgroundImageSetting.vue`：主界面和全屏歌词共用的图片选择、预览和清除。使用 Chromium 解码本地图片，处理完成后将管理 ID 写入设置草稿，失败保留原图片并通过 AppNotice 提示。
 - `ThemeAdjustments.vue`：全部主题令牌按区域分组编辑、搜索和分组恢复，通过 custom v-model 交由设置页保存；设置入口收纳在“外观与主题 → 界面精调与高级编辑”。
 - `ThemeStudio.vue`：App 常驻的区域/元素拾取编辑器与主窗口/桌面歌词高级 CSS 草稿；预览、取消、保存与失败反馈。
 - `ThemeRecovery.vue`：恢复快捷键及安全主题预览、设置保存握手；恢复进度、结果和重试统一通过 AppNotice，不维护独立面板或样式宿主。

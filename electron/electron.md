@@ -11,6 +11,7 @@
 - `main.js`：应用入口，编排启动、窗口、托盘、IPC 和退出清理。
 - `preload.js`：通过 `contextBridge` 暴露 `electronAPI`、`settingsAPI`、`loadingAPI`、`desktopLyricAPI`、`islandLyricAPI` 与 `taskbarLyricAPI`；事件订阅隐藏 Electron event 并返回解绑函数，`electronAPI.updates` 提供固定的更新操作及状态订阅；`waitForBackend()` 与 `notifyReady()` 仅桥接固定的启动就绪频道。`onAppNotice()` 订阅统一通知，独立歌词窗口仅通过 `reportNotice()` 转发有界纯文本。
 - `settingsStore.js`：设置默认值、Schema 补全、导入导出、自启协调与串行原子持久化。
+- `backgroundImage.mjs`：管理图片 ID 校验、大小上限和 `bk-background://image/` 资源地址，渲染与主进程共用。
 - `audioEffectsConfig.cjs`：音频效果偏好白名单，限定插件链/搜索目录数量与字段；缓冲限定 64/128/256/512ms，旧设置与非法值回退 128ms，与主设置存储共用规范化入口。
 - `autoLaunch.js`：封装 Windows/macOS 登录启动设置；不支持的平台返回明确的状态或错误。
 - `logger.js`：主进程日志级别与输出入口，默认 `info`，通过 `BK_LOG_LEVEL` 或 `DEBUG` 开启诊断。
@@ -25,6 +26,7 @@
 
 1. `app.whenReady()` 创建加载窗口和托盘，初始化设置后并行启动本地 API 与主窗口，不等待固定定时器。渲染入口并行初始化设置与等待实际 HTTP 就绪，后端失败或 10 秒截止仍允许界面挂载；主窗口顶层页面挂载后的首帧通过 `renderer:ready` 显示窗口并关闭加载窗，仅处理一次，退出中忽略就绪。启动期间的播放指令暂存到渲染就绪后发送。
 2. 渲染进程经 preload 请求设置或系统能力，主进程执行后通过 IPC 返回结果或广播更新。
+   `electronAPI.storeBackgroundImage()` 仅接受主窗口顶层提交的有界 WebP 副本。主进程原子写入 `userData/background-images/`，返回内容 ID；`bk-background` 仅按此 ID 读取固定目录的图片，设置只保存 ID。
    系统操作及三个独立歌词窗口的结果统一通过 `app:notice` 交给主窗口 Fue 通知。`app:report-notice` 只接受当前歌词窗口顶层文档，字段白名单为 id/title/message/type，长度分别限定 80/120/2000 字符，拒绝未知类型及额外字段。主窗挂载前最多缓存 20 条，同 id 替换，`renderer:ready` 后排空；错误或警告找回隐藏/最小化主窗，已可见时不抢焦点。安装、关闭方式等业务确认保留确认对话框。
    设置初始化失败停止正常启动，通过 `getStartupFailure()` 只挂载 Fue 通知根，不加载业务 App 或启动后端；用户关闭或 `quitAfterStartupFailure()` 沿既有清理退出。错误界面 15 秒未就绪或页面加载失败时退出，退出清理缓存通知与等待计时器。
    `electronAPI.audioEffects` 提供固定音效操作、状态订阅和一次性 MessagePort 连接；PCM 直达 Utility Process。初始化注册具备 CORS/流式能力的 `bk-audio`，只接受内存中已授予的媒体租约；重载/崩溃/关闭释放租约及音效连接，退出等待原生宿主关闭。原生二进制按当前平台/架构从开发目录或 `resources/audio-effects/` 加载，缺失时明确报告不可用。

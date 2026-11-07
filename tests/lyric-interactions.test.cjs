@@ -130,6 +130,22 @@ function wheel(lyric, deltaY, overrides = {}) {
   return event
 }
 
+test('whole-line highlighting still follows time and custom blur keeps the current line clear', t => {
+  const { lyric, settingsStore } = fixture(t)
+  let wordReads = 0
+  lyric.$refs.lyricsContainer.querySelectorAll = () => { wordReads++; return [] }
+  settingsStore.settings.fullscreenLyrics = { karaokeEnabled: false, blurEnabled: true, blurPercent: 25 }
+  lyric.syncPlaybackTime(15)
+  assert.equal(lyric.currentLyricIndex, 3)
+  assert.equal(wordReads, 0)
+  assert.equal(lyric.getLyricLineStyle(3).filter, 'none')
+  const previousBlur = lyric.getLyricLineStyle(2).filter
+  settingsStore.settings.fullscreenLyrics.blurPercent = 100
+  assert.equal(lyric.getLyricLineStyle(2).filter, `blur(${Number.parseFloat(previousBlur.slice(5)) * 4}px)`)
+  settingsStore.settings.fullscreenLyrics.blurEnabled = false
+  assert.equal(lyric.getLyricLineStyle(2).filter, 'none')
+})
+
 test('dragging starts only beyond six pixels, never seeks and suppresses only the following pointer click', t => {
   const { lyric, window, emitted, listeners } = fixture(t)
   lyric.currentPlayTime = 10
