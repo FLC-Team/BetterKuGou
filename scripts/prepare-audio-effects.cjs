@@ -9,6 +9,9 @@ module.exports = async function prepareAudioEffects(context) {
   if (context.electronPlatformName !== process.platform) throw new Error('Build audio effects on the target operating system')
   const root = context.packager?.info?.appDir || context.appDir
   if (typeof root !== 'string' || !path.isAbsolute(root)) throw new Error('Cannot resolve the application directory for the native audio host')
+  if (context.electronPlatformName === 'win32' && context.targets?.some(target => target.name === 'nsis')) {
+    await require('./prepare-windows-nsis.cjs')(root)
+  }
   await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(root, 'scripts/build-audio-effects.cjs'), `--arch=${arch}`],
       { cwd: root, stdio: 'inherit', windowsHide: true })

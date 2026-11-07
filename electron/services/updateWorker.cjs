@@ -8,6 +8,7 @@ const { isMainThread, parentPort, workerData } = require('node:worker_threads')
 
 const REPOSITORY = 'FLC-Team/BetterKuGou'
 const PROXY = 'https://git.tangbai.cc/'
+const RELEASE_API = `https://api.github.com/repos/${REPOSITORY}/releases`
 const PAGE_SIZE = 100
 const MAX_PAGES = 10
 const MAX_METADATA_BYTES = 8 * 1024 * 1024
@@ -123,7 +124,7 @@ function normalizeRelease(raw, target) {
   if (raw.draft || (target.channel === 'stable' && (raw.prerelease || version.prerelease.length))) return null
   const assets = selectAssets(raw.assets.map(asset => normalizeAsset(asset, raw.tag_name)).filter(Boolean), { ...target, releaseVersion: version.version })
   return {
-    id: raw.id, version: version.version, tag: raw.tag_name,
+    id: raw.id, version: version.version, tag: raw.tag_name, channel: target.channel,
     name: typeof raw.name === 'string' ? raw.name.slice(0, 500) : raw.tag_name,
     notes: typeof raw.body === 'string' ? raw.body.slice(0, 50000) : '',
     publishedAt: typeof raw.published_at === 'string' ? raw.published_at : null,
@@ -134,7 +135,7 @@ function normalizeRelease(raw, target) {
 
 /** 网络传输仅接受固定 HTTPS 主机，限制跳转次数，并在 DNS、响应和流读取阶段均可取消。 */
 function createTransport({ request = https.request, metadataTimeout = 15000, downloadTimeout = 30 * 60 * 1000, idleTimeout = 30000 } = {}) {
-  async function open(url, { signal, metadata = false, redirects = 0 } = {}) {
+  async function open(url, { signal, metadata = false, allowRedirect = true, redirects = 0 } = {}) {
     assertNotCancelled(signal)
     const parsed = new URL(url)
     if (parsed.protocol !== 'https:' || parsed.port || parsed.username || parsed.password || !REDIRECT_HOSTS.has(parsed.hostname)) throw updateError('NETWORK', '更新服务器跳转到不受支持的地址')
@@ -175,8 +176,8 @@ function createTransport({ request = https.request, metadataTimeout = 15000, dow
     if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
       const location = response.headers.location
       response.destroy()
-      if (!location) throw updateError('NETWORK', '更新服务器返回无效跳转')
-      return open(new URL(location, parsed).href, { signal, metadata, redirects: redirects + 1 })
+      if (!allowRedirect || !location) throw updateError('NETWORK', '更新服务器返回无效跳转')
+      return open(new URL(location, parsed).href, { signal, metadata, allowRedirect, redirects: redirects + 1 })
     }
     if (response.statusCode !== 200) {
       response.destroy()
@@ -193,6 +194,27 @@ function createUpdateEngine({ downloadRoot, request, now = Date.now, fsApi = fs,
   const root = path.resolve(downloadRoot)
   const transport = createTransport({ request, ...timeouts })
 
+  /** 发布列表与官方核验共用有大小上限的 JSON 读取，取消时立即停止流。 */
+  async function readMetadata(url, { signal, maxBytes = MAX_METADATA_BYTES, allowRedirect = true } = {}) {
+    const response = await transport.open(url, { signal, metadata: true, allowRedirect })
+    if (!/\b(?:application\/json|application\/[\w.+-]+\+json)\b/i.test(response.headers['content-type'] || '')) {
+      response.destroy()
+      throw updateError('INVALID_METADATA', '更新服务器未返回版本 JSON')
+    }
+    const chunks = []
+    let bytes = 0
+    for await (const chunk of response) {
+      assertNotCancelled(signal)
+      bytes += chunk.length
+      if (bytes > maxBytes) throw updateError('INVALID_METADATA', '更新版本信息过大')
+      chunks.push(chunk)
+    }
+    let value
+    try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { throw updateError('INVALID_METADATA', '更新版本 JSON 无效') }
+    return { value, bytes }
+  }
+
+  /** 优先选择有当前平台安装包的新版，保留无包发布的说明作为回退。 */
   async function check(target, { signal } = {}) {
     const current = parseVersion(target?.currentVersion)
     if (!current || !['stable', 'beta'].includes(target.channel) || !['win32', 'darwin', 'linux'].includes(target.platform) || !['x64', 'ia32', 'arm64', 'armv7l'].includes(target.arch)) throw updateError('INVALID_INPUT', '检查更新参数无效')
@@ -200,36 +222,27 @@ function createUpdateEngine({ downloadRoot, request, now = Date.now, fsApi = fs,
     for (const source of ['proxy', 'github']) {
       try {
         let latest = null
+        let latestCompatible = null
         let totalBytes = 0
         for (let page = 1; page <= MAX_PAGES; page += 1) {
           assertNotCancelled(signal)
-          const original = `https://api.github.com/repos/${REPOSITORY}/releases?per_page=${PAGE_SIZE}&page=${page}`
-          const response = await transport.open(source === 'proxy' ? PROXY + original : original, { signal, metadata: true })
-          if (!/\b(?:application\/json|application\/[\w.+-]+\+json)\b/i.test(response.headers['content-type'] || '')) {
-            response.destroy()
-            throw updateError('INVALID_METADATA', '更新服务器未返回版本 JSON')
-          }
-          const chunks = []
-          let bytes = 0
-          for await (const chunk of response) {
-            assertNotCancelled(signal)
-            bytes += chunk.length
-            totalBytes += chunk.length
-            if (bytes > MAX_METADATA_BYTES || totalBytes > MAX_METADATA_BYTES * 2) throw updateError('INVALID_METADATA', '更新版本信息过大')
-            chunks.push(chunk)
-          }
-          let raw
-          try { raw = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { throw updateError('INVALID_METADATA', '更新版本 JSON 无效') }
+          const original = `${RELEASE_API}?per_page=${PAGE_SIZE}&page=${page}`
+          const { value: raw, bytes } = await readMetadata(source === 'proxy' ? PROXY + original : original, {
+            signal, maxBytes: Math.min(MAX_METADATA_BYTES, MAX_METADATA_BYTES * 2 - totalBytes)
+          })
+          totalBytes += bytes
           if (!Array.isArray(raw) || raw.length > PAGE_SIZE || raw.some(item => !item || typeof item !== 'object' || typeof item.tag_name !== 'string' || !Array.isArray(item.assets) || !Number.isSafeInteger(item.id))) throw updateError('INVALID_METADATA', '更新版本数据结构无效')
           for (const item of raw) {
             const candidate = normalizeRelease(item, target)
             if (candidate && (!latest || compareVersions(candidate.version, latest.version) > 0)) latest = candidate
+            if (candidate?.assets.length && (!latestCompatible || compareVersions(candidate.version, latestCompatible.version) > 0)) latestCompatible = candidate
           }
           if (raw.length < PAGE_SIZE) break
           if (page === MAX_PAGES) throw updateError('INVALID_METADATA', '更新版本分页超过限制')
         }
         assertNotCancelled(signal)
-        return { release: latest && compareVersions(latest.version, current) > 0 ? latest : null, hasReleases: Boolean(latest), latestVersion: latest?.version ?? null, source, checkedAt: new Date(now()).toISOString() }
+        const next = latestCompatible && compareVersions(latestCompatible.version, current) > 0 ? latestCompatible : latest
+        return { release: next && compareVersions(next.version, current) > 0 ? next : null, hasReleases: Boolean(latest), latestVersion: latest?.version ?? null, source, checkedAt: new Date(now()).toISOString() }
       } catch (error) {
         assertNotCancelled(signal)
         if (error.code === 'CANCELLED') throw error
@@ -237,6 +250,25 @@ function createUpdateEngine({ downloadRoot, request, now = Date.now, fsApi = fs,
       }
     }
     throw lastError
+  }
+
+  /** 下载和缓存共用官方摘要，代理发现的版本、资产和渠道必须与 GitHub 对应。 */
+  async function authenticateAsset(release, asset, signal) {
+    let official
+    try {
+      const { value } = await readMetadata(`${RELEASE_API}/tags/${encodeURIComponent(release.tag)}`, { signal, allowRedirect: false })
+      official = value
+    } catch (error) {
+      assertNotCancelled(signal)
+      throw updateError('UNVERIFIED_RELEASE', `无法向 GitHub 核验安装包发布信息：${error.message}`)
+    }
+    if (official?.id !== release.id || official.tag_name !== release.tag || official.draft !== false
+      || typeof official.prerelease !== 'boolean' || (release.channel === 'stable' && official.prerelease)
+      || !Array.isArray(official.assets)) throw updateError('UNVERIFIED_RELEASE', '安装包对应的版本与 GitHub 官方发布不一致，请重新检查更新')
+    const published = normalizeAsset(official.assets.find(item => item?.id === asset.id && item.state === 'uploaded'), release.tag)
+    if (!published || published.name !== asset.name || published.size !== asset.size) throw updateError('UNVERIFIED_RELEASE', '安装包信息与 GitHub 官方发布不一致，请重新检查更新')
+    if (!published.digest) throw updateError('UNVERIFIED_RELEASE', 'GitHub 官方发布未提供安装包的 SHA256 校验值，无法安全下载')
+    return published
   }
 
   function containedFile(candidate) {
@@ -283,19 +315,19 @@ function createUpdateEngine({ downloadRoot, request, now = Date.now, fsApi = fs,
 
   async function download({ release, asset }, { signal, onProgress = () => {} } = {}) {
     assertNotCancelled(signal)
-    if (!release || !parseVersion(release.version) || !parseVersion(release.tag) || compareVersions(release.version, release.tag) !== 0
+    const version = parseVersion(release?.tag)
+    if (!version || version.version !== release.version || !['stable', 'beta'].includes(release.channel)
+      || (release.channel === 'stable' && version.prerelease.length)
       || !Number.isSafeInteger(release.id) || release.id <= 0 || !asset || !Number.isSafeInteger(asset.id) || asset.id <= 0
       || !validAssetName(asset.name) || !assetFormat(asset.name) || asset.format !== assetFormat(asset.name)
-      || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > 10 * 1024 ** 3 || !validDownloadUrl(asset.url, release.tag, asset.name)
-      || (asset.digest !== null && asset.digest !== undefined && !/^sha256:[a-f0-9]{64}$/i.test(asset.digest))) throw updateError('INVALID_INPUT', '更新安装包信息无效')
+      || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > 10 * 1024 ** 3 || !validDownloadUrl(asset.url, release.tag, asset.name)) throw updateError('INVALID_INPUT', '更新安装包信息无效')
+    const published = await authenticateAsset(release, asset, signal)
     await ensureRoot()
-    const filename = containedFile(path.join(root, `${release.id}-${asset.id}-${asset.name}`))
-    const baseRecord = { path: filename, assetId: asset.id, assetName: asset.name, version: release.version, format: asset.format, size: asset.size, digest: asset.digest?.toLowerCase() ?? null }
-    if (baseRecord.digest) {
-      try { return await verify({ file: { ...baseRecord, source: 'cache' } }, { signal }) } catch (error) {
-        if (error.code === 'CANCELLED' || error.code === 'INVALID_PATH' || (error.code === 'DISK_ERROR' && error.causeCode !== 'ENOENT')) throw error
-        // 仅本服务按资产身份生成的缓存可失效重下；不会读取或覆盖任意用户路径。
-      }
+    const filename = containedFile(path.join(root, `${release.id}-${published.id}-${published.name}`))
+    const baseRecord = { path: filename, assetId: published.id, assetName: published.name, version: release.version, format: published.format, size: published.size, digest: published.digest }
+    try { return await verify({ file: { ...baseRecord, source: 'cache' } }, { signal }) } catch (error) {
+      if (error.code === 'CANCELLED' || error.code === 'INVALID_PATH' || (error.code === 'DISK_ERROR' && error.causeCode !== 'ENOENT')) throw error
+      // 仅本服务按资产身份生成的缓存可失效重下；不会读取或覆盖任意用户路径。
     }
     let lastError
     for (const source of ['proxy', 'github']) {
@@ -305,22 +337,22 @@ function createUpdateEngine({ downloadRoot, request, now = Date.now, fsApi = fs,
       let outputClosed
       try {
         assertNotCancelled(signal)
-        response = await transport.open(source === 'proxy' ? PROXY + asset.url : asset.url, { signal })
+        response = await transport.open(source === 'proxy' ? PROXY + published.url : published.url, { signal })
         if (/text\/html|application\/json/i.test(response.headers['content-type'] || '') || (response.headers['content-encoding'] && response.headers['content-encoding'] !== 'identity')) throw updateError('SIZE_MISMATCH', '更新下载未返回安装包')
         const contentLength = response.headers['content-length']
-        if (contentLength !== undefined && (!/^\d+$/.test(String(contentLength)) || Number(contentLength) !== asset.size)) throw updateError('SIZE_MISMATCH', '更新包响应大小与发布信息不一致')
+        if (contentLength !== undefined && (!/^\d+$/.test(String(contentLength)) || Number(contentLength) !== published.size)) throw updateError('SIZE_MISMATCH', '更新包响应大小与发布信息不一致')
         const hash = crypto.createHash('sha256')
         let received = 0
         let lastProgress = now()
-        onProgress({ received: 0, total: asset.size, percent: 0, source })
+        onProgress({ received: 0, total: published.size, percent: 0, source })
         assertNotCancelled(signal)
         const counter = new Transform({ transform(chunk, _encoding, callback) {
           received += chunk.length
-          if (received > asset.size) { callback(updateError('SIZE_MISMATCH', '更新包超过发布大小')); return }
+          if (received > published.size) { callback(updateError('SIZE_MISMATCH', '更新包超过发布大小')); return }
           hash.update(chunk)
           if (now() - lastProgress >= 250) {
             lastProgress = now()
-            onProgress({ received, total: asset.size, percent: Math.min(100, received / asset.size * 100), source })
+            onProgress({ received, total: published.size, percent: Math.min(100, received / published.size * 100), source })
           }
           callback(null, chunk)
         } })
@@ -330,9 +362,9 @@ function createUpdateEngine({ downloadRoot, request, now = Date.now, fsApi = fs,
         output.on('error', error => { if (DISK_ERROR_CODES.has(error.code)) error.updateDiskError = true })
         await pipeline(response, counter, output, { signal })
         assertNotCancelled(signal)
-        if (received !== asset.size) throw updateError('SIZE_MISMATCH', '更新包下载不完整')
+        if (received !== published.size) throw updateError('SIZE_MISMATCH', '更新包下载不完整')
         const digest = `sha256:${hash.digest('hex')}`
-        if (baseRecord.digest && digest !== baseRecord.digest) throw updateError('HASH_MISMATCH', '更新包 SHA256 与发布信息不一致')
+        if (digest !== published.digest) throw updateError('HASH_MISMATCH', '更新包 SHA256 与 GitHub 官方发布信息不一致')
         try {
           const existing = await fsApi.promises.lstat(filename).catch(error => { if (error.code === 'ENOENT') return null; throw error })
           if (existing && (!existing.isFile() || existing.isSymbolicLink())) throw updateError('INVALID_PATH', '更新缓存位置不是普通文件')
@@ -340,8 +372,8 @@ function createUpdateEngine({ downloadRoot, request, now = Date.now, fsApi = fs,
           await fsApi.promises.rename(temporary, filename)
         } catch (error) { throw error.code === 'INVALID_PATH' ? error : updateError('DISK_ERROR', `无法保存更新包：${error.message}`) }
         assertNotCancelled(signal)
-        onProgress({ received, total: asset.size, percent: 100, source })
-        return { ...baseRecord, source, digest }
+        onProgress({ received, total: published.size, percent: 100, source })
+        return { ...baseRecord, source }
       } catch (error) {
         response?.destroy()
         // pipeline may reject on abort before a pending fs.open has completed.

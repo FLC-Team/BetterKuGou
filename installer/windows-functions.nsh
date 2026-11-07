@@ -927,7 +927,7 @@ Function BKPreparePage
     SendMessage $0 ${WM_SETFONT} $BKSmallFont 1
     !insertmacro BKSetColors $0 $BKText $BKSurface
     !insertmacro BKLabel 268 220 448 116 "" $BKFont $BKText $BKSurface
-    !insertmacro BKLabel 268 346 448 20 "保留你的设置、主题与播放记录。" $BKSmallFont $BKAccent $BKBg
+    !insertmacro BKLabel 268 346 448 20 "保留设置、主题和播放记录。旧目录有额外文件时会保留备份。" $BKSmallFont $BKAccent $BKBg
     !insertmacro BKLabel 268 374 448 38 "安装位置：$INSTDIR" $BKSmallFont $BKMuted $BKBg
     ${If} $BKAction == "重新安装"
       SendMessage $BKNext ${WM_SETTEXT} 0 "STR:重新安装"
@@ -953,7 +953,7 @@ Function BKPreparePage
     ${NSD_OnClick} $0 BKBrowse
     StrCpy $BKButtonRole secondary
     Call BKPaintButton
-    SectionGetSize 1 $BKRequired
+    SectionGetSize 0 $BKRequired
     IntOp $BKRequired $BKRequired / 1024
     !insertmacro BKLabel 268 278 448 22 "版本 ${VERSION}  ·  约需 $BKRequired MB 空间" $BKSmallFont $BKMuted $BKBg
     ${NSD_CreateCheckbox} 0 0 448 28 "我已阅读并同意许可证与使用声明"
@@ -982,6 +982,7 @@ Function BKPreparePage
 FunctionEnd
 
 Function BKPrepareLeave
+  StrCpy $BKAllowBackup 0
   ${If} $BKExisting == 0
     ${NSD_GetState} $BKLicense $0
     ${If} $0 != ${BST_CHECKED}
@@ -992,40 +993,26 @@ Function BKPrepareLeave
       MessageBox MB_OK|MB_ICONEXCLAMATION "请选择安装文件夹。"
       Abort
     ${EndIf}
-    System::Call 'shlwapi::PathIsRelativeW(w "$INSTDIR")i.r0'
-    ${If} $0 != 0
-      MessageBox MB_OK|MB_ICONEXCLAMATION "请选择完整的绝对路径。"
-      Abort
-    ${EndIf}
-    ClearErrors
-    GetFullPathName $INSTDIR "$INSTDIR"
-    ${If} ${Errors}
-      MessageBox MB_OK|MB_ICONEXCLAMATION "安装路径无效，请重新选择。"
-      Abort
-    ${EndIf}
-    ; Reject a drive root or relative path; never let the old uninstaller or
-    ; extractor treat an entire drive as the application's installation folder.
-    ${GetRoot} "$INSTDIR" $0
-    ${If} $0 == ""
-    ${OrIf} $INSTDIR == $0
-    ${OrIf} $INSTDIR == "$0\"
-      MessageBox MB_OK|MB_ICONEXCLAMATION "请选择一个完整的应用文件夹，例如 C:\Apps\BetterKuGou。"
-      Abort
-    ${EndIf}
-    System::Call 'kernel32::GetDiskFreeSpaceExW(w "$0\", *l .r1, p 0, p 0)i.r2'
-    ${If} $2 != 0
-      System::Int64Op $1 / 1024
-      Pop $1
-      SectionGetSize 1 $2
-      System::Int64Op $1 < $2
-      Pop $3
-      ${If} $3 != 0
-        MessageBox MB_OK|MB_ICONEXCLAMATION "安装位置的可用空间不足，请选择其他位置或释放磁盘空间。"
-        Abort
-      ${EndIf}
-    ${EndIf}
-  ${ElseIf} $BKAction == "降级"
-    MessageBox MB_YESNO|MB_DEFBUTTON2|MB_ICONEXCLAMATION "即将从 $BKOldVersion 降级到 ${VERSION}。旧版本可能无法读取较新设置。用户数据会保留，但此操作不提供自动回滚。确定继续降级吗？" IDYES +2
+  ${EndIf}
+
+  !insertmacro BKRunFileHelper validate
+  ${If} $BKFilesExit != 0
+    MessageBox MB_OK|MB_ICONEXCLAMATION "$BKFilesResult"
+    Abort
+  ${EndIf}
+  StrCpy $0 $BKFilesResult 7
+  ${If} $0 == "backup|"
+    StrCpy $INSTDIR $BKFilesResult "" 7
+    MessageBox MB_YESNO|MB_DEFBUTTON2|MB_ICONEXCLAMATION "原安装目录 $INSTDIR 含有旧版文件或其他文件。继续后，旧目录中的内容会一起移到同一磁盘上的备份目录，原位置将用于新版。如果其他应用也使用此目录，请先取消。是否继续？" IDYES +2
+    Abort
+    StrCpy $BKAllowBackup 1
+  ${ElseIf} $BKFilesResult != ""
+    StrCpy $INSTDIR $BKFilesResult
+  ${EndIf}
+  Call BKValidateInstallSpace
+
+  ${If} $BKAction == "降级"
+    MessageBox MB_YESNO|MB_DEFBUTTON2|MB_ICONEXCLAMATION "即将从 $BKOldVersion 降级到 ${VERSION}。用户数据会保留，旧版本可能无法读取较新设置。确定继续降级吗？" IDYES +2
     Abort
   ${EndIf}
   StrCpy $BKConfirmed 1
@@ -1047,6 +1034,96 @@ Function BKPrepareLeave
   StrCpy $BKBusy 1
   EnableWindow $BKCancel 0
   EnableWindow $BKClose 0
+FunctionEnd
+
+; A full payload is staged on the target volume while its ZIP lives in the
+; system temporary directory. Check both before asking the app to quit.
+Function BKValidateInstallSpace
+  SectionGetSize 0 $BKRequired
+  IntOp $BKRequired $BKRequired + 16384
+  ${GetRoot} "$INSTDIR" $0
+  ${GetRoot} "$PLUGINSDIR" $1
+  StrCpy $2 $BKRequired
+  ${If} $0 == $1
+    IntOp $2 $2 * 2
+  ${EndIf}
+  System::Call 'kernel32::GetDiskFreeSpaceExW(w "$0\", *l .r3, p 0, p 0)i.r4'
+  ${If} $4 != 0
+    System::Int64Op $3 / 1024
+    Pop $3
+    System::Int64Op $3 < $2
+    Pop $4
+    ${If} $4 != 0
+      MessageBox MB_OK|MB_ICONEXCLAMATION "安装位置的可用空间不足，请释放磁盘空间后重试。"
+      Abort
+    ${EndIf}
+  ${EndIf}
+  ${If} $0 != $1
+    System::Call 'kernel32::GetDiskFreeSpaceExW(w "$1\", *l .r3, p 0, p 0)i.r4'
+    ${If} $4 != 0
+      System::Int64Op $3 / 1024
+      Pop $3
+      System::Int64Op $3 < $BKRequired
+      Pop $4
+      ${If} $4 != 0
+        MessageBox MB_OK|MB_ICONEXCLAMATION "系统临时盘的可用空间不足，请释放磁盘空间后重试。"
+        Abort
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
+
+Function BKAbortFileInstall
+  SetOutPath "$PLUGINSDIR"
+  !insertmacro BKRunFileHelper rollback
+  ${If} $BKFilesExit != 0
+    DetailPrint "$BKFilesResult"
+  ${ElseIf} $BKFilesResult != ""
+    DetailPrint "恢复文件已保存在：$BKFilesResult"
+  ${EndIf}
+  DetailPrint "$BKInstallError"
+  SetErrorLevel 2
+  Abort "$BKInstallError"
+FunctionEnd
+
+; The UI may have been open while another session installed a different
+; version. Recheck the same scope under the shared file lock before swapping.
+Function BKAssertRegistration
+  ${If} $installMode == "all"
+    ${If} ${UAC_IsInnerInstance}
+      StrCpy $R8 "unavailable"
+      !insertmacro UAC_AsUser_Call Function BKReadPersonalInstallation ${UAC_SYNCREGISTERS}
+    ${Else}
+      Call BKReadPersonalInstallation
+    ${EndIf}
+  ${Else}
+    ReadRegStr $R8 HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation
+  ${EndIf}
+  ${If} $R8 != ""
+    SetErrorLevel 2
+    Abort "无法确认安装范围，或检测到另一安装范围的记录。请关闭并重新打开安装器。"
+  ${EndIf}
+  ReadRegStr $0 SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" InstallLocation
+  ${If} $0 != $BKExistingPath
+    SetErrorLevel 2
+    Abort "安装记录已改变。请关闭并重新打开安装器。"
+  ${EndIf}
+  ${If} $BKExisting == 1
+    ReadRegStr $0 SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" BetterKuGouVersion
+    ${If} $0 == ""
+      ReadRegStr $0 SHELL_CONTEXT "${UNINSTALL_REGISTRY_KEY}" DisplayVersion
+    ${EndIf}
+    ${If} $0 != $BKOldVersion
+      SetErrorLevel 2
+      Abort "已安装的版本已改变。请关闭并重新打开安装器。"
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
+
+; The UAC bridge runs this in the original user's process, not the
+; administrator hive used by the elevated child.
+Function BKReadPersonalInstallation
+  ReadRegStr $R8 HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
 FunctionEnd
 
 ; Retain MUI's extraction progress bar. Its value is controlled by the real
@@ -1162,7 +1239,10 @@ Function BKProgressLeave
   SendMessage $BKProgressStep ${WM_SETTEXT} 0 "STR:安装未完成"
   SendMessage $BKProgressBrandStep ${WM_SETTEXT} 0 "STR:安装未完成"
   SendMessage $BKProgressTitle ${WM_SETTEXT} 0 "STR:安装未完成"
-  SendMessage $BKProgressSubtitle ${WM_SETTEXT} 0 "STR:请查看下方详情，关闭后可重新运行安装包。"
+  ${If} $BKInstallError == ""
+    StrCpy $BKInstallError "请查看下方详情，关闭后可重新运行安装包。"
+  ${EndIf}
+  SendMessage $BKProgressSubtitle ${WM_SETTEXT} 0 "STR:$BKInstallError"
   EnableWindow $BKCancel 1
   ShowWindow $BKCancel 1
   SendMessage $BKCancel ${WM_SETTEXT} 0 "STR:关闭"
@@ -1187,7 +1267,10 @@ Function .onInstFailed
   SendMessage $BKCancel ${WM_SETTEXT} 0 "STR:关闭"
   !insertmacro BKButton $BKCancel quiet
   SetDetailsView show
-  MessageBox MB_OK|MB_ICONEXCLAMATION "安装未完成。请查看安装详情，检查磁盘空间、目标文件夹权限及正在运行的 BetterKuGou，然后重新运行安装包。用户设置与播放记录会保留。"
+  ${If} $BKInstallError == ""
+    StrCpy $BKInstallError "请查看安装详情，检查磁盘空间、目标文件夹权限及正在运行的 BetterKuGou，然后重新运行安装包。"
+  ${EndIf}
+  MessageBox MB_OK|MB_ICONEXCLAMATION "安装未完成。$\r$\n$BKInstallError"
 FunctionEnd
 
 Function .onGUIEnd
@@ -1376,11 +1459,6 @@ Function BKCheckRunning
   ${EndIf}
   MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$0" IDRETRY bkCheckRestart
   StrCpy $BKQuitFailed 1
-  ; Called from a page leave: leave the prepared page available for another try.
-  ${If} $BKBusy == 1
-    SetErrorLevel 2
-    Quit
-  ${EndIf}
   Return
   bkCheckRestart:
   StrCpy $BKQuitFailed 0

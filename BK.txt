@@ -2,7 +2,7 @@
 
 本文件保留既有历史资料。当前项目逻辑与维护规则以 BK.md、各目录同名 .md、AGENTS.md 和 agent.md 为准。
 
-## 更新日期：2026-11-07
+## 更新日期：2026-11-08
 
 全屏与桌面歌词默认逐字左右填亮。全屏复用真实音频逐帧采样，可在“歌词窗口”的“全屏歌词”面板调整高亮、模糊强度、控件、排版和背景来源及动效。桌面用有上限的权威时间插值，下一句保持句首并自然上移。当前时序、缓存和生命周期说明见 src/components/player/player.md 与 electron/electron.md。
 桌面歌词设置由 DesktopLyricSettings 编辑原有草稿，双端 normalizeDesktopLyrics 校验后持久化；独立窗口消费显示/动效/字体配色/阴影，主进程策略处理暂停与同屏全屏隐藏、悬停透明、置顶和解锁热点。Windows 外部全屏观察器按需运行，隐藏窗口停止绘制，节能模式降低刷新频率。详见 electron/services/services.md 与 src/stores/stores.md。
@@ -80,6 +80,8 @@ Windows 任务栏歌词等待 `windowsTaskbar.ps1` 提供首个任务栏快照�
 - 当前平台目录包：`npm run electron:build -- --dir`
 - Windows 安装包：`npm run build:win`
 - 输出：`dist/`、`dist-electron/`、`release/`
+  Windows NSIS 先校验目录和空间，在目标卷严格解包并替换程序目录。安装失败恢复旧文件，卸载按清单清理，保留额外文件。
+  应用内更新先由 GitHub 官方发布核对资产及 SHA-256。代理用于发现和传输。
 
 ## 最近变更记录
 

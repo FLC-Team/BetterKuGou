@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -19,13 +19,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-24.04, macos-latest]
+        include:
+          - os: windows-latest
+            artifact: windows
+          - os: ubuntu-24.04
+            artifact: linux
+          - os: macos-latest
+            artifact: macos
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: 'npm'
+      - name: Verify release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: node scripts/publish-release.cjs --check-tag "$GITHUB_REF_NAME"
+        shell: bash
       - run: npm ci
       - name: Install Linux native plugin window dependencies
         if: runner.os == 'Linux'
@@ -44,36 +54,49 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Verify native installer protocol, versions and UI
+      - name: Verify native installer protocol, UI and file transactions
         if: runner.os == 'Windows'
-        run: node --test tests/installer-install-mode.test.cjs tests/installer-completion.test.cjs tests/installer-nsis.test.cjs tests/installer-ui.test.cjs
+        shell: pwsh
+        run: |
+          $nsisCache = Join-Path $PWD '.cache/nsis/3.12'
+          $bundle = (Get-Content -LiteralPath (Join-Path $nsisCache 'verified-bundle'))[1]
+          $env:BK_NSIS_COMPILER = Join-Path $nsisCache "$bundle/nsis-bundle/windows/Bin/makensis.exe"
+          node --test tests/installer-install-mode.test.cjs tests/installer-completion.test.cjs tests/installer-nsis.test.cjs tests/installer-ui.test.cjs tests/installer-windows-files.test.cjs
         env:
           BK_REQUIRE_NSIS_TESTS: '1'
-      - name: Upload Release Assets
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            release/BetterKuGou-*-setup.exe
-            release/BetterKuGou-*.AppImage
-            release/betterkugou_*.deb
-            release/betterkugou-*.rpm
-            release/BetterKuGou-*.dmg
-          body_path: updata_log.md
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          make_latest: ${{ !contains(github.ref_name, '-') }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BK_REQUIRE_INSTALLER_FILES_TESTS: '1'
       - name: Upload Build Artifacts
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v4
         with:
-          name: BetterKuGou-${{ matrix.os }}-${{ github.run_number }}
+          name: BetterKuGou-${{ matrix.artifact }}
+          overwrite: true
           path: |
             release/BetterKuGou-*-setup.exe
             release/BetterKuGou-*.AppImage
             release/betterkugou_*.deb
             release/betterkugou-*.rpm
             release/BetterKuGou-*.dmg
-          if-no-files-found: warn
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: publish-${{ github.ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: BetterKuGou-*
+          path: release-assets
+      - name: Publish complete release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/publish-release.cjs --publish "$GITHUB_REF_NAME" release-assets

@@ -52,10 +52,10 @@
 
 - `createUpdateService(options)` 接收 Worker 路径、专用下载目录、实际版本、平台架构和状态回调；`configure()` 只消费已提交的 `software.updates`，默认自动检查开启、自动下载关闭、正式版 stable，测试版使用 beta。首次启动延迟 10 秒检查，此后每 24 小时检查；普通设置广播不重置计划。
 - `check()` / `download(assetId)` 立即返回状态，任务在 Worker 中进行；`getState()` 返回带递增 revision 的展示快照，发布下载 URL 和本机路径保持私有，进度节流后广播。检查与下载共享单任务；`cancel()` 立即失效旧任务，取消的版本在本次会话不再自动重下，但允许用户手动重试。
-- Worker 分页请求固定 `FLC-Team/BetterKuGou/releases`，元数据先使用 `https://git.tangbai.cc/https://api.github.com/repos/FLC-Team/BetterKuGou/releases`，失败再从 GitHub 原站重新分页。按 SemVer 选择高于安装版本的最新版本；stable 同时排除 GitHub prerelease 标记与版本预发布后缀，beta 包含正式与预发布。
-- Windows 匹配通用或当前架构 setup.exe，macOS 匹配当前架构 DMG，Linux 优先同架构 AppImage，也允许同架构 DEB/RPM。无匹配包仍返回版本说明，禁止把未知架构误当作当前架构。
-- 下载单独优先代理资产 URL，网络、超时或完整性失败后从头尝试 GitHub 一次；用户取消与磁盘错误不换源。只允许固定仓库的 HTTPS 地址和受限重定向主机，文件名和路径必须落在专用目录。
-- 在 `userData/updates/` 使用唯一 `.part` 临时文件流式写入，核对发布大小并计算 SHA256，有发布 digest 时必须匹配。发布 digest 可校验的完整缓存可复用；无发布 digest 时仍计算本次摘要供后续复核，不复用无法验证来源的同大小缓存。失败或取消先销毁写流并等待真实关闭（包含尚未完成的文件打开），再清理临时文件，完成清理后才结束下载任务。
+- Worker 分页请求固定 `FLC-Team/BetterKuGou/releases`，版本发现先使用 `https://git.tangbai.cc/https://api.github.com/repos/FLC-Team/BetterKuGou/releases`，失败再从 GitHub 原站重新分页。按 SemVer 选择高于安装版本且有匹配包的最新版本。没有可安装的新版时，仍可展示缺包版本的说明。stable 同时排除 GitHub prerelease 标记与版本预发布后缀，beta 包含正式与预发布。
+- Windows 匹配通用或当前架构 setup.exe，macOS 匹配当前架构 DMG，Linux 优先同架构 AppImage，也允许同架构 DEB/RPM。未知架构不参与匹配。
+- 下载或复用缓存前，Worker 直连 `api.github.com` 的固定仓库标签接口，拒绝重定向，核对渠道、发布标签与 ID，以及已上传资产的 ID、名称、大小和官方 SHA256。官方接口不可达或无摘要时显示错误，代理提供的摘要不能授权文件。包体优先从代理下载，网络、超时或完整性失败后从头尝试 GitHub 一次，用户取消与磁盘错误不换源。
+- 在 `userData/updates/` 使用唯一 `.part` 临时文件流式写入，包体及缓存都必须匹配官方大小和 SHA256。下载只允许固定仓库的 HTTPS 地址和受限重定向主机，文件名和路径必须落在专用目录。失败或取消先销毁写流并等待真实关闭（包含尚未完成的文件打开），再清理临时文件，完成清理后才结束下载任务。
 - `getDownloadedFile()` 在 Worker 中重验大小和 SHA256，主进程据此执行定位或明确确认后的打开；Worker 没有安装命令。切换渠道取消旧任务并丢弃候选状态，进程内状态及取消记录不持久化。
 
 已提交设置 → updateService 调度 → updateWorker 检查/下载/校验 → 带 revision 的主窗口展示状态；用户确认安装 → Worker 再次复核 → 主进程打开同一安装包。

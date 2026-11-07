@@ -68,13 +68,15 @@
         "from": "KuGouMusicApi",
         "to": "backend",
         "filter": [
-          "**/*",
-          "!docs{,/**/*}",
-          "!.github{,/**/*}",
-          "!*.md",
-          "!Dockerfile",
-          "!tsconfig.json",
-          "!pnpm-lock.yaml"
+          "{app,index,main,server}.js",
+          "package.json",
+          "LICENSE",
+          "module/*.js",
+          "util/*.js",
+          "util/config.json",
+          "public/index.html",
+          "node_modules/**/*",
+          "!**/{.env,.env.*,.npmrc,.netrc,.git-credentials,*.pem,*.key,*.p12,*.pfx,*.log}"
         ]
       }
     ],
@@ -114,6 +116,12 @@
         "StartupNotify": "true"
       }
     },
+    "deb": {
+      "afterRemove": "installer/linux-after-remove.tpl"
+    },
+    "rpm": {
+      "afterRemove": "installer/linux-after-remove.tpl"
+    },
     "mac": {
       "target": [
         {
@@ -150,6 +158,8 @@
     },
     "nsis": {
       "oneClick": false,
+      "useZip": true,
+      "differentialPackage": false,
       "allowToChangeInstallationDirectory": false,
       "include": "installer/windows.nsh",
       "installerLanguages": [

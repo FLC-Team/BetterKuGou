@@ -1,10 +1,14 @@
 # 安装界面与品牌资源
 
-`windows.nsh` 通过 electron-builder 的 NSIS include 扩展自定义 Windows 安装范围、安装设置、更新说明和完成页面；安装文件提取、权限提升、注册表及快捷方式继续使用 builder 引擎。
+`windows.nsh` 通过 electron-builder 的 NSIS include 定义安装范围、设置、更新说明和完成页面。权限提升、卸载器生成、注册表和快捷方式沿用 builder 引擎。
 
 `windows-functions.nsh` 在 builder 的 `customHeader` 阶段加载运行函数，确保安装范围宏及插件路径已经就绪；包含界面、SemVer 比较、UTF-8 说明读取和退出管道客户端。
 
 `install-mode.nsh` 在安装/卸载欢迎页展开前及 `customHeader` 阶段幂等替换 builder 的当前用户路径宏。Windows 已知目录通过有长度上限且遇 NUL 停止的 `lstrcpynW` 读取，随后释放原 CoTaskMem；不得用 NSIS 字符串容量对操作系统返回的小缓冲区做固定长度拷贝。保留已有安装记录、重定向的用户程序目录、失败时的 LocalAppData 回退与 `/D` 路径覆盖，不修改依赖模板。
+
+`windows-install-hooks.nsh` 在 builder 的辅助安装段替换默认解包和旧版卸载调用，`windows-install-section.nsh` 执行检查、严格 ZIP 解包、替换、登记和收尾。`windows-file-helper.nsh` 在安装、卸载共用跨登录会话的文件锁，经固定系统 PowerShell 调用 `windows-files.ps1`，通过 Unicode 文件传回路径和错误。此链路依赖锁定的 builder 模板在旧卸载前展开 `customCheckAppRunning`。
+
+`linux-after-remove.tpl` 供 DEB/RPM 使用。实际卸载时按注册的 `/opt` 程序目标清理命令链接，包管理器升级过程中跳过移除。
 
 ## 直接子目录
 
@@ -16,11 +20,13 @@
 
 自定义完成页替代 MUI 默认完成页时，`BKGuiInit` 必须保留 `SetAutoClose true`：实际提取成功后自动进入完成页，不等待进度页已隐藏的“下一步”按钮。此设置不自动启动客户端，失败仍留在错误详情并提供关闭入口。
 
-安装之前枚举同名进程。选定目录的进程通过 `\\.\pipe\BetterKuGou.InstallQuit.v1.<PID>` 请求保存退出，验证管道服务端 PID 和实际可执行路径；其他目录、旧版和无法确认的进程要求用户手动退出。`HELLO/1` 探测 1 秒，`QUIT/1` 保存等待 10 秒，总退出等待 30 秒。只有操作系统确认所有同名进程均已退出，才进入旧卸载器。绝不强制结束进程。
+安装之前枚举同名进程。选定目录的进程通过 `\\.\pipe\BetterKuGou.InstallQuit.v1.<PID>` 请求保存退出，验证管道服务端 PID 和实际可执行路径。其他目录、旧版和无法确认的进程要求用户手动退出。`HELLO/1` 探测 1 秒，`QUIT/1` 保存等待 10 秒，总退出等待 30 秒。解包后、替换前再次确认退出。安装器直接替换程序文件，避开旧卸载器的强制退出逻辑。
 
-HKCU 与 HKLM 同时存在安装记录时阻止继续。使用现有应用 ID 和数据目录，保留用户设置；升级不会自动启动应用，完成页由用户选择启动或关闭。静默安装被拒绝，避免绕过许可证与降级确认。
+发起安装的账户同时有个人和全局记录时阻止继续。提权子进程只识别全局记录，避免把管理员的个人版当作原账户的安装。使用现有应用 ID 和数据目录，完成页由用户选择启动或关闭。静默安装被拒绝，避免绕过许可证与降级确认。
 
-首次选择所有用户时取消管理员授权会停留在范围页；已有所有用户版升级取消授权会终止本次安装。首次安装会规范化绝对路径、拒绝驱动器根目录，并检查可用磁盘空间。
+首次选择所有用户时取消管理员授权会停留在范围页。已有全局版升级取消授权会终止安装。首装需要专用空目录，所有用户版使用 Program Files 下受保护的专用目录。目录检查拒绝重解析点、系统目录和不安全路径，空间检查覆盖目标盘与临时盘。
+
+新版先在目标卷的同级工作目录解包，解包或校验失败时原目录保持可用。文件全部就绪后用同卷移动完成替换，保留旧目录直到新版本登记成功。安装阶段的失败通过工作目录记录恢复。旧版或包含额外文件的目录在用户确认后保留为同级备份。卸载使用安装时生成的文件清单，只移除对应文件和清空的子目录，并保留应用数据。
 
 ## 界面约束
 
@@ -46,7 +52,7 @@ macOS 保留 Finder 拖放；DMG 背景说明首次安装与退出后替换。Li
 
 ## 构建
 
-打包入口与命令由根 `package.json` 维护，Windows include 指向本目录 `windows.nsh`。实际验证结果在任务交付中单独说明，编译成功不等于安装运行通过。
+打包入口由根 `package.json` 维护，Windows include 指向 `windows.nsh`。Windows 打包通过构建钩子校验并缓存官方 NSIS 3.12 工具包，CI 用同一编译器运行原生回归。
 
 静态图像由 `pwsh -NoProfile -File scripts/generate-installer-assets.ps1` 在 Windows PowerShell 7 下从公共 Logo 生成，附加 `-WindowsOnly` 仅更新 NSIS 深浅 Logo；其他平台直接打包已提交的 640 × 420 与 1280 × 840 DMG 背景。Windows 的实际版本比较由 `tests/installer-nsis.test.cjs` 提取原函数编译并执行验证。
 

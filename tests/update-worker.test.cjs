@@ -18,14 +18,14 @@ function rawRelease(version = '1.1.0', changes = {}) {
   const name = `BetterKuGou-v${version}-setup.exe`
   return {
     id: 51, tag_name: tag, name: version, draft: false, prerelease: false, body: 'Release notes', published_at: '2026-10-16T00:00:00Z',
-    assets: [{ id: 71, name, size: packageBytes.length, digest: packageDigest, browser_download_url: `https://github.com/${repository}/releases/download/${tag}/${name}` }],
+    assets: [{ id: 71, name, size: packageBytes.length, digest: packageDigest, state: 'uploaded', browser_download_url: `https://github.com/${repository}/releases/download/${tag}/${name}` }],
     ...changes
   }
 }
 
 function normalizedPackage(version = '1.1.0') {
   const raw = rawRelease(version)
-  return { release: { id: raw.id, version, tag: raw.tag_name }, asset: { id: raw.assets[0].id, name: raw.assets[0].name, size: raw.assets[0].size, url: raw.assets[0].browser_download_url, digest: packageDigest, format: 'exe' } }
+  return { release: { id: raw.id, version, tag: raw.tag_name, channel: 'stable' }, asset: { id: raw.assets[0].id, name: raw.assets[0].name, size: raw.assets[0].size, url: raw.assets[0].browser_download_url, digest: packageDigest, format: 'exe' } }
 }
 
 /** 控制传输而保留真实 Node 流、文件系统和哈希流程，完全不访问外网。 */
@@ -59,7 +59,7 @@ function requestFixture(handler) {
 
 function jsonResponse(value) { return { body: JSON.stringify(value) } }
 
-function createEngine(t, handler, options = {}) {
+function createEngine(t, handler, { officialResponse = () => jsonResponse(rawRelease()), ...options } = {}) {
   const toolsRoot = path.resolve(__dirname, '../.agent/tools')
   fs.mkdirSync(toolsRoot, { recursive: true })
   const directory = fs.mkdtempSync(path.join(toolsRoot, 'update-worker-test-'))
@@ -67,7 +67,8 @@ function createEngine(t, handler, options = {}) {
     assert.equal(path.dirname(path.resolve(directory)), toolsRoot)
     fs.rmSync(directory, { recursive: true, force: true })
   })
-  const fixture = requestFixture(handler)
+  const officialEndpoint = `https://api.github.com/repos/${repository}/releases/tags/`
+  const fixture = requestFixture((url, index) => url.startsWith(officialEndpoint) ? officialResponse(url) : handler(url, index))
   return { engine: createUpdateEngine({ downloadRoot: directory, request: fixture.request, ...options }), directory, ...fixture }
 }
 
@@ -124,6 +125,17 @@ test('check paginates before choosing latest instead of trusting release publica
   assert.equal(result.release.version, '2.0.0')
   assert.equal(calls.length, 2)
   assert.match(calls[1].url, /page=2$/)
+})
+
+test('a newer release without a matching package does not hide a compatible update', async t => {
+  const { engine } = createEngine(t, () => jsonResponse([rawRelease('2.0.0', { assets: [] }), rawRelease('1.1.0'), rawRelease('1.2.0')]))
+  const available = await engine.check(target)
+  assert.equal(available.latestVersion, '2.0.0')
+  assert.equal(available.release.version, '1.2.0')
+  assert.equal(available.release.defaultAssetId, 71)
+  const unavailable = await engine.check({ ...target, currentVersion: '1.2.0' })
+  assert.equal(unavailable.release.version, '2.0.0')
+  assert.equal(unavailable.release.defaultAssetId, null)
 })
 
 test('current/newer installed version yields no update; absent channel releases remain distinguishable', async t => {
@@ -187,7 +199,7 @@ test('HTTPS redirects follow approved hosts and reject insecure, unknown and loo
   assert.equal(loop.calls.length, 6)
 })
 
-test('downloads stream to a dedicated file, verify SHA256 and reuse intact cache without network', async t => {
+test('downloads stream to a dedicated file and reuse intact cache after official verification', async t => {
   const { engine, directory, calls } = createEngine(t, () => ({ headers: { 'content-type': 'application/octet-stream', 'content-length': String(packageBytes.length) }, body: [packageBytes.subarray(0, 5), packageBytes.subarray(5)] }))
   const progress = []
   const record = await engine.download(normalizedPackage(), { onProgress: value => progress.push(value) })
@@ -200,7 +212,10 @@ test('downloads stream to a dedicated file, verify SHA256 and reuse intact cache
   assert.equal(progress.at(-1).percent, 100)
   assert.deepEqual(await engine.verify({ file: record }), record)
   assert.equal((await engine.download(normalizedPackage())).source, 'cache')
-  assert.equal(calls.length, 1)
+  assert.equal(calls.length, 3)
+  assert.match(calls[0].url, /^https:\/\/api\.github\.com\/repos\/FLC-Team\/BetterKuGou\/releases\/tags\/v1\.1\.0$/)
+  assert.match(calls[1].url, /^https:\/\/git\.tangbai\.cc\//)
+  assert.equal(calls[2].url, calls[0].url, 'cache reuse still authenticates the official package')
   assert.equal(fs.readdirSync(directory).filter(name => name.endsWith('.part')).length, 0)
 })
 
@@ -215,7 +230,7 @@ for (const failure of [
     const { engine, calls, directory } = createEngine(t, url => url.startsWith('https://git.tangbai.cc/') ? failure.response : { headers: {}, body: packageBytes })
     const record = await engine.download(normalizedPackage())
     assert.equal(record.source, 'github')
-    assert.equal(calls.length, 2)
+    assert.equal(calls.length, 3)
     assert.deepEqual(fs.readFileSync(record.path), packageBytes)
     assert.equal(fs.readdirSync(directory).length, 1)
   })
@@ -227,22 +242,56 @@ test('corrupt cached files are rejected by verify and safely replaced by a fresh
   fs.writeFileSync(record.path, Buffer.alloc(packageBytes.length, 9))
   await assert.rejects(engine.verify({ file: record }), { code: 'HASH_MISMATCH' })
   assert.equal((await engine.download(normalizedPackage())).source, 'proxy')
-  assert.equal(calls.length, 2)
+  assert.equal(calls.length, 4)
   fs.truncateSync(record.path, 1)
   await assert.rejects(engine.verify({ file: record }), { code: 'SIZE_MISMATCH' })
   fs.unlinkSync(record.path)
   await assert.rejects(engine.verify({ file: record }), { code: 'DISK_ERROR' })
 })
 
-test('missing release digest still computes a hash but never reuses an unchecked same-size cache', async t => {
-  const { engine, calls } = createEngine(t, () => ({ headers: {}, body: packageBytes }))
-  const payload = normalizedPackage()
-  payload.asset.digest = null
-  const record = await engine.download(payload)
+test('proxy discovery and file bytes cannot supply their own trust anchor', async t => {
+  const substitutedBytes = Buffer.alloc(packageBytes.length, 9)
+  const discovery = rawRelease()
+  discovery.assets[0].digest = `sha256:${crypto.createHash('sha256').update(substitutedBytes).digest('hex')}`
+  const { engine, directory, calls } = createEngine(t, url => {
+    if (url.includes('api.github.com/')) return jsonResponse([discovery])
+    return { headers: {}, body: url.startsWith('https://git.tangbai.cc/') ? substitutedBytes : packageBytes }
+  })
+  const { release } = await engine.check(target)
+  const record = await engine.download({ release, asset: release.assets[0] })
   assert.equal(record.digest, packageDigest)
-  await engine.download(payload)
-  assert.equal(calls.length, 2)
+  assert.equal(record.source, 'github')
+  assert.deepEqual(fs.readFileSync(record.path), packageBytes)
+  assert.equal(fs.readdirSync(directory).length, 1)
+  assert.equal(calls.length, 4)
 })
+
+for (const [name, officialResponse] of [
+  ['missing official release', () => ({ status: 404 })],
+  ['official redirect', () => ({ status: 302, headers: { location: 'https://git.tangbai.cc/fixture' } })],
+  ['official network failure', () => ({ error: new Error('unreachable') })],
+  ['different official release', () => jsonResponse(rawRelease('1.1.0', { id: 999 }))],
+  ['official prerelease on the stable channel', () => jsonResponse(rawRelease('1.1.0', { prerelease: true }))],
+  ['different official asset', () => {
+    const official = rawRelease()
+    official.assets[0].size += 1
+    return jsonResponse(official)
+  }],
+  ['missing official digest', () => {
+    const official = rawRelease()
+    delete official.assets[0].digest
+    return jsonResponse(official)
+  }]
+]) {
+  test(`${name} blocks download and cache reuse`, async t => {
+    const { engine, directory, calls } = createEngine(t, () => ({ headers: {}, body: packageBytes }), { officialResponse })
+    const cached = path.join(directory, '51-71-BetterKuGou-v1.1.0-setup.exe')
+    fs.writeFileSync(cached, packageBytes)
+    await assert.rejects(engine.download(normalizedPackage()), { code: 'UNVERIFIED_RELEASE' })
+    assert.equal(calls.length, 1)
+    assert.deepEqual(fs.readdirSync(directory), [path.basename(cached)])
+  })
+}
 
 test('cancellation stops a partial download without trying GitHub and cleans the partial file', async t => {
   const response = new PassThrough()
@@ -255,7 +304,7 @@ test('cancellation stops a partial download without trying GitHub and cleans the
   const abort = new AbortController()
   const running = engine.download(normalizedPackage(), { signal: abort.signal, onProgress: () => { abort.abort() } })
   await assert.rejects(running, { code: 'CANCELLED' })
-  assert.equal(calls.length, 1)
+  assert.equal(calls.length, 2)
   assert.equal(writes, 0, 'a cancelled initial progress callback must not start writing a file')
   assert.deepEqual(fs.readdirSync(directory), [])
 })
@@ -298,7 +347,7 @@ test('cancellation waits for a pending file open to close before removing its pa
   assert.equal(error.code, 'CANCELLED')
   assert.equal(settledBeforeOpen, false, 'cancellation must await the pending file handle')
   assert.equal(cleanupBeforeClose, false, 'the file must close before unlink')
-  assert.equal(calls.length, 1)
+  assert.equal(calls.length, 2)
   assert.deepEqual(fs.readdirSync(directory), [])
 })
 
@@ -308,7 +357,7 @@ test('disk write failures never switch download source', async t => {
   } }
   const { engine, calls, directory } = createEngine(t, () => ({ headers: {}, body: packageBytes }), { fsApi: failingFs })
   await assert.rejects(engine.download(normalizedPackage()), { code: 'DISK_ERROR' })
-  assert.equal(calls.length, 1)
+  assert.equal(calls.length, 2)
   assert.deepEqual(fs.readdirSync(directory), [])
 })
 
@@ -319,7 +368,7 @@ test('disk cache read errors fail before downloading rather than switching sourc
   } } }
   const { engine, calls } = createEngine(t, () => ({ headers: {}, body: packageBytes }), { fsApi: failingFs })
   await assert.rejects(engine.download(normalizedPackage()), { code: 'DISK_ERROR' })
-  assert.equal(calls.length, 0)
+  assert.equal(calls.length, 1)
 })
 
 test('mid-stream errors and total download timeout both discard partial bytes before fallback', async t => {
@@ -334,7 +383,7 @@ test('mid-stream errors and total download timeout both discard partial bytes be
     }, { downloadTimeout: 15 })
     const record = await engine.download(normalizedPackage())
     assert.equal(record.source, 'github')
-    assert.equal(calls.length, 2)
+    assert.equal(calls.length, 3)
     assert.deepEqual(fs.readFileSync(record.path), packageBytes)
     assert.equal(fs.readdirSync(directory).length, 1)
   }
@@ -343,7 +392,7 @@ test('mid-stream errors and total download timeout both discard partial bytes be
 test('both invalid downloads fail with integrity error and leave no runnable or partial package', async t => {
   const { engine, calls, directory } = createEngine(t, () => ({ headers: {}, body: Buffer.alloc(packageBytes.length, 8) }))
   await assert.rejects(engine.download(normalizedPackage()), { code: 'HASH_MISMATCH' })
-  assert.equal(calls.length, 2)
+  assert.equal(calls.length, 3)
   assert.deepEqual(fs.readdirSync(directory), [])
 })
 

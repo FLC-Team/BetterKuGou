@@ -17,7 +17,7 @@ Vue 3 渲染界面与播放器，Electron 主进程提供窗口、托盘、桌�
 - [installer/](./installer/installer.md)：Windows NSIS 品牌页面、升级退出客户端及 macOS DMG 静态品牌资源。
 - [tests/](./tests/tests.md)：Node 回归测试及 Vue/HTTP 集成边界验证。
 - [vendor/](./vendor/vendor.md)：固定版本的 Fue 原始组件库分发包，供 npm 相对路径依赖使用。
-- `.github/`：开发提示和多平台自动构建工作流；针对 `master` 的 PR 和手动触发执行检查、测试及构建，推送 `v*` 标签时执行发布构建并创建 Release，避免发布时因同时推送 `master` 和版本标签而重复构建。无预发布后缀的版本发布为最新正式版，带 `-` 后缀的标签标记为预发布。各平台打包明确传入 `--publish never` 禁用 electron-builder 自动上传，统一由发布步骤从 `updata_log.md` 读取本版升级日志，只上传 Windows 安装程序、Linux 安装包和 macOS DMG，不包含便携版、ZIP、更新元数据或 blockmap。
+- `.github/` 保存开发提示和多平台构建工作流。针对 `master` 的 PR 和手动触发执行检查、测试及构建。推送 `v*` 标签时先核对 `package.json` 版本，三平台各自通过检查和打包后上传内部产物。发布任务收齐 Windows 通用安装包、Linux x64 AppImage／DEB／RPM 和 macOS 两种架构的 DMG，核对草稿中所有文件的大小和 SHA-256 后才公开。重试只给同一草稿补齐缺失文件。正式版标记为最新，带预发布后缀的版本标记为预发布。
   Linux 发布构建固定使用 Ubuntu 24.04，保持现有 FPM 与系统 RPM 的构建目录约定兼容；Windows/macOS 继续使用对应平台执行器。
 - `.vscode/`：编辑器建议配置。
 - `.agent/`：删除文件恢复区、临时诊断工具和截图；不提交。
@@ -86,9 +86,9 @@ Vue 3 渲染界面与播放器，Electron 主进程提供窗口、托盘、桌�
     DesktopLyricSettings 复用设置草稿和保存失败重试，提供单双行、节能、逐字/换句动效、桌面独立翻译音译隐藏、歌曲信息模式、字体/配色/描边/阴影及窗口规则；旧配置由双端 normalizeDesktopLyrics 补全校验。主进程按播放状态、同显示器全屏歌词、Windows 前台全屏、锁定悬停计算显隐与透明度，固定解锁热点允许锁定穿透时恢复操作；关闭后释放检测资源。隐藏停止绘制，节能降低刷新并停用装饰动画。
     桌面歌词从已确认音源发送歌曲 hash、毫秒时间及真实播放状态；暂停、跳转和重开立即重放完整快照，停止和卸载清空。LRC/KRC 解析保留空格、Unicode、时间偏移和 UTF-8 翻译；两处歌词采用逐字左右填亮，KRC 词内按 Unicode 字素分配时序；全屏通过只读音频位置连续绘制，桌面依据权威时间、推进状态和倍率做最多 300ms 的视觉插值，暂停/缓冲/跳转立即同步。桌面下一句预览固定句首，自然换句从预览位置上移，译文沿当前句进度横滚。窗口提供前后曲、播放暂停、字号、样式、翻译、锁定、关闭及缩放入口；主窗口未就绪或安装退出期间禁用播放控制，设置保存失败提供可见反馈。缓存设置提供自动缓存、容量、并发、占用及本账号清理；普通音乐文件导出由独立下载服务和 Worker 管理，提供暂停、续传、重试及配套元数据，与播放缓存分开存储和回收。
 16. “更新与备份”的 AppUpdates 读取实际安装版本，沿原保存流程编辑 `software.updates`，默认 `autoCheck=true`、`autoDownload=false`、`channel=stable`；保存成功后主进程服务应用策略，启动延迟 10 秒及每 24 小时自动检查。独立 Worker 获取固定 FLC-Team/BetterKuGou 发布和安装包，版本与下载各自先用 git.tangbai.cc，失败再尝试 GitHub；正式版同时排除发布标记与 SemVer 后缀中的预发布，不推荐降级。
-    Worker 随 extraResources 发布到 `resources/updater/updateWorker.cjs`，在 `userData/updates/` 流式写入临时文件并校验大小及可用 SHA256。更新 IPC 仅允许主窗口顶层页面，渲染侧只提交资产 ID；运行状态不持久化，重开设置通过订阅与 revision 快照恢复显示，离页继续下载。下载完成不安装，用户点击并原生确认后由 Worker 再次复核同一文件才打开安装包；AppImage 只定位文件，不自动退出应用。
+    Worker 随 extraResources 发布到 `resources/updater/updateWorker.cjs`。新版缺少本平台安装包时继续考虑有包的较早新版。下载与缓存复用前，向 GitHub 固定仓库按标签直连核对官方资产和 SHA-256，再在 `userData/updates/` 流式写入和验证文件。更新 IPC 仅允许主窗口顶层页面，渲染侧只提交资产 ID。运行状态不持久化，离页继续下载。用户点击并原生确认后由 Worker 再次复核同一文件才打开安装包。AppImage 只定位文件。
 
-17. Windows 安装器经 `installer/windows.nsh` 扩展 NSIS，首次安装明确确认 LICENSE，升级沿用原目录和范围，以完整 SemVer 区分更新、重装和额外确认的降级。用户在安装器确认后，通过每 PID 本机管道请求保存退出；主窗口排空设置、复核并保存最终会话后才回执，主进程走正常清理。旧版、不明进程、保存失败或超时要求手动退出，进程全部退出后才调用旧卸载器，不强制结束。macOS 使用品牌 DMG 的 Finder 拖放，Linux 使用系统包管理或 AppImage 文件替换。
+17. Windows 安装器经 `installer/windows.nsh` 扩展 NSIS。首次安装确认 LICENSE 并使用专用空目录，升级沿用通过校验的安装路径和范围。完整 SemVer 区分更新、重装和额外确认的降级。安装器经每 PID 管道请求客户端保存退出，旧版、不明进程、保存失败或超时要求手动退出。安装文件严格解包到目标卷暂存目录，再替换旧目录并登记版本。卸载按文件清单清理，升级时保留归属不明的旧文件。macOS 使用品牌 DMG 的 Finder 拖放，Linux 使用系统包管理或 AppImage 文件替换。
     安装/卸载欢迎页及初始化入口共用 `installer/install-mode.nsh` 的当前用户路径宏；操作系统返回的已知目录按 NUL 终止符和长度上限读取，保留已有安装路径、用户目录重定向、失败回退及命令行覆盖，避免对外部分配的短字符串固定读取 NSIS 最大容量。
     自定义完成页在真实文件提取成功后自动进入，`BKGuiInit` 保留标准 MUI 的 `SetAutoClose true` 初始化，不等待进度页已隐藏的下一步按钮；失败保留详情与关闭入口，完成后仍由用户选择启动。
     原生安装进度页的正文与页脚采用与文字同主题的实色底板，不依赖宿主对话框背景；底板随进度控件统一释放，保留真实进度和动画的前景层级。

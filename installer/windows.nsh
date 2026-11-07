@@ -1,21 +1,62 @@
-; BetterKuGou's assisted installer. electron-builder still owns extraction,
-; registration, shortcuts, elevation and the uninstaller.
+; BetterKuGou's assisted installer. Keep builder's registration, shortcuts,
+; elevation and uninstaller generation around the checked file transaction.
 !include nsDialogs.nsh
 !include LogicLib.nsh
 !include WinMessages.nsh
 !include FileFunc.nsh
 !include WordFunc.nsh
 !include UAC.nsh
+Var BKExisting
+Var BKAllowBackup
+!include "${PROJECT_DIR}\installer\windows-file-helper.nsh"
 
 !macro customCheckAppRunning
   !ifdef BUILD_UNINSTALLER
     Call un.BKCheckRunning
   !else
-    Call BKCheckRunning
+    ; The assisted template expands this hook after defining its install
+    ; macros, before it can execute any legacy uninstaller.
+    !include "${PROJECT_DIR}\installer\windows-install-hooks.nsh"
   !endif
 !macroend
 
 !ifdef BUILD_UNINSTALLER
+Var BKUnOrigin
+
+!macro customUnInit
+  StrCpy $BKUnOrigin $OUTDIR
+  ${If} ${UAC_IsInnerInstance}
+    !insertmacro setInstallModePerAllUsers
+  ${EndIf}
+  !insertmacro BKEmbedFileHelper
+!macroend
+
+!macro customRemoveFiles
+  !insertmacro BKLockFiles
+  Call un.BKCheckRunning
+  ReadRegStr $0 SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" InstallLocation
+  ${If} $0 == ""
+    SetErrorLevel 2
+    Abort "没有找到对应的安装记录。"
+  ${EndIf}
+  GetFullPathName $0 "$0"
+  GetFullPathName $1 "$BKUnOrigin"
+  GetFullPathName $2 "$INSTDIR"
+  ${If} $0 != $1
+  ${OrIf} $0 != $2
+    SetErrorLevel 2
+    Abort "卸载程序的位置与所选安装记录不一致。请从 Windows 设置打开对应的卸载程序。"
+  ${EndIf}
+  StrCpy $BKExisting 1
+  StrCpy $BKAllowBackup 0
+  SetOutPath "$PLUGINSDIR"
+  !insertmacro BKRunFileHelper uninstall
+  ${If} $BKFilesExit != 0
+    SetErrorLevel 2
+    Abort "$BKFilesResult"
+  ${EndIf}
+!macroend
+
 ; An uninstaller must never fall back to electron-builder's taskkill branch.
 !macro customHeader
   !include "${PROJECT_DIR}\installer\install-mode.nsh"
@@ -101,13 +142,18 @@ Var BKWidth
 Var BKHeight
 Var BKBusy
 Var BKConfirmed
-Var BKExisting
 Var BKExistingPath
 Var BKOldVersion
 Var BKAction
 Var BKActionTitle
 Var BKConflict
 Var BKRequired
+Var BKStage
+Var BKInstallTarget
+Var BKInstallError
+Var BKPriorInstallVersion
+Var BKPriorDisplayVersion
+Var BKPriorDisplayName
 Var BKNotes
 Var BKLicenseText
 Var BKImage
@@ -185,7 +231,14 @@ Var BKParseHadPre
   StrCpy $BKExisting 0
   ; Read the actual records again: command-line scope flags must not mask a
   ; simultaneous HKCU/HKLM installation.
-  ReadRegStr $0 HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
+  ${IfNot} ${UAC_IsInnerInstance}
+    ReadRegStr $0 HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
+  ${Else}
+    ; Over-the-shoulder elevation changes HKCU to the administrator's hive.
+    ; The parent selected machine scope and already checked its own HKCU.
+    !insertmacro setInstallModePerAllUsers
+    StrCpy $0 ""
+  ${EndIf}
   ReadRegStr $1 HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation
   ${If} $0 != ""
   ${AndIf} $1 != ""
@@ -224,6 +277,11 @@ Var BKParseHadPre
       StrCpy $BKAction "降级"
     ${EndIf}
   ${EndIf}
+  ${If} ${Silent}
+    SetErrorLevel 2
+    Quit
+  ${EndIf}
+  !insertmacro BKEmbedFileHelper
   InitPluginsDir
   File /oname=$PLUGINSDIR\bk-license.txt "${PROJECT_DIR}\LICENSE"
   File /oname=$PLUGINSDIR\bk-notes.txt "${PROJECT_DIR}\updata_log.md"
@@ -240,12 +298,6 @@ Var BKParseHadPre
   StrCpy $BKFile "$PLUGINSDIR\bk-notes.txt"
   Call BKReadUtf8
   StrCpy $BKNotes $0
-  ; Silent installs cannot supply license/downgrade consent or request that an
-  ; application save and quit. Refuse them instead of bypassing these pages.
-  ${If} ${Silent}
-    SetErrorLevel 2
-    Quit
-  ${EndIf}
 !macroend
 
 !macro customWelcomePage
@@ -291,23 +343,12 @@ Var BKParseHadPre
 !macroend
 
 !macro customInstall
-  WriteRegStr SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" BetterKuGouVersion "${VERSION}"
   StrCpy $BKDone 1
 !macroend
 
-; This section runs even inside the elevated child, where builder skips its
-; stock CHECK_APP_RUNNING. Recheck immediately before any old uninstaller runs.
 !macro customHeader
   !include "${PROJECT_DIR}\installer\install-mode.nsh"
   !include "${PROJECT_DIR}\installer\windows-functions.nsh"
-  Section "-BetterKuGou preflight"
-    StrCpy $BKBusy 1
-    Call BKCheckRunning
-    ${If} $BKQuitFailed != 0
-      SetErrorLevel 2
-      Quit
-    ${EndIf}
-  SectionEnd
 !macroend
 
 
