@@ -5,6 +5,12 @@ const vm = require('node:vm')
 const test = require('node:test')
 const vue = require('vue')
 const { parse, compileTemplate } = require('@vue/compiler-sfc')
+const { loadAnimatedSlider } = require('./helpers/animatedSliderHarness.cjs')
+
+function trackPosition(volume) {
+  if (volume === 0 || volume === 100) return `${volume}%`
+  return `calc(var(--slider-grip-width) / 2 + (100% - var(--slider-grip-width)) * ${volume / 100})`
+}
 
 /** Keep real Vue patching so cross-level changes cannot replace the speaker or native range. */
 function mountVolume(t) {
@@ -12,7 +18,7 @@ function mountVolume(t) {
   const { descriptor } = parse(fs.readFileSync(filename, 'utf8'), { filename })
   const component = vm.runInNewContext(descriptor.script.content.replace(/^import[^\n]*\n/gm, '')
     .replace('export default', 'const component =') + '\ncomponent', {
-    contextMenuManager: { unregisterMenu() {} },
+    contextMenuManager: { unregisterMenu() {} }, AnimatedSlider: loadAnimatedSlider(),
     document: { removeEventListener() {} }, window: { removeEventListener() {} }
   })
   const template = compileTemplate({ source: descriptor.template.content, filename, id: 'volume-motion',
@@ -57,7 +63,8 @@ test('rapid volume levels keep a single speaker, wave set and native input acros
   const glyph = fixture.byClass('volume-icon')[0]
   const waves = fixture.byClass('volume-wave')
   const slider = fixture.byClass('volume-slider')[0]
-  const fill = fixture.byClass('volume-fill')[0]
+  assert.equal(slider.type, 'input')
+  assert.equal(slider.props.type, 'range')
   const isVisible = item => item.props.class.split(' ').includes('is-visible')
   for (const [volume, visibleWaves] of [[29, 1], [31, 2], [59, 2], [61, 3], [30, 1], [60, 2], [0, 0], [100, 3]]) {
     fixture.state.volume = volume
@@ -68,9 +75,8 @@ test('rapid volume levels keep a single speaker, wave set and native input acros
     assert.equal(waves.filter(isVisible).length, visibleWaves)
     assert.equal(isVisible(fixture.byClass('volume-mute')[0]), volume === 0)
     assert.equal(fixture.byClass('volume-slider')[0], slider)
-    assert.equal(fixture.byClass('volume-fill')[0], fill)
     assert.equal(slider.props.value, volume)
-    assert.equal(fixture.byClass('volume-range')[0].props.style['--volume-fill'], `${volume}%`)
+    assert.equal(slider.props.style['--slider-position'], trackPosition(volume))
   }
 })
 
@@ -85,8 +91,8 @@ test('latest input commits immediately and mute preserves the remembered slider 
   await vue.nextTick()
   assert.equal(slider.props.value, 61)
   assert.match(slider.props['aria-valuetext'], /已静音/)
-  assert.match(fixture.byClass('volume-range')[0].props.class, /is-muted/)
-  assert.equal(fixture.byClass('volume-range')[0].props.style['--volume-fill'], '61%')
+  assert.match(slider.props.class, /is-muted/)
+  assert.equal(slider.props.style['--slider-position'], trackPosition(61))
   assert.equal(fixture.byClass('volume-wave').filter(item => item.props.class.includes('is-visible')).length, 0)
   fixture.state.isMuted = false
   await vue.nextTick()

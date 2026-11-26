@@ -1,14 +1,63 @@
 <template>
-  <img v-if="imageOnly" v-show="!failed" :data-artwork-loaded="loaded" :src="displaySource || undefined" :data-artwork-generation="sourceGeneration" :data-artwork-source="displaySource" :data-artwork-original="source" :alt="label" :loading="loading" @load="handleLoad" @error="handleError" />
-  <span v-else class="artwork-cover" :class="{ 'is-loaded': loaded, 'is-failed': failed }" :aria-label="label || undefined" :role="label ? 'img' : undefined" :aria-hidden="label ? undefined : true">
+  <img v-if="imageOnly" ref="coverElement" v-show="!failed" :data-artwork-loaded="loaded" :src="displaySource || undefined" :data-artwork-generation="sourceGeneration" :data-artwork-source="displaySource" :data-artwork-original="source" :alt="label" :loading="imageLoading" @load="handleLoad" @error="handleError" />
+  <span v-else ref="coverElement" class="artwork-cover" :class="{ 'is-loaded': loaded, 'is-failed': failed }" :aria-label="label || undefined" :role="label ? 'img' : undefined" :aria-hidden="label ? undefined : true">
     <span class="artwork-fallback" aria-hidden="true"><span>{{ mark }}</span></span>
-    <img v-if="displaySource && !failed" :key="sourceGeneration + ':' + displaySource" class="artwork-image" :class="{ 'is-loaded': loaded }" :src="displaySource" :data-artwork-generation="sourceGeneration" :data-artwork-source="displaySource" alt="" :loading="loading" @load="handleLoad" @error="handleError" />
+    <img v-if="displaySource && !failed" :key="sourceGeneration + ':' + displaySource" class="artwork-image" :class="{ 'is-loaded': loaded }" :src="displaySource" :data-artwork-generation="sourceGeneration" :data-artwork-source="displaySource" alt="" :loading="imageLoading" @load="handleLoad" @error="handleError" />
   </span>
 </template>
 
+<script>
+const viewports = new WeakMap()
+const pendingLookups = new Set()
+const maxViewportLookups = 4
+let activeLookups = 0
+
+/** Share an observer per document so scroll containers clip visibility naturally. */
+function observeCover(element, update) {
+  const doc = element.ownerDocument
+  const Observer = doc?.defaultView?.IntersectionObserver
+  if (!Observer) {
+    update(true)
+    return
+  }
+  let viewport = viewports.get(doc)
+  if (!viewport) {
+    const callbacks = new Map()
+    const observer = new Observer(entries => {
+      for (const entry of entries) callbacks.get(entry.target)?.(entry.isIntersecting)
+    })
+    viewport = { callbacks, observer }
+    viewports.set(doc, viewport)
+  }
+  viewport.callbacks.set(element, update)
+  viewport.observer.observe(element)
+  return () => {
+    viewport.callbacks.delete(element)
+    viewport.observer.unobserve(element)
+    if (!viewport.callbacks.size) {
+      viewport.observer.disconnect()
+      viewports.delete(doc)
+    }
+  }
+}
+
+/** Bound how many lookups can reach the serialized cache service before a scroll jump. */
+function drainViewportLookups() {
+  while (activeLookups < maxViewportLookups && pendingLookups.size) {
+    const lookup = pendingLookups.values().next().value
+    pendingLookups.delete(lookup)
+    activeLookups++
+    void lookup().finally(() => {
+      activeLookups--
+      drainViewportLookups()
+    })
+  }
+}
+</script>
+
 <script setup>
-import { computed, ref, watch, onBeforeUnmount } from 'vue'
-import { callPlaylistCache, getPlaylistCacheAPI } from '../../utils/playlistCache.js'
+import { computed, ref, shallowRef, watch, onActivated, onDeactivated, onBeforeUnmount } from 'vue'
+import { callPlaylistCache, getPlaylistCacheAPI, getPlaylistCacheSessionVersion } from '../../utils/playlistCache.js'
 import { logger } from '../../utils/logger.js'
 
 const props = defineProps({
@@ -16,6 +65,7 @@ const props = defineProps({
   loading: { type: String, default: 'lazy' },
   label: { type: String, default: '' },
   mark: { type: String, default: '♪' },
+  viewport: { type: Boolean, default: false },
   imageOnly: { type: Boolean, default: false }
 })
 const emit = defineEmits(['error'])
@@ -26,6 +76,12 @@ const failed = ref(false)
 const loaded = ref(false)
 const displaySource = ref('')
 const sourceGeneration = ref(0)
+const coverElement = shallowRef(null)
+const active = ref(true)
+const visible = ref(false)
+const useViewport = computed(() => props.viewport && props.loading !== 'eager')
+const canLoad = computed(() => !useViewport.value || (active.value && visible.value))
+const imageLoading = computed(() => useViewport.value ? 'eager' : props.loading)
 let artworkLeaseId = null
 let disposed = false
 
@@ -36,25 +92,57 @@ function releaseArtworkLease(leaseId) {
   })
 }
 
-/** 查找只读本地封面；下载由真实图片 load 触发，保留列表懒加载。 */
-watch(source, async url => {
-  const generation = ++sourceGeneration.value
-  releaseArtworkLease(artworkLeaseId)
-  artworkLeaseId = null
-  failed.value = false
-  loaded.value = false
-  displaySource.value = ''
-  if (!url) return
-  let cached = null
-  try { cached = await callPlaylistCache('getArtwork', url) } catch (error) {
-    logger.trace('ArtworkCover', '读取封面缓存失败', { name: error?.name })
+watch([coverElement, useViewport, active], ([element, managed, isActive], _previous, onCleanup) => {
+  visible.value = false
+  if (element && managed && isActive) {
+    const stop = observeCover(element, intersects => { visible.value = intersects })
+    if (stop) onCleanup(stop)
   }
-  if (disposed || generation !== sourceGeneration.value) {
-    releaseArtworkLease(cached?.leaseId)
-    return
+}, { flush: 'post' })
+
+onActivated(() => { active.value = true })
+onDeactivated(() => {
+  active.value = false
+  visible.value = false
+})
+
+/** A viewport exit drops unfinished work while retaining images that already loaded. */
+watch([source, canLoad], ([url, allowed], [previousUrl], onCleanup) => {
+  if (url !== previousUrl || (!allowed && displaySource.value && !loaded.value && !failed.value)) {
+    sourceGeneration.value++
+    releaseArtworkLease(artworkLeaseId)
+    artworkLeaseId = null
+    failed.value = false
+    loaded.value = false
+    displaySource.value = ''
   }
-  artworkLeaseId = cached?.leaseId || null
-  displaySource.value = cached?.url || url
+  if (!url || !allowed || displaySource.value) return
+  let cancelled = false
+  const session = getPlaylistCacheSessionVersion()
+  const isCurrent = () => !cancelled && !disposed && canLoad.value && source.value === url
+  const lookup = async () => {
+    if (!isCurrent()) return
+    let cached = null
+    try {
+      if (session === getPlaylistCacheSessionVersion()) cached = await callPlaylistCache('getArtwork', url)
+    } catch (error) {
+      logger.trace('ArtworkCover', '读取封面缓存失败', { name: error?.name })
+    }
+    if (!isCurrent()) {
+      releaseArtworkLease(cached?.leaseId)
+      return
+    }
+    artworkLeaseId = cached?.leaseId || null
+    displaySource.value = cached?.url || url
+  }
+  onCleanup(() => {
+    cancelled = true
+    pendingLookups.delete(lookup)
+  })
+  if (useViewport.value) {
+    pendingLookups.add(lookup)
+    drainViewportLookups()
+  } else void lookup()
 }, { immediate: true })
 
 function isCurrentImage(event) {

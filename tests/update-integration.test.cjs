@@ -10,7 +10,8 @@ const quiet = Object.fromEntries(['trace', 'log', 'debug', 'info', 'warn', 'erro
 
 function loadMain({ packaged = false, platform = 'linux', arch = 'x64', appImage, packageType } = {}) {
   const windows = [], handlers = new Map(), timeline = []
-  let options, listener, confirmation = 0, verifyHook, stopCalls = 0
+  const ipcMain = Object.assign(new EventEmitter(), { handle: (name, handler) => handlers.set(name, handler) })
+  let options, listener, verifyHook, stopCalls = 0
   const file = { path: '/user-data/updates/1/setup.exe', assetId: 7, assetName: 'setup.exe', version: '1.0.0', format: 'exe' }
   const settings = { software: { minimizeToTray: true, updates: { autoCheck: true, autoDownload: false, channel: 'stable' } } }
   const service = {
@@ -24,6 +25,7 @@ function loadMain({ packaged = false, platform = 'linux', arch = 'x64', appImage
   }
   const app = Object.assign(new EventEmitter(), {
     isPackaged: packaged, commandLine: { appendSwitch() {} },
+    requestSingleInstanceLock: () => true,
     whenReady: () => new Promise(() => {}), getPath: () => '/user-data',
     getAppPath: () => '/app', getVersion: () => '0.1.6-alpha-pre1',
     quit() { timeline.push(['quit']) }
@@ -32,7 +34,8 @@ function loadMain({ packaged = false, platform = 'linux', arch = 'x64', appImage
     constructor() {
       super()
       this.webContents = Object.assign(new EventEmitter(), {
-        mainFrame: {}, send: (...args) => timeline.push(['send', ...args]),
+        mainFrame: {},
+        send: (channel, payload) => timeline.push(channel === 'app-dialog:request' ? ['confirm', payload] : ['send', channel, payload]),
         session: { clearCache: async () => {} }, openDevTools() {}
       })
       windows.push(this)
@@ -52,9 +55,9 @@ function loadMain({ packaged = false, platform = 'linux', arch = 'x64', appImage
       if (name === './services/windowsForeground') return require('../electron/services/windowsForeground')
       if (name === 'electron') return {
         app, BrowserWindow: Window,
-        ipcMain: Object.assign(new EventEmitter(), { handle: (name, handler) => handlers.set(name, handler) }),
+        ipcMain,
         globalShortcut: { unregisterAll() {} },
-        dialog: { async showMessageBox(_win, dialog) { timeline.push(['confirm', dialog]); return typeof confirmation === 'function' ? confirmation() : { response: confirmation } } },
+        dialog: { async showMessageBox() { throw new Error('unexpected native message box') } },
         shell: { async openPath(target) { timeline.push(['open', target]); return '' }, showItemInFolder(target) { timeline.push(['reveal', target]) } },
         nativeImage: { createFromPath: () => ({}) }, Tray: class {}, Menu: {}
       }
@@ -87,13 +90,22 @@ function loadMain({ packaged = false, platform = 'linux', arch = 'x64', appImage
   api.initializeUpdateService()
   api.subscribeToSettingsUpdates()
   const event = { sender: windows[0].webContents, senderFrame: windows[0].webContents.mainFrame }
+  ipcMain.emit('renderer:ready', event)
+  timeline.length = 0
   return {
     api, options: () => options, service, timeline, file, event, settings,
     invoke: (name, eventOverride = event, ...args) => handlers.get('updates:' + name)(eventOverride, ...args),
-    confirm: value => { confirmation = value }, verify: callback => { verifyHook = callback },
+    prompt: () => timeline.findLast(([name]) => name === 'confirm')?.[1],
+    requestClose: () => windows[0].emit('close', { preventDefault() {} }),
+    respond: (request, action, eventOverride = event) => {
+      ipcMain.emit('app-dialog:response', eventOverride, request.requestId, { action, checked: false })
+    },
+    verify: callback => { verifyHook = callback },
     publish: snapshot => listener(snapshot), stopCalls: () => stopCalls
   }
 }
+
+const flush = () => new Promise(resolve => setImmediate(resolve))
 
 test('update resources resolve in development and packaged apps; startup and shutdown never install', async () => {
   for (const packaged of [false, true]) {
@@ -147,17 +159,26 @@ test('saved policies are passed to the update service and main-window checks ret
   assert.equal(f.invoke('check').status, 'downloaded')
 })
 
-test('manual installation requires explicit native confirmation, verifies again, and leaves the app running', async () => {
+test('manual installation requires explicit in-app confirmation, verifies again, and leaves the app running', async () => {
   const f = loadMain()
-  const cancelled = await f.invoke('install')
-  assert.equal(cancelled.canceled, true)
+  const cancelling = f.invoke('install')
+  await flush()
+  const dialog = f.prompt()
+  assert.equal(dialog.defaultAction, 'cancel')
+  assert.deepEqual(Array.from(dialog.actions, action => action.id), ['cancel', 'install'])
+  f.respond(dialog, 'cancel')
+  assert.equal((await cancelling).canceled, true)
   assert.equal(f.timeline.some(([name]) => name === 'open'), false)
-  const dialog = f.timeline.find(([name]) => name === 'confirm')[1]
-  assert.equal(dialog.defaultId, 0)
-  assert.equal(dialog.cancelId, 0)
   f.timeline.length = 0
-  f.confirm(1)
-  const result = await f.invoke('install')
+  const pending = f.invoke('install')
+  await flush()
+  const prompt = f.prompt()
+  f.respond(dialog, 'install')
+  f.respond(prompt, 'install', { ...f.event, senderFrame: {} })
+  await flush()
+  assert.deepEqual(f.timeline.map(([name]) => name), ['verify', 'confirm'])
+  f.respond(prompt, 'install')
+  const result = await pending
   assert.equal(result.success, true)
   assert.deepEqual(f.timeline.map(([name]) => name), ['verify', 'confirm', 'verify', 'open'])
   assert.equal(f.timeline.at(-1)[1], f.file.path)
@@ -165,10 +186,12 @@ test('manual installation requires explicit native confirmation, verifies again,
 
 test('a changed or damaged package cannot open after confirmation; AppImage is never executed', async () => {
   const f = loadMain()
-  f.confirm(1)
   let verifies = 0
   f.verify(() => ({ ...f.file, assetId: ++verifies === 1 ? 7 : 9 }))
-  assert.equal((await f.invoke('install')).success, false)
+  const pending = f.invoke('install')
+  await flush()
+  f.respond(f.prompt(), 'install')
+  assert.equal((await pending).success, false)
   assert.equal(f.timeline.some(([name]) => name === 'open'), false)
   f.verify(() => { throw new Error('SHA256 校验失败') })
   assert.equal((await f.invoke('install')).success, false)
@@ -182,16 +205,33 @@ test('a changed or damaged package cannot open after confirmation; AppImage is n
 
 test('repeated installation clicks share no second dialog and shutdown invalidates a pending confirmation', async () => {
   const f = loadMain()
-  let release
-  f.confirm(() => new Promise(resolve => { release = resolve }))
   const pending = f.invoke('install')
-  await new Promise(resolve => setImmediate(resolve))
+  await flush()
+  const prompt = f.prompt()
   assert.equal((await f.invoke('install')).canceled, true)
   await f.api.performApplicationCleanup()
-  release({ response: 1 })
-  assert.equal((await pending).success, false)
+  f.respond(prompt, 'install')
+  assert.equal((await pending).canceled, true)
+  assert.ok(f.timeline.some(([name, channel, requestId]) => name === 'send' && channel === 'app-dialog:cancel' && requestId === prompt.requestId))
   assert.equal(f.timeline.filter(([name]) => name === 'confirm').length, 1)
   assert.equal(f.timeline.some(([name]) => name === 'open'), false)
+})
+
+test('an overlapping close request can cancel independently of the installation confirmation', async () => {
+  const f = loadMain()
+  const pending = f.invoke('install')
+  await flush()
+  const install = f.prompt()
+  f.requestClose()
+  const close = f.prompt()
+  assert.notEqual(close.requestId, install.requestId)
+  f.respond(close, 'install')
+  f.respond(close, null)
+  await flush()
+  assert.equal(f.timeline.some(([name]) => name === 'open' || name === 'quit'), false)
+  f.respond(install, 'install')
+  assert.equal((await pending).success, true)
+  assert.equal(f.timeline.filter(([name]) => name === 'open').length, 1)
 })
 
 test('renderer update preferences migrate identically and never retain an automatic-install switch', async () => {

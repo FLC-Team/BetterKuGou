@@ -12,7 +12,7 @@ function createArtist(t, hotRequest = () => Promise.reject(new Error('temporary 
   const failures = []
   const sandbox = { listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},
     ArtworkCover: {}, LibraryActions: {},
-    SongBadges: {},
+    SongBadges: {}, SongTitle: {},
     ArtistLinks: {},
     process: { env: { NODE_ENV: 'test' } },
     logger: {
@@ -116,7 +116,7 @@ function createHome(t, songs = []) {
     return promise
   }
   const sandbox = { listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},
-    SongBadges: {},
+    SongBadges: {}, SongTitle: {},
     ArtworkCover: {}, LibraryActions: {},
     ArtistLinks: {},
     logger: { trace() {}, error() {} },

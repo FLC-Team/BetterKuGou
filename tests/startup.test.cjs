@@ -128,6 +128,19 @@ test('a fatal startup failure mounts the notification shell without starting nor
   assert.equal(startup.shell().props.startupFailure, report)
 })
 
+test('a persistent backend port conflict displays the startup error before mounting the business app', async () => {
+  const backend = deferred()
+  const failure = { promise: Promise.resolve(null) }
+  const startup = startRenderer({ failure, backend })
+  await flush()
+  const report = { title: '启动失败', message: '本地服务端口 6500 仍被占用' }
+  failure.promise = Promise.resolve(report)
+  backend.resolve(false)
+  await startup.task
+  assert.deepEqual(startup.calls, ['startup-failure', 'settings', 'backend', 'startup-failure', 'create', 'register-notice', 'mount:#app'])
+  assert.equal(startup.shell().props.startupFailure, report)
+})
+
 test('a failed startup-failure query still initializes settings and backend before showing the app', async () => {
   const failure = deferred()
   const startup = startRenderer({ failure })

@@ -62,7 +62,7 @@ function loadComponent(filename, overrides = {}) {
     getPlaylistCacheAPI: () => sandbox.window.electronAPI?.playlistCache || null,
     waitForPlaylistCacheSession: async () => sandbox.window.electronAPI?.playlistCache || null,
     getPlaylistCacheSessionVersion: () => 0,
-    PlaylistDrawer: {}, ContextMenu: {}, AnimatedSelect: {}, LyricView: {}, VolumeControl: {}, ArtworkCover: {}, TransitionGroup: {}, SongBadges: {}, ArtistLinks: {}, LibraryActions: {},
+    PlaylistDrawer: {}, ContextMenu: {}, AnimatedSelect: {}, LyricView: {}, VolumeControl: {}, ArtworkCover: {}, TransitionGroup: {}, SongBadges: {}, SongTitle: {}, ArtistLinks: {}, LibraryActions: {}, AnimatedSlider: {},
     contextMenuManager: menuManager,
     useSettingsStore: () => ({ settings: { playback: { quality: '128', preloadNextTrack: false, smoothTrackSwitch: false, skipTrailingSilence: false }, custom: {} }, async updateSettings() {} }),
     ...Object.fromEntries(['playlistIcon', 'repeatAllIcon', 'repeatOneIcon', 'shuffleIcon',
@@ -87,7 +87,7 @@ function loadComponent(filename, overrides = {}) {
   }
   const metadataSource = fs.readFileSync(path.join(playerDirectory, '..', '..', 'utils', 'libraryMetadata.js'), 'utf8')
     .replace(/^import[^\n]*\n/gm, '').replace(/\bexport (?=(?:function|const))/g, '')
-  sandbox.librarySongKey = vm.runInContext(`(function () { ${metadataSource}; return librarySongKey })()`, sandbox)
+  Object.assign(sandbox, vm.runInContext(`(function () { ${metadataSource}; return { librarySongKey, findQueueSongIndex } })()`, sandbox))
   vm.runInContext(source, sandbox, { filename })
   return { component: sandbox.component, sandbox, actions, listeners, menuManager }
 }
@@ -733,6 +733,30 @@ test('removing or queueing a same-hash source leaves the other source and cloud 
   assert.equal(player.playNextQueue.length, 1)
   assert.equal(player.playNextQueue[0].sourceUserId, 'owner-a')
   assert.equal(audio.playCount, plays)
+})
+
+test('adjacent occurrences of one recording advance through both rows and then the following recording', async t => {
+  const { player, audio, emitted } = createPlayer(t)
+  const first = { ...song('A'), fileid: 1 }, second = { ...song('A'), fileid: 2 }, third = song('B')
+  player.playlist = [first, second, third]
+  await player.requestSong(first)
+  audio.paused = audio.ended = true
+  player.handleEnded()
+  await flush()
+  assert.equal(player.currentSong, second)
+  assert.equal(player.currentIndex, 1)
+  assert.equal(emitted.filter(event => event.name === 'song-changed').at(-1).value, second)
+  audio.paused = audio.ended = true
+  player.handleEnded()
+  await flush()
+  assert.equal(player.currentSong, third)
+  assert.equal(player.currentIndex, 2)
+  await player.handlePlaylistPlay(second)
+  await player.handleRemoveSong(0)
+  assert.equal(player.currentSong, second)
+  assert.equal(player.currentIndex, 0)
+  await player.playNext()
+  assert.equal(player.currentSong, third)
 })
 
 test('catalogue and cloud copies sharing one hash still resolve distinct sources and cache descriptors', async t => {
@@ -1467,6 +1491,76 @@ test('shuffle, automatic advance and priority queue playback retain their distin
   await flush()
   assert.equal(player.currentSong.hash, 'A')
   assert.equal(player.trackTransition, 'auto')
+})
+
+test('single-repeat holds queued songs for a manual skip and a queued repeat takes only one turn', async t => {
+  const { player, audio } = createPlayer(t)
+  player.playlist = ['A', 'B', 'C'].map(song)
+  const [a, , c] = player.playlist
+  await player.requestSong(a)
+  player.addToPlayNextQueue(a)
+  player.addToPlayNextQueue(c)
+  player.playMode = 'single'
+  const finishTrack = async () => {
+    audio.currentTime = audio.duration
+    audio.ended = true
+    audio.paused = true
+    player.handleEnded()
+    await flush()
+  }
+  await finishTrack()
+  assert.deepEqual(Array.from(player.playNextQueue, track => track.hash), ['A', 'C'])
+  player.playMode = 'loop'
+  await finishTrack()
+  assert.equal(player.currentSong.hash, 'A')
+  assert.deepEqual(Array.from(player.playNextQueue, track => track.hash), ['C'])
+  await finishTrack()
+  assert.equal(player.currentSong.hash, 'C')
+  assert.equal(player.playNextQueue.length, 0)
+})
+
+test('playing a queued song directly fulfills the insertion only after it is available', async t => {
+  let available = false
+  const { player } = createPlayer(t, { getSongUrl: async hash => {
+    if (hash === 'C' && !available) throw new Error('temporarily unavailable')
+    return { status: 1, url: 'https://example.test/' + hash + '.mp3' }
+  } })
+  player.playlist = ['A', 'B', 'C'].map(song)
+  const [a, b, c] = player.playlist
+  await player.requestSong(a)
+  player.addToPlayNextQueue(b)
+  player.addToPlayNextQueue(c)
+  await player.handlePlaylistPlay(c)
+  assert.equal(player.currentSong.hash, 'A')
+  assert.deepEqual(Array.from(player.playNextQueue, track => track.hash), ['B', 'C'])
+  available = true
+  await player.handlePlaylistPlay(c)
+  assert.equal(player.currentSong.hash, 'C')
+  assert.deepEqual(Array.from(player.playNextQueue, track => track.hash), ['B'])
+  player.cancelQueuedSong(b)
+  assert.equal(player.playNextQueue.length, 0)
+  assert.deepEqual(player.playlist.map(track => track.hash), ['A', 'B', 'C'])
+})
+
+test('a delayed direct play cannot consume a later insertion of the same playlist row', async t => {
+  const pending = deferred()
+  const { state, getPlayer } = mountPlayer(t, ['A', 'B', 'C'].map(song), {
+    getSongUrl: hash => hash === 'C' ? pending.promise : Promise.resolve({ status: 1, url: 'https://example.test/' + hash })
+  })
+  await flush()
+  const player = getPlayer()
+  const c = state.playlist[2]
+  player.addToPlayNextQueue(c)
+  const selection = player.handlePlaylistPlay(c)
+  await flush()
+  player.cancelQueuedSong(c)
+  player.addToPlayNextQueue(c)
+  pending.resolve({ status: 1, url: 'https://example.test/C' })
+  await selection
+  await flush()
+  assert.equal(player.currentSong, c)
+  assert.equal(player.playNextQueue.length, 1)
+  assert.equal(player.playNextQueue[0], c)
 })
 
 test('a parent selection supersedes loading navigation together with its transition intent', async t => {
@@ -2656,6 +2750,25 @@ test('desktop visibility follows committed fullscreen lyric entrance and complet
   assert.equal(visibility.at(-1), false, 'unmount releases fullscreen suppression even without a transition callback')
 })
 
+test('lyric shortcut toggles both a visible view and a deferred opening', async t => {
+  const { player } = createPlayer(t)
+  player.currentSong = song('A')
+  player.currentLyrics = '[00:00.00]Hello'
+  await player.toggleLyrics()
+  assert.equal(player.showLyricView, true)
+  await player.toggleLyrics()
+  assert.equal(player.showLyricView, false)
+  player.currentLyrics = ''
+  const pending = deferred()
+  player.loadLyric = () => pending.promise
+  const opening = player.toggleLyrics()
+  await player.toggleLyrics()
+  pending.resolve()
+  await opening
+  assert.equal(player.showLyricView, false)
+  assert.equal(player.pendingLyricView, false)
+})
+
 test('closing while lyrics load prevents a late response from reopening the view', async t => {
   const pending = deferred()
   const { player, emitted } = createPlayer(t)
@@ -3337,9 +3450,9 @@ test('ordinary playback and seek transitions retain their distinct timing withou
     { time: 10, text: 'third' }, { time: 20, text: 'fourth' }
   ]
   lyric.syncPlaybackTime(0)
-  assert.equal(lyric.getLyricLineStyle(0).transition, 'none')
+  assert.doesNotMatch(lyric.getLyricLineStyle(0).transition, /transform/)
   lyric.syncPlaybackTime(0.5)
-  assert.equal(lyric.getLyricLineStyle(0).transition, 'none')
+  assert.doesNotMatch(lyric.getLyricLineStyle(0).transition, /transform/)
   lyric.syncPlaybackTime(1)
   assert.match(lyric.getLyricLineStyle(1).transition, /transform 0\.45s/)
   lyric.syncPlaybackTime(12, true)
@@ -3362,7 +3475,7 @@ test('seek transitions survive parent time echoes and the mounted animation loop
   component.mounted.call(lyric)
   frames.step()
   assert.equal(frames.callbacks.size, 1, 'the production RAF loop must be running')
-  assert.equal(lyric.getLyricLineStyle(0).transition, 'none')
+  assert.doesNotMatch(lyric.getLyricLineStyle(0).transition, /transform/)
   lyric.$emit = (name, value) => {
     emitted.push({ name, value })
     if (name === 'seek') {

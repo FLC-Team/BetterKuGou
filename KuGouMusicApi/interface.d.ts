@@ -19,6 +19,7 @@ export interface UseAxiosRequestConfig<T = any> {
   encryptType: EncryptType;
   encryptKey?: boolean;
   clearDefaultParams?: boolean;
+  notSignature?: boolean;
   ip?: string;
   realIP?: string;
 }
@@ -66,6 +67,8 @@ export function captcha_sent(params: { mobile: string | number } & RequestBaseCo
 export function register_dev(params?: RequestBaseConfig): Promise<UseAxiosResponse>;
 
 export function user_detail(params?: RequestBaseConfig): Promise<UseAxiosResponse>;
+
+export function user_update(params: { nickname?: string; signature?: string; sex?: 0 | 1 | 2 | '0' | '1' | '2'; birthday?: string } & RequestBaseConfig): Promise<UseAxiosResponse>;
 
 export function user_playlist(params?: RequestBaseConfig & MultiPageConfig): Promise<UseAxiosResponse>;
 

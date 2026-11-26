@@ -4,17 +4,35 @@ const PLATFORM = process.platform
 const IS_WINDOWS = PLATFORM === 'win32'
 const IS_MAC = PLATFORM === 'darwin'
 const IS_SUPPORTED = IS_WINDOWS || IS_MAC
+const loginArgument = '--bk-login-start'
 
 function getLoginItemOptions() {
   const options = {}
   if (IS_WINDOWS || PLATFORM === 'linux') {
     options.path = process.execPath
   }
+  if (IS_WINDOWS) options.args = [loginArgument]
   return options
 }
 
 function isAutoLaunchSupported() {
   return IS_SUPPORTED
+}
+
+/** Distinguish the initial login window from a deliberate launch without changing its presentation. */
+function isLoginLaunchCommand(argv) {
+  return Array.isArray(argv) && argv.includes(loginArgument)
+}
+
+function wasOpenedAtLogin(app) {
+  if (isLoginLaunchCommand(process.argv)) return true
+  if (!IS_MAC) return false
+  try {
+    return app.getLoginItemSettings().wasOpenedAtLogin === true
+  } catch (error) {
+    logger.warn('autoLaunch', '无法确认启动来源，等待前台操作或播放后再计活跃', { code: error.code || error.name })
+    return true
+  }
 }
 
 function getAutoLaunchEnabled(app) {
@@ -53,6 +71,8 @@ function setAutoLaunchEnabled(app, enabled) {
 
 module.exports = {
   isAutoLaunchSupported,
+  isLoginLaunchCommand,
+  wasOpenedAtLogin,
   getAutoLaunchEnabled,
   setAutoLaunchEnabled
 }

@@ -1,8 +1,10 @@
 // 引入 Electron 模块
 const { app, BrowserWindow, ipcMain, dialog, globalShortcut, shell, Tray, Menu, nativeImage, nativeTheme, clipboard, protocol, screen } = require('electron')
+const ownsAppInstance = app.requestSingleInstanceLock()
+if (!ownsAppInstance) app.exit(0)
 const logger = require('./logger')
 // 解决 Windows 控制台中文/emoji 乱码: 尝试切换到 UTF-8 代码页 (仅开发态且是 win32)
-if (process.platform === 'win32' && !process.env.BK_SKIP_CHCP && !app.isPackaged) {
+if (ownsAppInstance && process.platform === 'win32' && !process.env.BK_SKIP_CHCP && !app.isPackaged) {
   try {
     const { execSync } = require('child_process')
     execSync('chcp 65001 >NUL')
@@ -15,6 +17,7 @@ if (process.platform === 'win32' && !process.env.BK_SKIP_CHCP && !app.isPackaged
 const path = require('path')
 const { existsSync, readFileSync } = require('fs')
 const { pathToFileURL } = require('url')
+const { randomUUID } = require('node:crypto')
 const { createBackendService } = require('./services/backendService')
 const { createUpdateService } = require('./services/updateService')
 const { createPlaylistCacheService } = require('./services/playlistCacheService')
@@ -56,6 +59,7 @@ app.commandLine.appendSwitch('disable-gpu-shader-disk-cache')
 // app.disableHardwareAcceleration()
 
 let mainWindow
+let hasCreatedMainWindow = false
 let loadingWindow = null
 let desktopLyricWindow = null
 let tray = null
@@ -68,6 +72,10 @@ let startupFailure = null
 let startupFailureTimer = null
 let unsubscribeSettings = null
 let updateService = null
+let telemetryService = null
+let telemetryEnabled = null
+let countNextWindowReady = false
+let countNextRefocus = false
 let playlistCacheService = null
 let musicDownloadService = null
 let audioEffectsIntegration = null
@@ -77,6 +85,7 @@ let cacheDirectorySelection = false
 let installRequest = null
 let installQuitService = null
 let installPreparation = null
+const pendingAppDialogs = new Map()
 // 用户主动退出标志，用于区分托盘驻留和真正退出
 let userRequestedQuit = false
 // 当前播放信息(由渲染进程通过 IPC 推送)
@@ -142,6 +151,7 @@ function showAppNotice(payload, { reveal = false } = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) return false
   if (mainWindowReady) {
     if (reveal) {
+      countNextRefocus = false
       if (mainWindow.isMinimized?.()) mainWindow.restore()
       if (mainWindow.isVisible?.() === false) {
         if (mainWindow.showInactive) mainWindow.showInactive()
@@ -160,9 +170,10 @@ function showAppNotice(payload, { reveal = false } = {}) {
   return true
 }
 
-/** 配置无法初始化时只显示 Fue 错误界面，停止正常启动，关闭后仍走统一清理。 */
-function showStartupFailure() {
-  startupFailure = { title: '启动失败', message: '无法读取或保存设置，请检查目录权限后重新启动。' }
+/** 启动失败时只显示 Fue 错误界面，关闭后仍走统一清理。 */
+function showStartupFailure(message = '无法读取或保存设置，请检查目录权限后重新启动。') {
+  if (isQuitting || startupFailure) return
+  startupFailure = { title: '启动失败', message }
   createWindow()
   startupFailureTimer = setTimeout(() => {
     startupFailureTimer = null
@@ -194,6 +205,9 @@ const backendService = createBackendService({
   resourcesPath: process.resourcesPath,
   onProgress: (progress, message, type) => updateLoadingProgress(progress, message, type),
   onStatus: (payload) => {
+    if (payload.code === 'EADDRINUSE') {
+      showStartupFailure('本地服务端口 6500 仍被占用，请关闭占用端口的程序后重启 BetterKuGou。')
+    }
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('backend-status', payload)
     }
@@ -304,6 +318,7 @@ function updateTrayMenu() {
     ] : []),
     { type: 'separator' },
     { label: '显示主界面', click: () => {
+        noteMainWindowOpen()
         if (!mainWindow) {
           createWindow()
         } else {
@@ -337,9 +352,11 @@ function createTray() {
         mainWindow.hide()
       } else {
         if (mainWindow.isMinimized()) mainWindow.restore()
+        noteMainWindowOpen()
         mainWindow.show(); mainWindow.focus()
       }
     } else {
+      noteMainWindowOpen()
       createWindow()
     }
   })
@@ -978,6 +995,7 @@ function syncDesktopLyricSettings(settings) {
 function subscribeToSettingsUpdates() {
   unsubscribeSettings?.()
   unsubscribeSettings = onSettingsChange((nextSettings) => {
+    syncTelemetryConsent(nextSettings)
     BrowserWindow.getAllWindows().forEach((win) => {
       if (!win.isDestroyed()) win.webContents.send('settings:updated', nextSettings)
     })
@@ -990,6 +1008,39 @@ function subscribeToSettingsUpdates() {
     musicDownloadService?.configure(nextSettings).catch(error => logger.error('music-download', '应用下载设置失败', error))
     audioEffectsIntegration?.configure(nextSettings).catch(error => logger.error('audio-effects', '应用音效设置失败', error))
   })
+}
+
+/** Only a saved local opt-in enables the sender. Enabling it in the foreground counts this visit. */
+function syncTelemetryConsent(settings) {
+  const enabled = settings.software?.telemetryEnabled === true
+  if (isQuitting || !telemetryService || telemetryEnabled === enabled) return
+  telemetryEnabled = enabled
+  void telemetryService.configure(enabled).catch(error => logger.warn('telemetry', '应用本机统计设置失败', { code: error.code || error.name }))
+  if (enabled && mainWindowReady && mainWindow?.isFocused()) markTelemetryActivity()
+}
+
+function markTelemetryActivity() {
+  if (telemetryEnabled && !isQuitting && !startupFailure) {
+    void telemetryService.markActive().catch(error => logger.warn('telemetry', '保存活跃报告失败', { code: error.code || error.name }))
+  }
+}
+
+/** A deliberate tray/Dock/relaunch open may have to wait for a newly created or reloaded renderer. */
+function noteMainWindowOpen() {
+  countNextRefocus = false
+  if (mainWindowReady) markTelemetryActivity()
+  else countNextWindowReady = true
+}
+
+function initializeTelemetry() {
+  const { createTelemetryService } = require('./services/telemetryService')
+  const { getTelemetryEnvironment } = require('./services/telemetryEnvironment')
+  telemetryService = createTelemetryService({
+    directory: path.join(app.getPath('userData'), 'telemetering'),
+    environment: () => getTelemetryEnvironment(app), logger
+  })
+  countNextWindowReady ||= !require('./autoLaunch').wasOpenedAtLogin(app)
+  syncTelemetryConsent(getSettings())
 }
 
 /** The isolated native host owns plugin code; this integration only exposes fixed main-window capabilities. */
@@ -1214,7 +1265,7 @@ ipcMain.handle('updates:reveal', async (event) => {
   }
 })
 
-/** 只有用户主动点击并在原生对话框确认后才打开已校验的包，不退出或安排安装。 */
+/** 用户在主窗口确认后重新验证安装包，保持应用运行。 */
 ipcMain.handle('updates:install', async (event) => {
   let updates
   try {
@@ -1222,24 +1273,24 @@ ipcMain.handle('updates:install', async (event) => {
   } catch (error) {
     return { success: false, error: error.message }
   }
-  if (installRequest) return { canceled: true }
+  if (installRequest || installPreparation) return { canceled: true }
   installRequest = Promise.resolve().then(async () => {
     const file = await updates.getDownloadedFile()
     if (!['exe', 'dmg', 'deb', 'rpm'].includes(file.format)) {
       throw new Error('请打开所在文件夹，自行处理此更新包。')
     }
     getUpdatesForSender(event)
-    const { response } = await dialog.showMessageBox(mainWindow, {
-      type: 'question',
+    const { action } = await requestAppDialog(mainWindow, {
+      eyebrow: '应用更新',
       title: '手动安装更新',
-      message: `打开 ${file.assetName}？`,
-      detail: '将打开已下载的安装包，后续安装由你确认。BetterKuGou 将保持运行。',
-      buttons: ['取消', '打开安装包'],
-      defaultId: 0,
-      cancelId: 0,
-      noLink: true
+      message: `打开 ${file.assetName}？\n后续安装由你确认，BetterKuGou 将保持运行。`,
+      actions: [
+        { id: 'cancel', label: '取消', variant: 'secondary' },
+        { id: 'install', label: '打开安装包', variant: 'primary' }
+      ],
+      defaultAction: 'cancel'
     })
-    if (response !== 1) return { canceled: true }
+    if (action !== 'install' || installPreparation) return { canceled: true }
     getUpdatesForSender(event)
     const confirmed = await updates.getDownloadedFile()
     if (confirmed.path !== file.path || confirmed.assetId !== file.assetId || confirmed.version !== file.version
@@ -1247,6 +1298,7 @@ ipcMain.handle('updates:install', async (event) => {
       throw new Error('更新包已改变，请重新确认安装。')
     }
     getUpdatesForSender(event)
+    if (!mainWindowReady || installPreparation) return { canceled: true }
     const errorMessage = await shell.openPath(confirmed.path)
     if (errorMessage) throw new Error(errorMessage)
     return { success: true }
@@ -1411,6 +1463,7 @@ function stopMemoryCleanup() {
 function performApplicationCleanup() {
   if (cleanupPromise) return cleanupPromise
   isQuitting = true
+  cancelAppDialogs(mainWindow, true)
   pendingAppNotices.length = 0
   if (startupFailureTimer) clearTimeout(startupFailureTimer)
   startupFailureTimer = null
@@ -1427,6 +1480,8 @@ function performApplicationCleanup() {
 async function cleanupApplicationResources() {
   unsubscribeSettings?.()
   unsubscribeSettings = null
+  try { await telemetryService?.dispose() }
+  catch (error) { logger.warn('telemetry', '退出时保存统计队列失败', error) }
   releaseIslandDisplayNotifications?.()
   releaseIslandDisplayNotifications = null
   releaseTaskbarTheme?.()
@@ -1558,21 +1613,21 @@ async function requestMainWindowClose(window) {
     const software = getSettings().software || {}
     let minimizeToTray = software.minimizeToTray === true
     if (software.promptBeforeClose !== false) {
-      const { response, checkboxChecked } = await dialog.showMessageBox(window, {
-        type: 'question',
+      const { action, checked } = await requestAppDialog(window, {
+        eyebrow: '关闭窗口',
         title: '关闭 BetterKuGou',
-        message: '关闭窗口时，你希望如何处理？',
-        detail: '最小化到托盘后，音乐会继续在后台播放。可随时在“设置 → 启动与应用”中更改。',
-        buttons: ['最小化到托盘', '退出程序', '取消'],
-        defaultId: minimizeToTray ? 0 : 1,
-        cancelId: 2,
-        noLink: true,
-        checkboxLabel: '不再提示',
-        checkboxChecked: false
+        message: '最小化到托盘后，音乐会继续在后台播放。\n可随时在“设置 → 启动与应用”中更改关闭方式。',
+        actions: [
+          { id: 'cancel', label: '取消', variant: 'secondary' },
+          { id: 'tray', label: '最小化到托盘', variant: minimizeToTray ? 'primary' : 'secondary' },
+          { id: 'exit', label: '退出程序', variant: 'danger' }
+        ],
+        defaultAction: minimizeToTray ? 'tray' : 'exit',
+        checkboxLabel: '不再提示'
       })
-      if (!canClose() || ![0, 1].includes(response)) return
-      minimizeToTray = response === 0
-      if (checkboxChecked) {
+      if (!canClose() || !['tray', 'exit'].includes(action)) return
+      minimizeToTray = action === 'tray'
+      if (checked) {
         await setSettings({ software: { minimizeToTray, promptBeforeClose: false } })
         if (!canClose()) return
       }
@@ -1622,15 +1677,28 @@ function createWindow() {
     }
   })
 
+  hasCreatedMainWindow = true
   mainWindow.on('ready-to-show', updateTaskbarButtons)
   mainWindow.on('show', updateTaskbarButtons)
+  countNextRefocus = false
+  mainWindow.on('focus', () => {
+    syncGlobalShortcutFocus(true)
+    if (countNextRefocus && mainWindowReady) markTelemetryActivity()
+    countNextRefocus = false
+  })
+  mainWindow.on('blur', () => {
+    syncGlobalShortcutFocus(false)
+    if (mainWindowReady) countNextRefocus = true
+  })
   const window = mainWindow
   const syncLyricPolicy = () => { if (mainWindow === window) { updateDesktopLyricPolicy(); syncIslandLyricView() } }
   for (const event of ['show', 'hide', 'minimize', 'restore', 'move', 'resize']) mainWindow.on(event, syncLyricPolicy)
   const resetTaskbarPlayback = () => {
     if (mainWindow !== window) return
-    audioEffectsIntegration?.reset()
+    clearWindowShortcuts()
     mainWindowReady = false
+    cancelAppDialogs(window, true)
+    audioEffectsIntegration?.reset()
     isPlaying = false
     syncPlaybackScheduling()
     mainLyricViewVisible = false
@@ -1643,6 +1711,7 @@ function createWindow() {
     if (isMainFrame && !isInPlace) resetTaskbarPlayback()
   })
   mainWindow.webContents.on('render-process-gone', resetTaskbarPlayback)
+  mainWindow.webContents.on('destroyed', () => cancelAppDialogs(window))
 
   // 监听窗口最大化/还原事件，通知渲染进程
   mainWindow.on('maximize', () => {
@@ -1685,6 +1754,8 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     if (mainWindow !== window) return
+    clearWindowShortcuts()
+    cancelAppDialogs(window)
     audioEffectsIntegration?.reset()
     mainWindow = null
     syncIslandLyricView()
@@ -1702,19 +1773,35 @@ function createWindow() {
   })
 }
 
-/** Dock 激活以主窗口存在性为准；隐藏的歌词辅助窗口不能阻止重建主界面。 */
+/** 重复启动和 Dock 激活共用窗口恢复入口，首次启动仍由初始化流程创建主窗口。 */
 function restoreMainWindowOnActivate() {
-  if (isQuitting) return
-  if (!mainWindow || mainWindow.isDestroyed()) createWindow()
-  else if (mainWindowReady) {
-    if (mainWindow.isMinimized?.()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
+  if (isQuitting || userRequestedQuit || installPreparation) return
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    if (hasCreatedMainWindow) {
+      noteMainWindowOpen()
+      createWindow()
+      return
+    }
+  } else if (mainWindow.webContents.isCrashed?.()) {
+    countNextWindowReady = true
+    if (!mainWindow.webContents.isLoadingMainFrame()) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.webContents.reload()
+    }
+    return
   }
+  const window = mainWindowReady ? mainWindow : loadingWindow
+  if (!window || window.isDestroyed()) return
+  if (mainWindowReady) noteMainWindowOpen()
+  if (window.isMinimized?.()) window.restore()
+  window.show()
+  window.focus()
 }
 
-// 应用准备就绪时创建窗口
-app.whenReady().then(async () => {
+/** 只有持有应用锁的实例会创建窗口、初始化设置并启动后台服务。 */
+async function initializeApplication() {
+  if (isQuitting) return
+  app.on('activate', restoreMainWindowOnActivate)
   // 与安装快捷方式使用同一身份，避免任务栏将窗口归入默认 Electron 分组。
   if (process.platform === 'win32') app.setAppUserModelId('com.betterkugou.app')
   // 首先创建加载窗口
@@ -1733,7 +1820,10 @@ app.whenReady().then(async () => {
     return
   }
 
+  if (isQuitting) return
   subscribeToSettingsUpdates()
+  try { initializeTelemetry() }
+  catch (error) { logger.warn('telemetry', '初始化本机统计服务失败', error) }
   try {
     initializeAudioEffects()
   } catch (error) {
@@ -1761,6 +1851,7 @@ app.whenReady().then(async () => {
   try {
     const { createBackgroundImageService } = require('./services/backgroundImageService')
     const backgroundImages = await createBackgroundImageService(app.getPath('userData'), logger)
+    if (isQuitting) return
     protocol.handle('bk-background', backgroundImages.handleRequest)
     ipcMain.handle('background-image:store', (event, bytes) => {
       if (isQuitting || !isMainWindowSender(event)) throw new Error('背景图片只能从应用主窗口更改。')
@@ -1770,6 +1861,7 @@ app.whenReady().then(async () => {
     logger.error('background-image', '初始化背景图片服务失败', error)
   }
 
+  if (isQuitting) return
   // 启动后端服务器
   try {
     initializeMusicDownloadService()
@@ -1781,18 +1873,26 @@ app.whenReady().then(async () => {
   // 与后端并行加载界面；渲染入口只在首批请求前等待实际服务就绪。
   createWindow()
   initializeInstallQuitService()
+}
 
-  app.on('activate', restoreMainWindowOnActivate)
-}).catch(error => {
-  logger.error('main', '应用初始化失败', error)
-  userRequestedQuit = true
-  app.quit()
-})
+if (ownsAppInstance) {
+  app.on('second-instance', (_event, argv) => {
+    if (Array.isArray(argv) && require('./autoLaunch').isLoginLaunchCommand(argv)) return
+    if (!mainWindowReady && !isQuitting && !installPreparation) countNextWindowReady = true
+    restoreMainWindowOnActivate()
+  })
+  app.whenReady().then(initializeApplication).catch(error => {
+    logger.error('main', '应用初始化失败', error)
+    userRequestedQuit = true
+    app.quit()
+  })
+}
 
 /** 首屏挂载后才显示窗口，避免依赖固定延时或文档 load 事件猜测 Vue 就绪。 */
 ipcMain.on('renderer:ready', (event) => {
   if (isQuitting || mainWindowReady || !isMainWindowSender(event)) return
   mainWindowReady = true
+  countNextRefocus = false
   if (startupFailureTimer) clearTimeout(startupFailureTimer)
   startupFailureTimer = null
   mainWindow.show()
@@ -1802,6 +1902,10 @@ ipcMain.on('renderer:ready', (event) => {
   mainWindow.focus()
   closeLoadingWindow()
   if (startupFailure) { pendingPlayerControls.length = 0; return }
+  if (countNextWindowReady) {
+    countNextWindowReady = false
+    markTelemetryActivity()
+  }
   pendingPlayerControls.splice(0).forEach(action => mainWindow.webContents.send('player:control', action))
   startMemoryCleanup()
 })
@@ -1812,6 +1916,60 @@ ipcMain.on('player:lyric-view-visible', (event, visible) => {
   mainLyricViewVisible = visible
   updateDesktopLyricPolicy()
   syncIslandLyricView()
+})
+
+/** 业务确认只发给已就绪的主窗口。每个请求独立关联窗口、文档和允许的操作。 */
+function requestAppDialog(window, options) {
+  if (!mainWindowReady || !window || window !== mainWindow || window.isDestroyed() || isQuitting || userRequestedQuit || installPreparation) {
+    return Promise.resolve({ action: null, checked: false })
+  }
+  const contents = window.webContents
+  const frame = contents.mainFrame
+  const requestId = randomUUID()
+  return new Promise((resolve, reject) => {
+    pendingAppDialogs.set(requestId, { window, contents, frame, options, resolve })
+    try {
+      const minimized = window.isMinimized?.() === true
+      if (minimized || window.isVisible?.() === false) countNextRefocus = false
+      if (minimized) window.restore()
+      if (minimized || window.isVisible?.() === false) {
+        window.show()
+        window.focus()
+      }
+      contents.send('app-dialog:request', { ...options, requestId })
+    } catch (error) {
+      pendingAppDialogs.delete(requestId)
+      reject(error)
+    }
+  })
+}
+
+/** 窗口或业务生命周期结束时取消对应确认，并在仍能显示时撤下弹窗。 */
+function cancelAppDialogs(window, notify = false) {
+  for (const [requestId, request] of pendingAppDialogs) {
+    if (request.window !== window) continue
+    pendingAppDialogs.delete(requestId)
+    request.resolve({ action: null, checked: false })
+    const { contents, frame } = request
+    if (!notify || window.isDestroyed() || contents.isDestroyed?.() || contents.isCrashed?.()) continue
+    try {
+      if (contents.mainFrame === frame) contents.send('app-dialog:cancel', requestId)
+    } catch (error) {
+      logger.warn('main', '发送业务确认取消通知失败', error)
+    }
+  }
+}
+
+ipcMain.on('app-dialog:response', (event, requestId, result) => {
+  if (!mainWindowReady || isQuitting || userRequestedQuit || installPreparation || !isMainWindowSender(event)) return
+  const request = pendingAppDialogs.get(requestId)
+  if (!request || request.window !== mainWindow || request.contents !== event.sender || request.frame !== event.senderFrame) return
+  if (!result || typeof result !== 'object' || Array.isArray(result) || Object.keys(result).length !== 2 || typeof result.checked !== 'boolean') return
+  const { action, checked } = result
+  if (checked && !request.options.checkboxLabel) return
+  if (action !== null && !request.options.actions.some(option => option.id === action)) return
+  pendingAppDialogs.delete(requestId)
+  request.resolve({ action, checked })
 })
 
 function isMainWindowSender(event) {
@@ -1866,6 +2024,7 @@ function notifyInstallPreparation(payload) {
     [window, 'closed', cancel]
   ]
   installPreparation = { requestId, window, contents, frame: contents.mainFrame, listeners }
+  cancelAppDialogs(window, true)
   updateTaskbarButtons()
   sendDesktopLyric('desktop-lyric:playback-update', desktopPlaybackSnapshot())
   listeners.forEach(([emitter, name, listener]) => emitter.on(name, listener))
@@ -1920,8 +2079,22 @@ ipcMain.on('window-unmaximize', () => {
 ipcMain.on('window-close', (event) => {
   if (isMainWindowSender(event)) mainWindow.close()
 })
+ipcMain.on('window-toggle-fullscreen', event => {
+  if (!isQuitting && !installPreparation && isMainWindowSender(event)) mainWindow.setFullScreen(!mainWindow.isFullScreen())
+})
 
 // 设置相关 IPC 事件
+ipcMain.on('telemetry:foreground-activity', event => {
+  if (mainWindowReady && isMainWindowSender(event) && mainWindow.isFocused()) markTelemetryActivity()
+})
+
+function requireTelemetryService(event) {
+  if (isQuitting || !isMainWindowSender(event) || !telemetryService) throw new Error('目前无法访问本机使用统计')
+  return telemetryService
+}
+ipcMain.handle('telemetry:get-pending', event => requireTelemetryService(event).getPreview())
+ipcMain.handle('telemetry:clear-pending', event => requireTelemetryService(event).clearPending())
+
 ipcMain.handle('settings:get', async () => {
   return getSettings()
 })
@@ -1947,7 +2120,7 @@ ipcMain.handle('settings:set', async (_event, payload) => {
 ipcMain.handle('settings:patch', async (event, payload, removedPaths = []) => {
   if (!isMainWindowSender(event) || isQuitting) throw new Error('Settings editor is unavailable')
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Invalid settings patch')
-  const updated = await setSettings(payload, { removedPaths })
+  const updated = await setSettings(payload, { removedPaths, allowTelemetryChange: true })
   await ensureCacheDirectory()
   return updated
 })
@@ -2003,89 +2176,72 @@ ipcMain.handle('settings:choose-directory', async (_event, options = {}) => {
   return { canceled: false, path: result.filePaths[0] }
 })
 
-// 全局快捷键相关 IPC 事件
-ipcMain.handle('shortcut:register', async (_event, accelerator, action) => {
+/** Electron owns these keys only in the background. In the focused main window normal DOM input wins. */
+function bindBackgroundShortcut(accelerator) {
+  return globalShortcut.register(accelerator, () => {
+    const action = registeredShortcuts.get(accelerator)
+    if (action && mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFocused() && !isQuitting) {
+      mainWindow.webContents.send('shortcut:triggered', action)
+    }
+  })
+}
+
+/** A new renderer registers its own bindings after its settings load. */
+function clearWindowShortcuts() {
+  for (const accelerator of registeredShortcuts.keys()) globalShortcut.unregister(accelerator)
+  registeredShortcuts.clear()
+}
+
+function syncGlobalShortcutFocus(focused) {
+  if (isQuitting) return
+  for (const accelerator of registeredShortcuts.keys()) {
+    try {
+      if (focused) globalShortcut.unregister(accelerator)
+      else if (!globalShortcut.isRegistered(accelerator) && !bindBackgroundShortcut(accelerator)) {
+        logger.warn('main', '无法重新注册后台快捷键', accelerator)
+      }
+    } catch (error) {
+      logger.error('main', '切换后台快捷键失败', accelerator, error)
+    }
+  }
+}
+
+/** Probe the OS because isRegistered() only reports accelerators held by this app. */
+function canBindShortcut(accelerator) {
+  if (globalShortcut.isRegistered(accelerator)) return registeredShortcuts.has(accelerator)
+  if (!globalShortcut.register(accelerator, () => {})) return false
+  globalShortcut.unregister(accelerator)
+  return true
+}
+
+ipcMain.handle('shortcut:register', (event, accelerator, action) => {
+  if (isQuitting || !isMainWindowSender(event) || !accelerator || typeof accelerator !== 'string') return { success: false }
   try {
-    logger.trace('main', `🎹 注册全局快捷键: ${accelerator} -> ${action}`)
-
-    // 检查快捷键格式是否有效
-    if (!accelerator || typeof accelerator !== 'string') {
-      logger.error('main', '❌ 无效的快捷键格式:', accelerator)
-      return { success: false, error: 'Invalid accelerator format' }
-    }
-
-    // 如果快捷键已经注册,先注销
-    if (registeredShortcuts.has(accelerator)) {
-      globalShortcut.unregister(accelerator)
-      logger.trace('main', `🔄 已注销旧的快捷键: ${accelerator}`)
-    }
-
-    // 尝试注册全局快捷键
-    const success = globalShortcut.register(accelerator, () => {
-      logger.trace('main', `⚡ 全局快捷键触发: ${accelerator} -> ${action}`)
-      // 向渲染进程发送快捷键触发事件
-      const allWindows = BrowserWindow.getAllWindows()
-      allWindows.forEach(win => {
-        win.webContents.send('shortcut:triggered', action)
-      })
-    })
-
-    if (success) {
-      registeredShortcuts.set(accelerator, action)
-      logger.trace('main', `✅ 全局快捷键注册成功: ${accelerator}`)
-      return { success: true }
-    } else {
-      logger.error('main', `❌ 全局快捷键注册失败: ${accelerator}`)
-      return { success: false, error: 'Failed to register shortcut' }
-    }
-  } catch (err) {
-    logger.error('main', `❌ 注册快捷键异常: ${accelerator}`, err)
-    return { success: false, error: err.message }
+    let available
+    if (mainWindow.isFocused()) available = canBindShortcut(accelerator)
+    else if (globalShortcut.isRegistered(accelerator)) available = registeredShortcuts.has(accelerator)
+    else available = bindBackgroundShortcut(accelerator)
+    if (available) registeredShortcuts.set(accelerator, action)
+    return { success: available }
+  } catch (error) {
+    logger.error('main', '注册全局快捷键失败', accelerator, error)
+    return { success: false, error: error.message }
   }
 })
 
-ipcMain.handle('shortcut:unregister', async (_event, accelerator) => {
-  try {
-    logger.trace('main', `🗑️  注销全局快捷键: ${accelerator}`)
-
-    if (registeredShortcuts.has(accelerator)) {
-      globalShortcut.unregister(accelerator)
-      registeredShortcuts.delete(accelerator)
-      logger.trace('main', `✅ 快捷键注销成功: ${accelerator}`)
-      return { success: true }
-    } else {
-      logger.trace('main', `⚠️  快捷键未注册: ${accelerator}`)
-      return { success: true, warning: 'Shortcut was not registered' }
-    }
-  } catch (err) {
-    logger.error('main', `❌ 注销快捷键异常: ${accelerator}`, err)
-    return { success: false, error: err.message }
-  }
+ipcMain.handle('shortcut:unregister', (event, accelerator) => {
+  if (!isMainWindowSender(event)) return { success: false }
+  if (registeredShortcuts.delete(accelerator)) globalShortcut.unregister(accelerator)
+  return { success: true }
 })
 
-ipcMain.handle('shortcut:test', async (_event, accelerator) => {
+ipcMain.handle('shortcut:test', (event, accelerator) => {
+  if (isQuitting || !isMainWindowSender(event) || !accelerator || typeof accelerator !== 'string') return { canRegister: false }
   try {
-    // 测试快捷键是否可以注册(不实际注册)
-    logger.trace('main', `🧪 测试快捷键: ${accelerator}`)
-
-    if (!accelerator || typeof accelerator !== 'string') {
-      return { canRegister: false, error: 'Invalid accelerator format' }
-    }
-
-    // 检查是否已被其他应用占用
-    const isRegistered = globalShortcut.isRegistered(accelerator)
-
-    if (isRegistered && !registeredShortcuts.has(accelerator)) {
-      // 被其他应用占用
-      logger.trace('main', `⚠️  快捷键已被占用: ${accelerator}`)
-      return { canRegister: false, error: 'Shortcut is already registered by another application' }
-    }
-
-    logger.trace('main', `✅ 快捷键可用: ${accelerator}`)
-    return { canRegister: true }
-  } catch (err) {
-    logger.error('main', `❌ 测试快捷键异常: ${accelerator}`, err)
-    return { canRegister: false, error: err.message }
+    return { canRegister: canBindShortcut(accelerator) }
+  } catch (error) {
+    logger.warn('main', '测试全局快捷键失败', accelerator, error)
+    return { canRegister: false, error: error.message }
   }
 })
 
@@ -2359,6 +2515,10 @@ ipcMain.on('player:lyric-update', (event, lyrics, trackId) => {
 ipcMain.on('player:time-update', (event, time, meta) => {
   if (isQuitting || !isMainWindowSender(event) || !Number.isFinite(time) || time < 0 ||
       (meta?.trackId !== undefined && meta.trackId !== currentTrack.trackId)) return
+  if (isPlaying && currentTrack.trackId && meta?.trackId === currentTrack.trackId &&
+      meta.advancing === true && !meta.discontinuity && time > currentDesktopTime) {
+    markTelemetryActivity()
+  }
   currentDesktopTime = time
   if (Number.isFinite(meta?.duration) && meta.duration >= 0) currentDesktopDuration = meta.duration
   currentDesktopPlaybackRate = Number.isFinite(meta?.playbackRate) && meta.playbackRate > 0 ? meta.playbackRate : 1

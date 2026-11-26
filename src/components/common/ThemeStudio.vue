@@ -134,7 +134,10 @@ function pick(event) {
 }
 function stopPicking() { picking.value = false; highlight.value = null }
 function startPicking() { picking.value = !picking.value; minimized.value = picking.value }
-function onKey(event) { if (event.key === 'Escape' && picking.value) { event.preventDefault(); event.stopImmediatePropagation(); stopPicking(); minimized.value = false } }
+function onKey(event) {
+  if (event.key !== 'Escape' || !picking.value || event.target?.closest?.('dialog.app-dialog[open]')) return
+  event.preventDefault(); event.stopImmediatePropagation(); stopPicking(); minimized.value = false
+}
 /** Leave the panel mounted until its exit finishes, while immediately cancelling all preview input. */
 function close() { if (saving.value || closing.value) return; closing.value = true; stopPicking(); clearTimeout(previewTimer); previewTimer = null; cancelThemePreview(); shown.value = false }
 function finishClose() { if (closing.value && !disposed) emit('close') }

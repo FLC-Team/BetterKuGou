@@ -9,9 +9,12 @@
 - `logger.js`：日志级别过滤、统一脱敏、最多保留 500 条记录及主进程日志桥接。
 - `themeManager.js`：主题包解析、旧 dark/light/system/custom 模式兼容、系统配色监听、完整 CSS 变量/限定作用域 CSS 应用、草稿预览取消及视觉快照导出。
 - `objectUtils.js`：深拷贝、原地合并、响应式内容替换和可写副本。
+- `keyboardShortcuts.js` 为录键、冲突检查和前台快捷键匹配统一修饰键顺序及字母大小写，兼容历史小写绑定。
+- `libraryMetadata.js` 的 `findQueueSongIndex` 优先识别队列内的具体行；同源的多条记录保留各自位置。会话恢复等场景通过保存的索引和音源标识定位序列化后的曲目。
 - `audioEffectsEngine.js`：CORS 已授权的双 deck WebAudio 图，每个元素复用唯一 source；淡化位于插件前，主音量与静音位于插件后。通过限定连接握手把专用 MessagePort 直接转交 AudioWorklet，utility 进程重建后按连接代次重新握手而不重建媒体 source。`setBufferMs()` 接受 64/128/256/512ms、默认 128ms，并自动读取服务快照的 `appliedBufferMs ?? bufferMs`；服务 revision 拒绝迟到旧快照，不影响音频线程状态上报。输入 track/token 与延迟输出呈现身份分开；`getPresentedPlayback()` 返回实际可听曲目及位置，连续同源循环只添加标记、不重置 DSP 队列。显式 seek/效果启停/缓冲调整携带呈现代次，拒绝同曲目的旧回执；缓冲调整保留最后呈现时钟直至新回执，暂停冻结旧输出时钟。保持媒体事务与播放队列由播放器持有；提供原始音频 BPM tap、自然结束尾音、跳转与停止清理，以及处理器异常后的原声回退。
   - 全屏歌词鼓点动效按需采样效果链输出的低频瞬态，使用主音量及静音前的实际混音。暂停和跳转重置检测，关闭动效后释放分析分支。没有可用音频图时保持静态。
 - `contextMenuManager.js`：管理一个活动菜单关闭回调。
+- `searchHistory.js`：规范化最多 20 条已提交关键词，去空、去重并保留最近顺序；按访客/账号分开写入本机存储，不上传或混入设置导出。存储错误交给 App 保留内存状态并提供重试。
 - `playbackQuality.js`：普通音质选项及菜单的名称/格式/短标签、偏好规范化及依据响应格式/码率（含驼峰历史字段）确认当前音源信息，缺少格式时读取实际首条播放地址路径扩展名；不读取查询参数/备用地址，不凭格式推断码率或以偏好推断实际无损。
 - `playbackTransition.js`：供 MusicPlayer 双音频元素管理复用的取消/15秒超时等待、候选音源 canplay 就绪、线性且有界的音量增益包络及只读导航选择器；预览下一首不提前消费队列或修改随机顺序。
 - `playlistCache.js`：可选桌面缓存桥接、串行账号初始化与等待、会话代次及跨账号迟到结果隔离；不持有第二份响应式缓存状态。
@@ -26,6 +29,7 @@
 - `desktopLyrics.js`：桌面歌词纯解析器，输出统一毫秒时间轴，支持 KRC 词级时序、LRC 重复时间标签、正负 offset 和 UTF-8 翻译，保留原始空格、Unicode 与文本尖括号。
 - `lyricProcessing.js`：为显示生成歌词副本，使用 OpenCC 双向简繁转换、Intl 中文分词及基础中英文脏词遮罩；整句处理后分配回原 KRC 词区间，保留所有时间标签。读取来源提供的日文罗马音，按毫秒时间轴、重复标签和 offset 对齐。
 - `songMetadata.js`：读取歌曲 VIP 徽标，兼容既有 `privilege` 的 8/10 数值与字符串、大小写字段和明确 VIP 标志；按歌曲、歌手、专辑的历史字段过滤歌曲，保留原数组与行对象。
+- `getSongDurationMs` 按字段单位统一歌曲时长：`timelen/timelength/duration_ms` 与 `audio_info` 时长为毫秒，`Duration/duration/time_length/TimeLength` 为秒；跳过零值、负值和非数字占位，保留嵌套歌曲/资料及短曲。`formatSongDuration` 复用同一读取，以分秒展示，缺失时展示占位；不按数值大小猜单位，已有毫秒不重复乘以 1000。
 - `songMetadata.js` 的 getSongSearchKeyword 优先读取明确曲名，再兼容 name/filename/FileName；识别已知单人或多人歌手前缀，保留标题中的连字符和版本后缀，文件名去除音频扩展名，空或非文本名称不生成关键词。
 - `songMetadata.js` 的 getSongArtists 将可用歌手数组规范为独立 `{ id, name }`，兼容历史歌手/作者字段并去重；空数组不遮蔽其他数组，结构化姓名保持原样，缺失数组时仅按顿号和带空格斜线拆分合唱文本，单个歌曲级歌手 ID 不分配给多个人。
 

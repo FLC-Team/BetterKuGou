@@ -10,12 +10,15 @@ import { KUGOU_AUTH_EXPIRED_EVENT } from './api/music.js'
 import * as libraryApi from './api/library.js'
 import { createMusicLibrary } from './utils/musicLibrary.js'
 import { buildSongShareText } from './utils/musicSharing.js'
-import { librarySongKey } from './utils/libraryMetadata.js'
+import { findQueueSongIndex, librarySongKey } from './utils/libraryMetadata.js'
 import { useSettingsStore } from './stores/settingsStore.js'
 import { cloneDeep } from './utils/objectUtils.js'
+import { normalizeShortcut, shortcutFromEvent } from './utils/keyboardShortcuts.js'
 import { getSongSearchKeyword } from './utils/songMetadata.js'
+import { normalizeSearchHistory, readSearchHistory, writeSearchHistory } from './utils/searchHistory.js'
 import { initializePlaylistCacheSession, getPlaylistCacheAPI, callPlaylistCache } from './utils/playlistCache.js'
 import ThemeRecovery from './components/common/ThemeRecovery.vue'
+import AppDialog from './components/common/AppDialog.vue'
 import { backgroundImageUrl } from '../electron/backgroundImage.mjs'
 
 /** 非首页界面首次使用时加载，保留原组件名供 KeepAlive 缓存。 */
@@ -47,8 +50,10 @@ const MyMusicView = createLazyView('我的音乐', () => import('./views/MyMusic
 const SongDetailsPanel = createLazyView('歌曲详情', () => import('./components/common/SongDetailsPanel.vue'), { floating: true })
 const PlaylistDialog = createLazyView('歌单管理', () => import('./components/common/PlaylistDialog.vue'), { floating: true })
 const ThemeStudio = createLazyView('外观编辑器', () => import('./components/common/ThemeStudio.vue'), { floating: true })
+const ProfileEditor = createLazyView('账号资料', () => import('./components/common/ProfileEditor.vue'), { floating: true })
 
 const themeStudioOpen = ref(false)
+const profileEditorOpen = ref(false)
 const settingsViewRef = ref(null)
 const requestedSettingsSection = ref('')
 watch(settingsViewRef, view => {
@@ -58,6 +63,9 @@ watch(settingsViewRef, view => {
   }
 })
 const preparingInstall = ref(false)
+const appDialog = ref(null)
+const askAppDialog = options => appDialog.value?.ask(options)
+provide('askAppDialog', askAppDialog)
 let installPreparationRequestId = null
 let unsubscribeInstallPreparation = null
 const installBlockedEvents = ['pointerdown', 'click', 'keydown', 'input', 'change', 'submit']
@@ -207,6 +215,43 @@ const albumData = ref(null)
 const searchQuery = ref('')
 const searchDraft = ref('')
 const searchResults = ref(null)
+const searchHistory = ref([])
+const searchHistoryError = ref('')
+const searchHistoryPendingSave = ref(false)
+const searchHistoryOwner = computed(() => userLoggedIn.value && userInfo.value?.userid ? `user:${userInfo.value.userid}` : 'guest')
+
+/** Persist submitted searches separately from settings, and keep one account's keywords out of another account's UI. */
+function loadSearchHistory() {
+  searchHistory.value = []
+  searchHistoryPendingSave.value = false
+  try {
+    searchHistory.value = readSearchHistory(searchHistoryOwner.value)
+    searchHistoryError.value = ''
+  } catch (error) {
+    logger.warn('App', '读取本机搜索历史失败', error)
+    searchHistoryError.value = '暂时无法读取搜索历史，仍可正常搜索。'
+  }
+}
+function persistSearchHistory() {
+  try {
+    writeSearchHistory(searchHistoryOwner.value, searchHistory.value)
+    searchHistoryPendingSave.value = false
+    searchHistoryError.value = ''
+  } catch (error) {
+    logger.warn('App', '保存本机搜索历史失败', error)
+    searchHistoryPendingSave.value = true
+    searchHistoryError.value = '搜索历史尚未保存，重启后可能恢复旧记录。'
+  }
+}
+function clearSearchHistory() {
+  searchHistory.value = []
+  persistSearchHistory()
+}
+function retrySearchHistory() {
+  if (searchHistoryPendingSave.value) persistSearchHistory()
+  else loadSearchHistory()
+}
+watch(searchHistoryOwner, loadSearchHistory, { immediate: true, flush: 'sync' })
 
 // 用户歌单列表（TODO: 从API获取）
 const userPlaylists = ref([
@@ -262,7 +307,9 @@ const removedPlaylistIds = new Set()
 
 /** 账户改变后释放私有页面缓存；仅打开登录页面不影响已有页面。 */
 const resetPageSession = () => {
+  profileEditorOpen.value = false
   musicLibrary.reset()
+  appDialog.value?.cancelLocal()
   libraryNotice.value = ''
   playlistDialog.value = null
   detailsVisible.value = false
@@ -492,6 +539,28 @@ const handleShowLogin = () => {
   return runPageNavigation(() => { showLogin.value = true; return true })
 }
 
+/** Both account menus open the same editor, preserving any unsaved settings through the normal navigation barrier. */
+const handleEditProfile = () => {
+  if (!userLoggedIn.value) return handleShowLogin()
+  return runPageNavigation(() => { profileEditorOpen.value = true; return true })
+}
+
+/** The server already confirmed this edit; update only the matching account and never rewrite its credentials. */
+const handleProfileUpdated = profile => {
+  if (!userLoggedIn.value || !userInfo.value || profile?.userid == null ||
+    String(profile.userid) !== String(userInfo.value.userid) || typeof profile.username !== 'string' || !profile.username.trim()) return false
+  const updated = { ...userInfo.value, username: profile.username.trim() }
+  userInfo.value = updated
+  try {
+    localStorage.setItem('kugou_userinfo', JSON.stringify(updated))
+    showLibraryNotice('账号资料已保存到酷狗', 'success')
+  } catch (error) {
+    logger.warn('App', '云端资料已保存，但本机账号显示信息未能持久化', error)
+    showLibraryNotice('资料已同步到酷狗，本机显示信息暂未保存，重新登录后可刷新。', 'warning')
+  }
+  return true
+}
+
 // 显示设置界面
 const handleShowSettings = () => {
   logger.trace('App', '打开设置界面')
@@ -716,35 +785,51 @@ async function handleDownloadSongs(input) {
   const songs = (Array.isArray(input) ? input : [input]).filter(Boolean)
   if (!songs.length) return
   if (!window.electronAPI?.downloads) { showLibraryNotice('歌曲下载需要桌面客户端', 'warning'); return }
-  if (songs.length > 1 && !confirm(`将 ${songs.length} 首歌曲加入下载任务？下载将使用当前保存的目录与音质偏好。`)) return
+  const session = pageSessionVersion.value
+  const playlistName = currentView.value === 'playlist' ? selectedPlaylistData.value?.name : ''
+  if (songs.length > 1) {
+    const choice = await askAppDialog({
+      eyebrow: '歌曲下载',
+      title: `下载 ${songs.length} 首歌曲？`,
+      message: '歌曲会加入下载任务，并使用当前保存的目录与音质偏好。',
+      actions: [{ id: 'cancel', label: '取消' }, { id: 'download', label: '加入下载', variant: 'primary' }],
+      defaultAction: 'cancel'
+    })
+    if (choice?.action !== 'download' || session !== pageSessionVersion.value || preparingInstall.value || isAppUnmounting) return
+  }
   try {
-    await window.electronAPI.downloads.enqueue({ songs: cloneDeep(songs),
-      playlistName: currentView.value === 'playlist' ? selectedPlaylistData.value?.name : '' })
+    await window.electronAPI.downloads.enqueue({ songs: cloneDeep(songs), playlistName })
     showLibraryNotice(`已加入 ${songs.length} 首歌曲的下载任务，可在“我的音乐 → 下载”查看`, 'success')
   } catch (error) { showLibraryNotice(error.message || '创建下载任务失败，请重试', 'error') }
 }
 
-// 处理播放歌曲
-const handlePlay = (song) => {
-  playlistIntentVersion++
-  restoredPlaybackState.value = null
-  logger.trace('App', '🎵 [App.vue] handlePlay 调用:', song.name || song.filename)
-  logger.trace('App', '🎵 [App.vue] 歌曲 hash:', song.hash)
-  logger.trace('App', '🎵 [App.vue] 旧 currentSong:', currentSong.value?.name)
-  logger.trace('App', 'App.vue - userLoggedIn:', userLoggedIn.value)
-  currentSong.value = song
-  logger.trace('App', '🎵 [App.vue] 新 currentSong:', currentSong.value?.name)
-  // 如果是单曲播放，只有当前歌曲
-  if (!playlist.value.find(s => librarySongKey(s) === librarySongKey(song))) {
-    playlist.value = [song]
-    playlistIndex.value = 0
+/** 同一音源的显式点播也要恢复暂停或重试。复用已有 prop 避免再触发一次选歌监听。 */
+function startQueueSelection(song, index) {
+  playlistIndex.value = index
+  const player = musicPlayerRef.value
+  if (player?.song && librarySongKey(player.song) === librarySongKey(song)) {
+    currentSong.value = player.song
+    void player.requestSong(song)
   } else {
-    playlistIndex.value = playlist.value.findIndex(s => librarySongKey(s) === librarySongKey(song))
+    currentSong.value = song
   }
 }
 
-// 处理播放所有歌曲
-const handlePlayAll = async (songs) => {
+/** 点播已入队歌曲时沿用其位置，新曲紧跟当前选择，保留后续曲目及插播。 */
+const handlePlay = (song) => {
+  if (!librarySongKey(song)) return
+  restoredPlaybackState.value = null
+  const queue = playlist.value
+  let index = findQueueSongIndex(queue, song, playlistIndex.value)
+  if (index === -1) {
+    index = Math.min(playlistIndex.value + 1, queue.length)
+    playlist.value = [...queue.slice(0, index), song, ...queue.slice(index)]
+  }
+  startQueueSelection(playlist.value[index], index)
+}
+
+/** 一次替换整份队列。歌单行可指定起播位置，显式播放全部默认从首项开始。 */
+const handlePlayAll = async (songs, startIndex = 0) => {
   if (process.env.NODE_ENV === 'development') {
     logger.trace('App', 'Play all songs:', songs)
   }
@@ -758,9 +843,10 @@ const handlePlayAll = async (songs) => {
     // 一次发布完整队列，避免 nextTick 微任务分批反复渲染和覆盖后续选歌。
     playlistIntentVersion++
     restoredPlaybackState.value = null
+    musicPlayerRef.value?.clearPlayNextQueue?.()
     playlist.value = [...songs]
-    playlistIndex.value = 0
-    currentSong.value = songs[0]
+    const index = Number.isInteger(startIndex) && startIndex >= 0 && startIndex < songs.length ? startIndex : 0
+    startQueueSelection(playlist.value[index], index)
     await nextTick()
 
     if (process.env.NODE_ENV === 'development') {
@@ -780,7 +866,7 @@ const handlePlayNext = async (song) => {
     return true
   }
   if (musicPlayerRef.value) {
-    musicPlayerRef.value.addToPlayNextQueue(song)
+    musicPlayerRef.value.addToPlayNextQueue(song, playlist.value)
     return true
   }
   if (!playlist.value.some(item => librarySongKey(item) === librarySongKey(song))) playlist.value = [...playlist.value, song]
@@ -789,7 +875,7 @@ const handlePlayNext = async (song) => {
   await nextTick()
   if (session !== pageSessionVersion.value || intent !== playlistIntentVersion || !hasPlayer.value ||
       !playlist.value.some(item => librarySongKey(item) === librarySongKey(song))) return false
-  musicPlayerRef.value?.addToPlayNextQueue(song)
+  musicPlayerRef.value?.addToPlayNextQueue(song, playlist.value)
   return true
 }
 
@@ -816,6 +902,8 @@ const handleSearchRequest = (keywords) => {
   const keyword = typeof keywords === 'string' ? keywords.trim() : ''
   if (!keyword) return
   return navigateToPage({ view: 'search', data: null, searchQuery: keyword, searchDraft: keyword }, () => {
+    searchHistory.value = normalizeSearchHistory([keyword, ...searchHistory.value])
+    persistSearchHistory()
     musicPlayerRef.value?.closeLyrics?.()
     if (musicPlayerRef.value) musicPlayerRef.value.showPlaylist = false
   })
@@ -842,7 +930,7 @@ const handlePlaylistUpdated = (songs) => {
     currentSong.value = null
     return
   }
-  const index = songs.findIndex(song => librarySongKey(song) === librarySongKey(currentSong.value))
+  const index = findQueueSongIndex(songs, currentSong.value, playlistIndex.value)
   playlistIndex.value = index >= 0 ? index : 0
 }
 
@@ -914,12 +1002,14 @@ const handleSongChanged = (song) => {
   logger.trace('App', '🎵 [App.vue] handleSongChanged - 歌曲已切换:', song.name || song.filename)
   logger.trace('App', '🎵 [App.vue] 歌曲 hash:', song.hash)
   restoredPlaybackState.value = null
-  // 避免对相同歌曲重复赋值，减少不必要的触发
-  if (!currentSong.value || librarySongKey(currentSong.value) !== librarySongKey(song)) {
+  // 同音源不同曲目行保留各自位置；同一行的确认不会重复触发会话保存。
+  const confirmedRow = playlist.value.indexOf(song)
+  if (librarySongKey(currentSong.value) !== librarySongKey(song) ||
+      (confirmedRow >= 0 && playlist.value.indexOf(currentSong.value) !== confirmedRow)) {
     currentSong.value = song
   }
   // 同时更新播放列表索引
-  const index = playlist.value.findIndex(s => librarySongKey(s) === librarySongKey(song))
+  const index = findQueueSongIndex(playlist.value, song, playlistIndex.value)
   if (index !== -1) {
     playlistIndex.value = index
   }
@@ -942,8 +1032,18 @@ const handleSongChanged = (song) => {
 }
 
 // 更新用户活动时间戳并重置计时器
-const updateUserActivity = () => {
+let lastTelemetryInputDay
+const updateUserActivity = (event) => {
   lastUserActivity.value = Date.now()
+  if (settings.software?.telemetryEnabled && event?.isTrusted &&
+      ['mousedown', 'touchstart', 'keydown'].includes(event.type)) {
+    // A login-started window becomes active on real input. Send only a once-per-Shanghai-day signal.
+    const day = Math.floor((lastUserActivity.value + 8 * 3_600_000) / 86_400_000)
+    if (day !== lastTelemetryInputDay) {
+      lastTelemetryInputDay = day
+      window.electronAPI?.telemetry?.foregroundActivity?.()
+    }
+  }
 
   // 如果开启了自动全屏且有歌曲播放，重置计时器
   if (settings.playback?.fullscreenLyrics && currentSong.value && !isLyricViewVisible.value) {
@@ -1006,97 +1106,36 @@ const handleFavoritesChanged = () => {
   musicPlayerRef.value?.checkFavoriteStatus?.()
 }
 
-// 快捷键处理
-const handleKeyDown = (event) => {
-  if (event.defaultPrevented || preparingInstall.value) return
-  // 如果正在输入,忽略快捷键
-  const target = event.target
-  if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-    return
+/** Both shortcut sources use the same player and window actions. */
+function runShortcut(action) {
+  const player = musicPlayerRef.value
+  switch (action) {
+    case 'playPause': player?.togglePlay(); break
+    case 'nextTrack': player?.playNext(); break
+    case 'prevTrack': player?.playPrevious(); break
+    case 'volumeUp': player?.handleVolumeChange(Math.min(100, player.volume + 5)); break
+    case 'volumeDown': player?.handleVolumeChange(Math.max(0, player.volume - 5)); break
+    case 'toggleLyrics': player?.toggleLyrics(); break
+    case 'toggleFullscreen': window.electronAPI?.toggleFullscreen?.(); break
+    case 'bossKey': window.electronAPI?.hide?.(); break
+    default: return false
   }
-  // 保留聚焦按钮/链接的原生激活行为，避免 Space 收藏变成播放快捷键。
+  return true
+}
+
+const handleKeyDown = (event) => {
+  if (event.defaultPrevented || preparingInstall.value || window.__editingShortcut) return
+  const target = event.target
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable) return
   if ([' ', 'Enter'].includes(event.key) && target.closest?.('button, [role="button"], a[href]')) return
 
-  // 如果正在编辑快捷键,不触发任何快捷键
-  if (window.__editingShortcut) {
-    return
-  }
-
-  if (!settings.shortcuts) return
-
-  const keys = []
-  if (event.ctrlKey || event.metaKey) keys.push('Control')
-  if (event.altKey) keys.push('Alt')
-  if (event.shiftKey) keys.push('Shift')
-
-  let mainKey = event.key
-  const keyMap = {
-    'ArrowUp': 'Up',
-    'ArrowDown': 'Down',
-    'ArrowLeft': 'Left',
-    'ArrowRight': 'Right',
-    ' ': 'Space'
-  }
-  mainKey = keyMap[mainKey] || mainKey
-
-  if (['Control', 'Alt', 'Shift', 'Meta'].includes(mainKey)) {
-    return
-  }
-
-  keys.push(mainKey)
-  const pressedKey = keys.join('+')
-
-  const shortcuts = settings.shortcuts.keys
-  if (!shortcuts) return
-
-  // 匹配快捷键并执行对应操作
-  let handled = false
-
-  if (pressedKey === shortcuts.playPause && shortcuts.playPause !== 'Escape') {
-    event.preventDefault()
-    musicPlayerRef.value?.togglePlay()
-    handled = true
-  } else if (pressedKey === shortcuts.nextTrack && shortcuts.nextTrack !== 'Escape') {
-    event.preventDefault()
-    musicPlayerRef.value?.playNext()
-    handled = true
-  } else if (pressedKey === shortcuts.prevTrack && shortcuts.prevTrack !== 'Escape') {
-    event.preventDefault()
-    musicPlayerRef.value?.playPrevious()
-    handled = true
-  } else if (pressedKey === shortcuts.volumeUp && shortcuts.volumeUp !== 'Escape') {
-    event.preventDefault()
-    if (musicPlayerRef.value) {
-      musicPlayerRef.value.handleVolumeChange(Math.min(100, musicPlayerRef.value.volume + 5))
-    }
-    handled = true
-  } else if (pressedKey === shortcuts.volumeDown && shortcuts.volumeDown !== 'Escape') {
-    event.preventDefault()
-    if (musicPlayerRef.value) {
-      musicPlayerRef.value.handleVolumeChange(Math.max(0, musicPlayerRef.value.volume - 5))
-    }
-    handled = true
-  } else if (pressedKey === shortcuts.toggleLyrics && shortcuts.toggleLyrics !== 'Escape') {
-    event.preventDefault()
-    musicPlayerRef.value?.toggleLyrics()
-    handled = true
-  } else if (pressedKey === shortcuts.toggleFullscreen && shortcuts.toggleFullscreen !== 'Escape') {
-    event.preventDefault()
-    if (window.electronAPI?.toggleFullscreen) {
-      window.electronAPI.toggleFullscreen()
-    }
-    handled = true
-  } else if (pressedKey === shortcuts.bossKey && shortcuts.bossKey !== 'Escape') {
-    event.preventDefault()
-    if (window.electronAPI?.hide) {
-      window.electronAPI.hide()
-    }
-    handled = true
-  }
-
-  if (handled) {
-    logger.trace('App', '🎹 快捷键触发:', pressedKey)
-  }
+  const pressedKey = shortcutFromEvent(event)
+  if (!pressedKey || pressedKey === 'Escape') return
+  const match = Object.entries(settings.shortcuts?.keys || {}).find(([, key]) => normalizeShortcut(key) === pressedKey)
+  if (!match) return
+  const [action] = match
+  if (event.repeat && ['toggleLyrics', 'toggleFullscreen'].includes(action)) return
+  if (runShortcut(action)) event.preventDefault()
 }
 
 // 全局快捷键注册
@@ -1121,12 +1160,13 @@ function registerGlobalShortcuts() {
     await unregisterAllGlobalShortcuts()
     if (isAppUnmounting || generation !== shortcutGeneration || !enabled) return
 
-    for (const [action, key] of Object.entries(shortcuts)) {
+    for (const [action, binding] of Object.entries(shortcuts)) {
       if (isAppUnmounting || generation !== shortcutGeneration) break
+      const key = normalizeShortcut(binding)
       if (!key || key === 'Escape') continue
       try {
-        const success = await window.electronAPI.registerGlobalShortcut(key, action)
-        if (success) {
+        const result = await window.electronAPI.registerGlobalShortcut(key, action)
+        if (result === true || result?.success === true) {
           registeredGlobalShortcuts.value.add(key)
           logger.trace('App', '全局快捷键注册成功:', key, action)
         } else {
@@ -1171,44 +1211,7 @@ watch(
 onMounted(() => {
   if (window.electronAPI?.onGlobalShortcut) {
     unsubscribeGlobalShortcut = window.electronAPI.onGlobalShortcut((action) => {
-      if (preparingInstall.value) return
-      logger.trace('App', '🌐 全局快捷键触发:', action)
-
-      // 执行对应的操作
-      switch (action) {
-        case 'playPause':
-          musicPlayerRef.value?.togglePlay()
-          break
-        case 'nextTrack':
-          musicPlayerRef.value?.playNext()
-          break
-        case 'prevTrack':
-          musicPlayerRef.value?.playPrevious()
-          break
-        case 'volumeUp':
-          if (musicPlayerRef.value) {
-            musicPlayerRef.value.handleVolumeChange(Math.min(100, musicPlayerRef.value.volume + 5))
-          }
-          break
-        case 'volumeDown':
-          if (musicPlayerRef.value) {
-            musicPlayerRef.value.handleVolumeChange(Math.max(0, musicPlayerRef.value.volume - 5))
-          }
-          break
-        case 'toggleLyrics':
-          musicPlayerRef.value?.toggleLyrics()
-          break
-        case 'toggleFullscreen':
-          if (window.electronAPI?.toggleFullscreen) {
-            window.electronAPI.toggleFullscreen()
-          }
-          break
-        case 'bossKey':
-          if (window.electronAPI?.hide) {
-            window.electronAPI.hide()
-          }
-          break
-      }
+      if (!preparingInstall.value && !window.__editingShortcut) runShortcut(action)
     })
   }
 })
@@ -1351,7 +1354,7 @@ function collectSessionSnapshot() {
   if (settings.software?.restorePlaylist) {
     snapshot.playlist = cloneDeep(playlist.value)
     snapshot.currentSong = cloneDeep(confirmed?.currentSong || null)
-    snapshot.playlistIndex = confirmed ? playlist.value.findIndex(song => librarySongKey(song) === librarySongKey(confirmed.currentSong)) : 0
+    snapshot.playlistIndex = confirmed ? findQueueSongIndex(playlist.value, confirmed.currentSong, playlistIndex.value) : 0
   }
 
   if (settings.software?.restorePlaybackState) {
@@ -1429,9 +1432,10 @@ function restoreSessionIfNeeded() {
       const targetIndex = Math.min(Math.max(session.playlistIndex ?? 0, 0), Math.max(playlistLength - 1, 0))
       playlistIndex.value = playlistLength > 0 ? targetIndex : 0
       const fallbackSong = playlistLength > 0 ? (session.playlist?.[targetIndex] || session.playlist?.[0] || null) : null
-      currentSong.value = cloneDeep(session.currentSong || fallbackSong)
-      const actualIndex = playlist.value.findIndex(song => librarySongKey(song) === librarySongKey(currentSong.value))
-      if (actualIndex !== -1) playlistIndex.value = actualIndex
+      const savedSong = session.currentSong || fallbackSong
+      const actualIndex = findQueueSongIndex(playlist.value, savedSong, targetIndex)
+      if (actualIndex >= 0) playlistIndex.value = actualIndex
+      currentSong.value = actualIndex >= 0 ? playlist.value[actualIndex] : cloneDeep(savedSong)
       restoredPlaybackState.value = shouldRestorePlayback && currentSong.value?.hash
         ? { ...cloneDeep(session.playbackState), songHash: currentSong.value.hash } : null
     }
@@ -1581,6 +1585,7 @@ provide('songActions', songActionEvents)
 </script>
 
 <template>
+  <AppDialog ref="appDialog" :blocked="preparingInstall" />
   <AppNotice :message="preparingInstall ? '保存完成后将关闭 BetterKuGou，请稍候。' : ''" title="正在保存，准备更新" type="info" :duration="0" :closable="false" />
   <Teleport to="body">
     <Transition name="ui-fade" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><div v-if="preparingInstall" class="install-preparation" aria-hidden="true"></div></Transition>
@@ -1594,9 +1599,14 @@ provide('songActions', songActionEvents)
       :can-go-back="canGoBack"
       @back="handleGoBack"
       @show-login="handleShowLogin"
+      @edit-profile="handleEditProfile"
       @logout="handleLogout"
       @open-settings="handleShowSettings"
       @search="handleSearchRequest"
+      :search-history="searchHistory"
+      :history-error="searchHistoryError"
+      @clear-search-history="clearSearchHistory"
+      @retry-search-history="retrySearchHistory"
       :userLoggedIn="userLoggedIn"
       :userInfo="userInfo"
       :isLyricViewVisible="isLyricViewVisible"
@@ -1615,6 +1625,7 @@ provide('songActions', songActionEvents)
           @navigate="handleNavigate"
           @create-playlist="handleCreatePlaylist"
           @show-login="handleShowLogin"
+          @edit-profile="handleEditProfile"
           @open-settings="handleShowSettings"
           @logout="handleLogout"
         />
@@ -1694,6 +1705,7 @@ provide('songActions', songActionEvents)
                 v-else-if="currentView === 'album' && albumData"
                 :key="getPageKey('album', albumData)" class="page-view view-album"
                 :album-id="albumData.id" :album-name="albumData.name"
+                :can-go-back="canGoBack" @back="handleGoBack"
                 :current-song="currentSong"
                 @navigate="handleNavigate" @play="handlePlay" @search="handleSearch"
               />
@@ -1723,6 +1735,7 @@ provide('songActions', songActionEvents)
         :initial-playback-state="restoredPlaybackState"
         @previous="handlePrevious"
         @next="handleNext"
+        @play-next="handlePlayNext"
         @song-changed="handleSongChanged"
         @playback-state-changed="queueSessionPersist({ immediate: true })"
         @toggle-playlist="handleTogglePlaylist"
@@ -1737,6 +1750,8 @@ provide('songActions', songActionEvents)
     </Transition>
   </div>
   <ThemeStudio v-if="themeStudioOpen" @close="themeStudioOpen = false" />
+  <ProfileEditor v-if="profileEditorOpen && userLoggedIn" :user-info="userInfo" :blocked="preparingInstall"
+    @updated="handleProfileUpdated" @close="profileEditorOpen = false" />
   <PlaylistDialog v-if="playlistDialog" v-bind="playlistDialog" :playlists="userPlaylists" @close="playlistDialog = null" @changed="handlePlaylistDirectoryChanged" />
   <SongDetailsPanel v-if="detailsPanelMounted" :visible="detailsVisible" :song="detailsSong" :resource="detailsResource" :current-song="currentSong"
     v-on="songActionEvents" @close="detailsVisible = false" @navigate="handleNavigate" @play="handlePlay" @play-all="handlePlayAll" @play-next="handlePlayNext" @search="handleSearch" />

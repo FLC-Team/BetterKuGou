@@ -47,10 +47,10 @@
               <ArtworkCover :src="song.cover || ''" class="song-cover" />
               <div class="song-info">
                 <div class="song-title-line">
-                  <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="getSongName(song.name)">
+                  <SongTitle class="song-name" :song="song" @search="$emit('search', $event)" @play="play" :title="getSongName(song.name)">
                     {{ getSongName(song.name) }}
                     <span v-if="song.relate_goods && song.relate_goods.some(g => g.level >= 5)" class="quality-badge">SQ</span>
-                  </button>
+                  </SongTitle>
                   <SongBadges :song="song" />
                 </div>
                 <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />
@@ -94,10 +94,10 @@
               <ArtworkCover :src="song.cover || ''" class="song-cover" />
               <div class="song-info">
                 <div class="song-title-line">
-                  <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="getSongName(song.name)">
+                  <SongTitle class="song-name" :song="song" @search="$emit('search', $event)" @play="play" :title="getSongName(song.name)">
                     {{ getSongName(song.name) }}
                     <span v-if="song.relate_goods && song.relate_goods.some(g => g.level >= 5)" class="quality-badge">SQ</span>
-                  </button>
+                  </SongTitle>
                   <SongBadges :song="song" />
                 </div>
                 <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />

@@ -7,9 +7,26 @@ const vm = require('node:vm')
 const source = fs.readFileSync(path.join(__dirname, '../src/utils/songMetadata.js'), 'utf8')
 const metadata = vm.createContext({})
 vm.runInContext(source.replace(/^export /gm, ''), metadata)
-const { getSongBadges, filterSongs, getSongSearchKeyword, getSongArtists } = metadata
+const { getSongBadges, filterSongs, getSongSearchKeyword, getSongArtists, getSongDurationMs, formatSongDuration } = metadata
 
 const artistsFor = song => JSON.parse(JSON.stringify(getSongArtists(song)))
+
+test('list durations preserve explicit units, skip empty placeholders and never multiply milliseconds twice', () => {
+  for (const song of [{ timelen: 180125, Duration: 180 }, { timelength: '180125', duration: 180 },
+    { timelen: 0, audio_info: { duration_128: 180125 } }, { timelen: 'invalid', duration_ms: 180125 },
+    { timelen: -10, info: { timelen: 180125 } }]) {
+    assert.equal(getSongDurationMs(song), 180125)
+    assert.equal(formatSongDuration(song), '3:00')
+  }
+  assert.equal(getSongDurationMs({ timelen: 0, Duration: 0, duration: '180.5' }), 180500)
+  assert.equal(getSongDurationMs({ timelen: 5000 }), 5000, 'short tracks remain milliseconds')
+  assert.equal(formatSongDuration({ timelen: 5000 }), '0:05')
+  assert.equal(formatSongDuration({ duration: 7500 }), '125:00', 'long tracks remain seconds')
+  for (const song of [null, {}, { timelen: NaN, duration: Infinity }, { timelen: -1, duration: false }]) {
+    assert.equal(getSongDurationMs(song), 0)
+    assert.equal(formatSongDuration(song), '—')
+  }
+})
 
 test('artist links keep every structured identity and search all usable arrays without mutating the song', () => {
   const song = {

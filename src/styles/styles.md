@@ -11,7 +11,7 @@
 - `reset.css`：全局基础元素重置。
 - `mixins.css`：布局、文本与间距等复用工具类。
 - `components.css`：按钮等共享组件样式与 loading-spinner。
-- `motion.css`：原生交互控件的悬停、焦点、按压及滑块反馈，统一 ui-fade/ui-pop/ui-list 过渡与全局减少动态效果保护。
+- `motion.css`：原生交互控件的悬停、焦点与按压基线，统一 ui-fade/ui-pop/ui-list 过渡与全局减少动态效果保护。滑块的轨道与握柄反馈由 AnimatedSlider 管理。
 - `README.md`：既有样式说明，作为补充参考保留。
 
 ## 流程与保障

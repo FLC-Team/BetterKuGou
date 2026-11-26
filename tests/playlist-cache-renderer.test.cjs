@@ -5,6 +5,7 @@ const path = require('node:path')
 const vm = require('node:vm')
 const vue = require('vue')
 const { parse, compileScript, compileTemplate } = require('@vue/compiler-sfc')
+const { loadAnimatedSlider } = require('./helpers/animatedSliderHarness.cjs')
 
 const root = path.join(__dirname, '..')
 const logger = Object.fromEntries(['trace', 'warn', 'error'].map(name => [name, () => {}]))
@@ -88,7 +89,7 @@ function loadFavorite({ props = {}, cache = {}, tracks, legacy = {} } = {}) {
     callPlaylistCache: async (method, ...args) => { calls.push([method, ...args]); return cache[method]?.(...args) ?? null },
     getUserPlaylists: async () => ({ status: 1, data: { info: [{ id: 10, name: '我喜欢的音乐' }] } }),
     getPlaylistTracks: (...args) => { trackCalls.push(args); return tracks?.(...args) ?? Promise.resolve({ status: 1, data: { songs: [], count: 0 } }) },
-    ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, LibraryActions: {}, PlaylistOverview: {}, ContextMenu: {}, WindowedList: {}, nextplayIcon: '',
+    ArtworkCover: {}, SongBadges: {}, SongTitle: {}, ArtistLinks: {}, LibraryActions: {}, PlaylistOverview: {}, ContextMenu: {}, WindowedList: {}, nextplayIcon: '',
     contextMenuManager: { unregisterMenu() {} }, filterSongs: songs => songs,
     clearTimeout, setTimeout
   })
@@ -225,8 +226,8 @@ test('playlist snapshots remove nested Vue proxies before crossing the desktop I
   assert.equal(vue.isProxy(fixture.view.favoriteList[0].singerinfo), true)
 })
 
-function renderer() {
-  const node = (type, text = '') => ({ type, text, props: {}, children: [], parent: null, style: {} })
+function renderer(ownerDocument) {
+  const node = (type, text = '') => ({ type, text, props: {}, children: [], parent: null, style: {}, ownerDocument })
   return { node, renderer: vue.createRenderer({
     createElement: node, createText: text => node('text', text), createComment: text => node('comment', text),
     setText: (item, text) => { item.text = text }, setElementText: (item, text) => { item.text = text; item.children = [] },
@@ -251,7 +252,8 @@ function loadArtworkComponent(cache) {
   const released = []
   const sandbox = vm.createContext({ listMotion: {}, setListMotionActive() {}, contentSize: {}, freezeGridLeave() {}, clearGridLeave() {}, setContentSizeActive() {},  ...vue, logger, module: { exports: {} },
     callPlaylistCache: async (method, ...args) => { calls.push([method, ...args]); return cache[method]?.(...args) ?? null },
-    getPlaylistCacheAPI: () => ({ releaseSource: async id => released.push(id) })
+    getPlaylistCacheAPI: () => ({ releaseSource: async id => released.push(id) }),
+    getPlaylistCacheSessionVersion: () => 1
   })
   vm.runInContext(stripImports(script.content).replace('export default', 'module.exports ='), sandbox)
   const template = compileTemplate({ source: descriptor.template.content, filename, id: 'cover-cache',
@@ -286,7 +288,7 @@ function mountMusicPage(t, name, data, props, cache) {
     window: { innerWidth: 1200, innerHeight: 800 }, localStorage: { getItem: () => null },
     ...vm.runInNewContext(read('src/utils/songMetadata.js').replace(/^export /gm, '') + '\n;({getSongSearchKeyword})'),
     SongBadges: leaf, ArtistLinks: leaf, LibraryActions: leaf, PlaylistOverview: leaf, ContextMenu: leaf, VolumeControl: leaf, ArtworkCover: artwork.component,
-    repeatAllIcon: '', repeatOneIcon: '', shuffleIcon: ''
+    AnimatedSlider: loadAnimatedSlider(), repeatAllIcon: '', repeatOneIcon: '', shuffleIcon: ''
   })
   vm.runInContext(stripImports(source).replace('export default', 'module.exports ='), sandbox)
   const options = sandbox.module.exports
@@ -388,6 +390,61 @@ test('artwork lookup preserves lazy images and only a real current load queues a
   image.props.onLoad(fixture.event(image))
   await flush()
   assert.equal(fixture.calls.filter(([method]) => method === 'cacheArtwork').length, 1)
+})
+
+test('scrolling song covers prioritizes the viewport and drops lookups for rows already passed', async t => {
+  const pending = Array.from({ length: 4 }, deferred)
+  const urls = Array.from({ length: 8 }, (_, index) => `https://imge.kugou.com/cover-${index}.jpg`)
+  const artwork = loadArtworkComponent({
+    getArtwork: url => pending[urls.indexOf(url)]?.promise ??
+      (url === urls[6] ? { url: 'bk-cache://cover/current', leaseId: 'current' } : null)
+  })
+  const targets = new Set()
+  let observerCallback
+  class IntersectionObserver {
+    constructor(callback) { observerCallback = callback }
+    observe(target) { targets.add(target) }
+    unobserve(target) { targets.delete(target) }
+    disconnect() { targets.clear() }
+  }
+  const host = renderer({ defaultView: { IntersectionObserver } })
+  const app = host.renderer.createApp({ render: () => vue.h('div', urls.map(src => vue.h(artwork.component, { src, viewport: true }))) })
+  const rootNode = host.node('root')
+  app.mount(rootNode)
+  t.after(() => {
+    app.unmount()
+    assert.equal(targets.size, 0)
+  })
+  const rows = rootNode.children[0].children
+  await flush()
+  assert.equal(targets.size, urls.length)
+  assert.deepEqual(artwork.calls, [], 'mounted offscreen rows do not query the cache')
+
+  observerCallback(rows.slice(0, 6).map(target => ({ target, isIntersecting: true })))
+  await flush()
+  assert.deepEqual(artwork.calls.map(([, url]) => url), urls.slice(0, 4))
+  observerCallback(rows.map((target, index) => ({ target, isIntersecting: index >= 6 })))
+  await flush()
+
+  pending.forEach((item, index) => item.resolve({ url: `bk-cache://cover/old-${index}`, leaseId: `old-${index}` }))
+  await flush()
+  assert.deepEqual(artwork.calls.map(([, url]) => url), [...urls.slice(0, 4), ...urls.slice(6)])
+  assert.deepEqual(artwork.released, ['old-0', 'old-1', 'old-2', 'old-3'])
+  assert.ok(rows.slice(0, 6).every(row => row.children.every(child => child.type !== 'img')))
+  assert.equal(rows[6].children.find(child => child.type === 'img').props.src, 'bk-cache://cover/current')
+  const online = rows[7].children.find(child => child.type === 'img')
+  assert.equal(online.props.src, urls[7])
+  assert.equal(online.props.loading, 'eager')
+  online.props.onLoad({ target: { dataset: {
+    artworkGeneration: online.props['data-artwork-generation'], artworkSource: online.props['data-artwork-source']
+  } } })
+  await flush()
+  assert.deepEqual(artwork.calls.at(-1), ['cacheArtwork', urls[7]])
+  observerCallback(rows.slice(6).map(target => ({ target, isIntersecting: false })))
+  await flush()
+  assert.equal(rows[6].children.some(child => child.type === 'img'), false)
+  assert.equal(artwork.released.at(-1), 'current')
+  assert.ok(rows[7].children.includes(online), 'a loaded image remains ready for return scrolling')
 })
 
 test('followed artist avatars reuse the existing cache after reopening with one normalized URL', async t => {

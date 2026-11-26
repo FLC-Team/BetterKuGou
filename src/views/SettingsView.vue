@@ -55,6 +55,14 @@
 
         <section class="settings-section" id="fullscreen-section" :ref="sectionRefs.fullscreen" data-section="fullscreen" :hidden="!isSectionVisible('fullscreen')" :inert="!isSectionVisible('fullscreen') || isImporting" :class="{ 'is-active': isSectionVisible('fullscreen') }" aria-labelledby="fullscreen-heading">
           <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="fullscreen-heading" tabindex="-1">全屏歌词</h2><p>调整播放界面的歌词、控件和背景。</p></div></header>
+          <div class="setting-item">
+            <div class="setting-info">
+              <label class="setting-label" for="fullscreen-alignment">歌词文字对齐</label>
+              <p class="setting-desc" id="fullscreen-alignment-desc">选择歌词在栏内左对齐、居中或右对齐。</p>
+            </div>
+            <AnimatedSelect id="fullscreen-alignment" class="setting-select" v-model="localSettings.fullscreenLyrics.alignment"
+              label="歌词文字对齐" :options="fullscreenLyricAlignments" aria-describedby="fullscreen-alignment-desc" />
+          </div>
           <div v-for="option in fullscreenLyricToggles" :key="option.key" class="setting-item">
             <div class="setting-info">
               <label class="setting-label" :for="option.id">{{ option.label }}</label>
@@ -71,24 +79,27 @@
               <p class="setting-desc" id="fullscreen-blur-percent-desc">开启歌词模糊后可调，0% 为清晰。</p>
             </div>
             <div class="setting-range">
-              <input id="fullscreen-blur-percent" type="range" min="0" max="100" step="1"
-                v-model.number="localSettings.fullscreenLyrics.blurPercent" :disabled="!localSettings.fullscreenLyrics.blurEnabled"
-                :aria-valuetext="localSettings.fullscreenLyrics.blurPercent + '%'" aria-describedby="fullscreen-blur-percent-desc">
+              <AnimatedSlider id="fullscreen-blur-percent" class="setting-range-slider" min="0" max="100" step="1"
+                v-model="localSettings.fullscreenLyrics.blurPercent" :disabled="!localSettings.fullscreenLyrics.blurEnabled"
+                :aria-valuetext="localSettings.fullscreenLyrics.blurPercent + '%'" aria-describedby="fullscreen-blur-percent-desc" />
               <output for="fullscreen-blur-percent">{{ localSettings.fullscreenLyrics.blurPercent }}%</output>
             </div>
           </div>
           <AnimatedDetails class="settings-disclosure">
             <template #summary><span>歌词位置与字体</span></template>
             <div class="setting-item">
-              <div class="setting-info"><label class="setting-label" for="fullscreen-position">歌词位置</label></div>
+              <div class="setting-info">
+                <label class="setting-label" for="fullscreen-position">歌词位置</label>
+                <p class="setting-desc" id="fullscreen-position-desc">将整栏歌词放在封面的左侧或右侧。</p>
+              </div>
               <AnimatedSelect id="fullscreen-position" class="setting-select" v-model="localSettings.fullscreenLyrics.position"
-                label="歌词位置" :options="fullscreenLyricPositions" />
+                label="歌词位置" :options="fullscreenLyricPositions" aria-describedby="fullscreen-position-desc" />
             </div>
             <div v-for="option in fullscreenLyricRanges" :key="option.key" class="setting-item">
               <div class="setting-info"><label class="setting-label" :for="option.id">{{ option.label }}</label></div>
               <div class="setting-range">
-                <input :id="option.id" type="range" :min="option.min" :max="option.max" step="1"
-                  v-model.number="localSettings.fullscreenLyrics[option.key]" :aria-valuetext="localSettings.fullscreenLyrics[option.key] + ' 像素'">
+                <AnimatedSlider :id="option.id" class="setting-range-slider" :min="option.min" :max="option.max" step="1"
+                  v-model="localSettings.fullscreenLyrics[option.key]" :aria-valuetext="localSettings.fullscreenLyrics[option.key] + ' 像素'" />
                 <output :for="option.id">{{ localSettings.fullscreenLyrics[option.key] }} px</output>
               </div>
             </div>
@@ -166,6 +177,30 @@
           <div class="setting-item"><div class="setting-info"><label class="setting-label" for="default-page">启动页面</label><p class="setting-desc">默认打开推荐；收藏页需要登录账号。</p></div><AnimatedSelect id="default-page" class="setting-select" v-model="localSettings.software.defaultPage" label="启动页面" :options="defaultPageOptions" /></div>
         </section>
 
+        <section class="settings-section" id="privacy-section" :ref="sectionRefs.privacy" data-section="privacy" :hidden="!isSectionVisible('privacy')" :inert="!isSectionVisible('privacy') || isImporting" :class="{ 'is-active': isSectionVisible('privacy') }" aria-labelledby="privacy-heading">
+          <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="privacy-heading" tabindex="-1">隐私与使用统计</h2></div></header>
+          <div class="setting-item">
+            <div class="setting-info">
+              <label class="setting-label" for="share-usage-statistics">分享使用统计</label>
+              <p class="setting-desc" id="usage-statistics-desc">开启后，会在主动打开主窗口或播放音乐时发送活跃日期、随机安装 ID、软件版本、系统版本、系统架构和应用架构。关闭后停止发送并清空待发送数据。</p>
+              <p class="setting-desc">接收地址 <code>https://betterkugou.flcserver.cn/telemetering</code></p>
+            </div>
+            <label class="setting-switch"><input id="share-usage-statistics" type="checkbox" aria-describedby="usage-statistics-desc" :checked="localSettings.software.telemetryEnabled === true" :disabled="!telemetryApi || !ready || isImporting" @change="changeTelemetryConsent($event.target.checked)"><span class="slider"></span></label>
+          </div>
+          <p v-if="!telemetryApi" class="note-text">请在 BetterKuGou 桌面客户端管理使用统计。</p>
+          <div v-else class="setting-group">
+            <h3>待发送数据</h3>
+            <div class="setting-actions">
+              <button type="button" class="outline-btn" aria-controls="telemetry-preview" :aria-busy="telemetryAction === 'read'" :disabled="Boolean(telemetryAction)" @click="manageTelemetryQueue('read')">{{ telemetryPreviewLabel }}</button>
+              <button type="button" class="outline-btn" :disabled="Boolean(telemetryAction) || !pendingReports?.length" :aria-busy="telemetryAction === 'clear'" @click="manageTelemetryQueue('clear')">{{ telemetryAction === 'clear' ? '清空中…' : '清空待发送数据' }}</button>
+            </div>
+            <div id="telemetry-preview">
+              <p v-if="pendingReports !== null" class="note-text" role="status">{{ pendingReports.length ? '待发送报告 ' + pendingReports.length + ' 份' : '当前没有待发送数据。' }}</p>
+              <pre v-if="pendingReports?.length" class="telemetry-preview" tabindex="0" aria-label="待发送报告内容">{{ JSON.stringify(pendingReports, null, 2) }}</pre>
+            </div>
+          </div>
+        </section>
+
         <section class="settings-section" id="about-section" :ref="sectionRefs.about" data-section="about" :hidden="!isSectionVisible('about')" :inert="!isSectionVisible('about')" :class="{ 'is-active': isSectionVisible('about') }" aria-labelledby="about-heading">
           <header class="section-header"><div><p class="eyebrow">{{ activeCategory }}</p><h2 id="about-heading" tabindex="-1">更新与备份</h2><p>检查应用更新，备份设置与获取帮助。</p></div></header>
           <AppUpdates v-model="localSettings.software.updates" :before-action="flushEditableSettings" @current-version="appVersion = $event" />
@@ -183,6 +218,7 @@ import { logger } from '../utils/logger.js'
 import { reactive, ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useSettingsStore } from '../stores/settingsStore.js'
 import { cloneDeep, mergeDeep, replaceReactive } from '../utils/objectUtils.js'
+import { normalizeShortcut, shortcutFromEvent } from '../utils/keyboardShortcuts.js'
 import ThemePackages from '../components/common/ThemePackages.vue'
 import ThemeAdjustments from '../components/common/ThemeAdjustments.vue'
 import AppUpdates from '../components/common/AppUpdates.vue'
@@ -196,6 +232,7 @@ import TaskbarLyricSettings from '../components/common/TaskbarLyricSettings.vue'
 import BackgroundImageSetting from '../components/common/BackgroundImageSetting.vue'
 import AnimatedSelect from '../components/common/AnimatedSelect.vue'
 import AnimatedDetails from '../components/common/AnimatedDetails.vue'
+import AnimatedSlider from '../components/common/AnimatedSlider.vue'
 import packageInfo from '../../package.json'
 import { applyTheme } from '../utils/themeManager.js'
 
@@ -231,6 +268,8 @@ const sections = [
     icon: 'M12 3v11m-4-4 4 4 4-4M4 16v5h16v-5' },
   { id: 'software', label: '启动与应用', description: '启动页面、系统托盘与播放恢复。', group: '应用',
     icon: 'M12 3v9M6 5a9 9 0 1 0 12 0' },
+  { id: 'privacy', label: '隐私与使用统计', description: '遥测、活跃安装、软件版本、系统与架构、待发送数据。', group: '应用',
+    icon: 'M12 3 4 6v6c0 5 4 8 8 10 4-2 8-5 8-10V6zM9 12l2 2 4-5' },
   { id: 'about', label: '更新与备份', description: '检查应用更新，备份设置与获取帮助。', group: '应用',
     icon: 'M20 7a9 9 0 0 0-15-1L3 8m0-5v5h5M4 17a9 9 0 0 0 15 1l2-2m0 5v-5h-5' }
 ]
@@ -270,6 +309,11 @@ const fullscreenLyricToggles = [
 const fullscreenLyricPositions = [
   { value: 'right', label: '右侧（默认）' },
   { value: 'left', label: '左侧' }
+]
+const fullscreenLyricAlignments = [
+  { value: 'left', label: '左对齐' },
+  { value: 'center', label: '居中（默认）' },
+  { value: 'right', label: '右对齐' }
 ]
 const fullscreenLyricRanges = [
   { key: 'fontSize', id: 'fullscreen-font-size', label: '歌词字号', min: 16, max: 64 },
@@ -429,10 +473,68 @@ const settingsSaveRevision = ref(0)
 const actionMessage = ref('')
 const actionMessageType = ref('success')
 const actionMessageRevision = ref(0)
+const telemetryApi = window.electronAPI?.telemetry
+const pendingReports = ref(null)
+const telemetryAction = ref('')
+const telemetryReadFailed = ref(false)
+let telemetryRequest = 0
+const telemetryPreviewLabel = computed(() => {
+  if (telemetryAction.value === 'read') return '读取中…'
+  if (telemetryReadFailed.value) return '重新读取待发送数据'
+  return pendingReports.value === null ? '查看待发送数据' : '刷新预览'
+})
 const saveState = ref('saved')
 let saveTask = null
 let recoveringAppearance = false
 const saveStatusText = computed(() => ({ saved: '所有更改已保存', pending: '等待保存…', saving: '正在保存…', error: '更改尚未保存' })[saveState.value])
+
+async function changeTelemetryConsent(enabled) {
+  if (!telemetryApi || !ready.value || isImporting.value) return
+  localSettings.software.telemetryEnabled = enabled
+  await nextTick()
+  await flushEditableSettings()
+}
+
+// 分类离开或授权变化后丢弃旧预览，防止迟到的读取再次显示已清空的报告。
+watch([() => isSectionVisible('privacy'), () => settings.software?.telemetryEnabled], () => {
+  telemetryRequest++
+  telemetryAction.value = ''
+  telemetryReadFailed.value = false
+  pendingReports.value = null
+})
+
+async function manageTelemetryQueue(action) {
+  if (!telemetryApi || telemetryAction.value) return
+  const request = ++telemetryRequest
+  telemetryAction.value = action
+  try {
+    if (action === 'clear') {
+      await telemetryApi.clearPending()
+      if (request !== telemetryRequest) return
+      pendingReports.value = []
+      actionMessageType.value = 'success'
+      actionMessage.value = '已清空待发送的使用统计。'
+      actionMessageRevision.value++
+    } else {
+      const reports = await telemetryApi.getPending()
+      if (request !== telemetryRequest) return
+      pendingReports.value = reports
+      telemetryReadFailed.value = false
+    }
+  } catch (error) {
+    if (request !== telemetryRequest) return
+    if (action === 'read') {
+      pendingReports.value = null
+      telemetryReadFailed.value = true
+    }
+    actionMessageType.value = 'error'
+    actionMessage.value = action === 'clear' ? '清空失败，请重试。' : '读取待发送数据失败，请重试。'
+    actionMessageRevision.value++
+    logger.error('SettingsView', '管理待发送使用统计失败', error)
+  } finally {
+    if (request === telemetryRequest) telemetryAction.value = ''
+  }
+}
 
 // 图片导入成功后连同显示模式一起进入同一份待保存草稿。
 function setFullscreenBackgroundImage(image) {
@@ -707,7 +809,7 @@ function handleSelectCachePath() {
 // 快捷键相关函数
 function formatShortcutKey(key) {
   if (!key || key === 'Escape') return '未设置'
-  return key
+  return normalizeShortcut(key)
     .replace(/Control/g, 'Ctrl')
     .replace(/\+/g, ' + ')
 }
@@ -733,7 +835,7 @@ function stopEditingShortcut() {
 }
 
 async function handleShortcutKeyDown(event) {
-  if (!editingShortcut.value) return
+  if (!editingShortcut.value || event.target?.closest?.('dialog.app-dialog[open]')) return
   
   event.preventDefault()
   event.stopPropagation()
@@ -745,39 +847,14 @@ async function handleShortcutKeyDown(event) {
     return
   }
   
-  // 构建快捷键字符串
-  const keys = []
-  if (event.ctrlKey || event.metaKey) keys.push('Control')
-  if (event.altKey) keys.push('Alt')
-  if (event.shiftKey) keys.push('Shift')
-  
-  // 获取主键
-  let mainKey = event.key
-  
-  // 特殊键映射
-  const keyMap = {
-    'ArrowUp': 'Up',
-    'ArrowDown': 'Down',
-    'ArrowLeft': 'Left',
-    'ArrowRight': 'Right',
-    ' ': 'Space'
-  }
-  
-  mainKey = keyMap[mainKey] || mainKey
-  
-  // 忽略单独的修饰键
-  if (['Control', 'Alt', 'Shift', 'Meta'].includes(mainKey)) {
-    return
-  }
-  
-  keys.push(mainKey)
-  const shortcutKey = keys.join('+')
+  const shortcutKey = shortcutFromEvent(event)
+  if (!shortcutKey || event.repeat) return
   
   // 检查是否与其他快捷键冲突
   const shortcutId = editingShortcut.value
   const conflict = shortcutList.value.find(s =>
     s.id !== editingShortcut.value && 
-    localSettings.shortcuts.keys[s.id] === shortcutKey
+    normalizeShortcut(localSettings.shortcuts.keys[s.id]) === shortcutKey
   )
   
   if (conflict) {
@@ -863,6 +940,7 @@ function openLicenseUrl() {
 onMounted(() => { nextTick(refreshSearchIndex) })
 
 onBeforeUnmount(() => {
+  telemetryRequest++
   navigationRevision++
   stopEditingShortcut() // 清理快捷键编辑监听器
   for (const timer of shortcutErrorTimers.values()) clearTimeout(timer)

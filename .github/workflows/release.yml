@@ -61,7 +61,7 @@ jobs:
       - run: npm ci
       - name: Install Linux native plugin window dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxext-dev libxcb1-dev libxkbcommon-x11-dev
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev libx11-dev libxext-dev libxcb1-dev libxkbcommon-x11-dev
       - name: Install Linux ARM64 packaging tools
         if: matrix.artifact == 'linux-arm64'
         run: |

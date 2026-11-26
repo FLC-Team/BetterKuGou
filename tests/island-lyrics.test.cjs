@@ -17,7 +17,7 @@ function islandFixture(t, platform = 'linux') {
   let completedQuitCalls = 0
   let backendStops = 0
   const app = Object.assign(new EventEmitter(), {
-    isPackaged: true, whenReady: () => new Promise(() => {}), commandLine: { appendSwitch() {} },
+    isPackaged: true, requestSingleInstanceLock: () => true, whenReady: () => new Promise(() => {}), commandLine: { appendSwitch() {} },
     quit() {
       quitCalls++
       let prevented = false

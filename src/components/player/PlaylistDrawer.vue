@@ -13,6 +13,25 @@
         </button>
       </div>
 
+      <Transition name="ui-fade" @before-leave="$event.inert = true" @before-enter="$event.inert = false" @leave-cancelled="$event.inert = false">
+        <section v-if="upcoming.length" class="upcoming" aria-labelledby="upcoming-heading">
+          <div class="upcoming-header">
+            <h4 id="upcoming-heading">接下来播放</h4>
+            <span v-if="singleRepeat">单曲循环时，手动切歌优先</span>
+          </div>
+          <TransitionGroup tag="ol" name="playlist-item" class="upcoming-list" @before-leave="$event.inert = true" @before-enter="$event.inert = false">
+            <li v-for="(song, index) in upcoming" :key="librarySongKey(song)" class="upcoming-row">
+              <span class="upcoming-order">{{ index === 0 ? '下一首' : index + 1 }}</span>
+              <div class="upcoming-track">
+                <SongTitle class="song-name" :song="song" :title="getSongName(song)" @search="$emit('search', $event)" @play="playSong">{{ getSongName(song) }}</SongTitle>
+                <ArtistLinks class="song-artist" :song="song" compact @select="$emit('artist', $event)" />
+              </div>
+              <button type="button" class="action-btn" :aria-label="'取消插播 ' + getSongName(song)" title="取消插播" @click="cancelNext(song, $event)">×</button>
+            </li>
+          </TransitionGroup>
+        </section>
+      </Transition>
+
       <!-- 播放列表 -->
       <div class="playlist-content">
         <TransitionGroup 
@@ -25,13 +44,14 @@
             v-for="(song, index) in validPlaylist" 
             :key="`${librarySongKey(song) || song.name || 'song'}:${index}`"
             class="playlist-item"
-            :class="{ 'active': isCurrentSong(song) }"
+            :class="{ 'active': currentRowIndex === index }"
+            :aria-current="currentRowIndex === index ? 'true' : undefined"
             @dblclick="playSong(song)"
             @contextmenu.prevent.stop="showContextMenu($event, song, index)"
           >
           <!-- 播放状态指示器 -->
           <button type="button" class="play-indicator" :aria-label="'播放 ' + getSongName(song)" @click.stop="playSong(song)" @dblclick.stop>
-            <svg v-if="isCurrentSong(song) && isPlaying" 
+            <svg v-if="currentRowIndex === index && isPlaying"
                  viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor">
               <path d="M304 176h80v672h-80zm336 0h80v672h-80z"/>
             </svg>
@@ -41,9 +61,9 @@
           <!-- 歌曲信息 -->
           <div class="song-info">
             <div class="song-title-line">
-              <button type="button" class="song-name" :title="getSongName(song)" @click.stop="$emit('search', song)" @dblclick.stop>{{ getSongName(song) }}</button>
+              <SongTitle class="song-name" :song="song" :title="getSongName(song)" @search="$emit('search', $event)" @play="playSong">{{ getSongName(song) }}</SongTitle>
               <SongBadges :song="song" />
-              <LibraryActions :song="song" more-only />
+              <LibraryActions :song="song" :play-next="queueNext" more-only />
             </div>
             <div class="song-artist"><ArtistLinks :song="song" @select="$emit('artist', $event)" /></div>
           </div>
@@ -108,22 +128,26 @@
 
 <script>
 import { logger } from '../../utils/logger.js'
-import { librarySongKey } from '../../utils/libraryMetadata.js'
+import { findQueueSongIndex, librarySongKey } from '../../utils/libraryMetadata.js'
 import { getSongSearchKeyword } from '../../utils/songMetadata.js'
 
 import { TransitionGroup } from 'vue'
 import ContextMenu from '../common/ContextMenu.vue'
 import SongBadges from '../common/SongBadges.vue'
+import SongTitle from '../common/SongTitle.vue'
 import LibraryActions from '../common/LibraryActions.vue'
 import ArtistLinks from '../common/ArtistLinks.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 
+const isPlaylistSong = song => song && typeof song === 'object' && (song.hash || song.name || song.filename)
+
 export default {
   name: 'PlaylistDrawer',
-  emits: ['open', 'close', 'play', 'remove', 'clear', 'search', 'artist'],
+  emits: ['open', 'close', 'play', 'play-next', 'cancel-next', 'remove', 'clear', 'search', 'artist'],
   components: {
     ContextMenu,
     SongBadges,
+    SongTitle,
     LibraryActions,
     ArtistLinks,
     TransitionGroup
@@ -137,6 +161,9 @@ export default {
       type: Array,
       default: () => []
     },
+    upcoming: { type: Array, default: () => [] },
+    singleRepeat: Boolean,
+    currentIndex: { type: Number, default: -1 },
     currentSong: {
       type: Object,
       default: null
@@ -165,15 +192,21 @@ export default {
       
       return this.playlist.filter(song => {
         // 确保歌曲对象不为 null/undefined 且有基本字段
-        const isValid = song && 
-                       typeof song === 'object' && 
-                       (song.hash || song.name || song.filename)
+        const isValid = isPlaylistSong(song)
         
         if (!isValid && song) {
           logger.trace('PlaylistDrawer', '🎵 [PlaylistDrawer] 过滤无效歌曲对象:', song)
         }
         return isValid
       })
+    },
+    /** Map the confirmed occurrence to its visible row, including filtered legacy queues. */
+    currentRowIndex() {
+      if (!this.currentSong || !this.validPlaylist.length) return -1
+      const index = findQueueSongIndex(this.playlist, this.currentSong, this.currentIndex)
+      if (index < 0 || !isPlaylistSong(this.playlist[index])) return -1
+      if (this.playlist.length === this.validPlaylist.length) return index
+      return this.playlist.slice(0, index).filter(isPlaylistSong).length
     },
     
     contextMenuItems() {
@@ -185,6 +218,7 @@ export default {
           icon: 'M719.4 499.1l-296.1-215A15.9 15.9 0 00398 297v430c0 13.1 14.8 20.5 25.3 12.9l296.1-215a15.9 15.9 0 000-25.8z',
           action: () => this.playSong(this.currentContextSong)
         },
+        { label: '下一首播放', action: () => this.queueNext(this.currentContextSong) },
         { divider: true },
         {
           label: '从播放列表移除',
@@ -238,6 +272,20 @@ export default {
   },
   methods: {
     librarySongKey,
+    queueNext(song) { this.$emit('play-next', song) },
+    /** Removing the focused button keeps keyboard navigation inside the upcoming list or its drawer. */
+    cancelNext(song, event) {
+      const button = event.currentTarget
+      const row = button.closest?.('.upcoming-row')
+      const neighbor = row?.nextElementSibling || row?.previousElementSibling
+      this.$emit('cancel-next', song)
+      this.$nextTick(() => {
+        if (!this.visible || this.isDisposed) return
+        const neighborButton = neighbor?.isConnected && !neighbor.inert ? neighbor.querySelector('.action-btn') : null
+        const target = neighborButton || this.$refs.closeButton
+        target?.focus?.({ preventScroll: true })
+      })
+    },
     closeDrawer() {
       this.closeContextMenu()
       this.showClearConfirm = false
@@ -325,9 +373,7 @@ export default {
     scrollToCurrentSong() {
       if (this.isDisposed || !this.$el || !this.currentSong || !this.validPlaylist.length) return
       
-      const currentIndex = this.validPlaylist.findIndex(song => 
-        this.isCurrentSong(song)
-      )
+      const currentIndex = this.currentRowIndex
       
       if (currentIndex === -1) return
       
@@ -349,44 +395,6 @@ export default {
         })
         
         logger.trace('PlaylistDrawer', '🎵 滚动到当前播放歌曲:', currentIndex)
-      }
-    },
-    
-    // 判断是否为当前播放的歌曲
-    isCurrentSong(song) {
-      try {
-        if (!this.currentSong || !song || typeof song !== 'object') {
-          return false
-        }
-        
-        // 如果两个对象都有 hash，优先用 hash 比较
-        if (this.currentSong.hash && song.hash) {
-          const result = librarySongKey(this.currentSong) === librarySongKey(song)
-          if (result) {
-            logger.trace('PlaylistDrawer', '🎵 [PlaylistDrawer] Hash匹配成功:', {
-              currentHash: this.currentSong.hash,
-              songHash: song.hash,
-              currentName: this.currentSong.name || this.currentSong.filename,
-              songName: song.name || song.filename
-            })
-          }
-          return result
-        }
-        
-        // 如果 song 没有 hash（不完整的歌曲对象），跳过高亮
-        if (!song.hash) {
-          return false
-        }
-        
-        // 备用比较方式：通过名称比较（不推荐，但作为fallback）
-        if (this.currentSong.name && song.name) {
-          return this.currentSong.name === song.name
-        }
-        
-        return false
-      } catch (error) {
-        logger.error('PlaylistDrawer', '🎵 [PlaylistDrawer] isCurrentSong 错误:', error, { currentSong: this.currentSong, song })
-        return false
       }
     },
     
@@ -503,6 +511,24 @@ export default {
   font-size: var(--font-size-xs);
   color: var(--color-text-secondary);
 }
+
+.upcoming {
+  display: flex;
+  flex-direction: column;
+  max-height: 32%;
+  min-height: 0;
+  padding: var(--spacing-sm) var(--spacing-lg);
+  border-bottom: 1px solid var(--color-border);
+}
+.upcoming-header, .upcoming-row { display: flex; align-items: center; gap: var(--spacing-sm); }
+.upcoming-header { justify-content: space-between; color: var(--color-text-secondary); font-size: var(--font-size-xs); }
+.upcoming-header h4 { margin: 0; font-size: var(--font-size-sm); color: var(--color-text); }
+.upcoming-list { margin: var(--spacing-xs) 0 0; padding: 0; list-style: none; overflow-y: auto; }
+.upcoming-order { flex: 0 0 3em; text-align: center; color: var(--color-text-secondary); font-size: var(--font-size-xs); }
+.upcoming-row:first-child .upcoming-order { color: var(--color-primary); }
+.upcoming-track { flex: 1; min-width: 0; display: grid; padding-block: var(--spacing-xs); }
+.upcoming-track .song-name { min-width: 0; margin: 0; }
+.upcoming-row .action-btn { flex-shrink: 0; }
 
 .close-btn {
   margin-left: auto;

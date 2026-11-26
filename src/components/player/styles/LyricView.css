@@ -122,22 +122,15 @@
 .song-title-search:focus-visible { outline: 2px solid var(--lyric-text); outline-offset: -2px; }
 .playback-panel { width: 100%; max-width: 320px; }
 .lyric-progress {
-  display: block;
-  width: 100%;
-  height: 22px;
-  appearance: none;
-  -webkit-appearance: none;
-  background: transparent;
-  cursor: pointer;
+  --slider-hit-height: 26px;
+  --slider-fill: var(--lyric-text);
+  --slider-track: var(--lyric-track);
 }
-.lyric-progress::-webkit-slider-runnable-track { height: 3px; border-radius: 2px; background: linear-gradient(to right, var(--lyric-text) 0 var(--progress), var(--lyric-track) var(--progress) 100%); }
-.lyric-progress::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 11px; height: 11px; margin-top: -4px; border-radius: 50%; background: var(--lyric-text); }
-.lyric-progress:disabled { opacity: 0.35; cursor: default; }
 .time-display { display: flex; justify-content: space-between; color: var(--lyric-text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .playback-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; }
 .control-btn, .close-btn { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 36px; height: 36px; color: var(--lyric-control); background: transparent; border-radius: 50%; cursor: pointer; transition: color 0.15s ease, background-color 0.15s ease; }
 .control-btn:hover, .close-btn:hover { color: var(--lyric-text); background: var(--lyric-hover); }
-.control-btn:focus-visible, .close-btn:focus-visible, .lyric-progress:focus-visible { outline: 2px solid var(--lyric-text); outline-offset: 4px; }
+.control-btn:focus-visible, .close-btn:focus-visible { outline: 2px solid var(--lyric-text); outline-offset: 4px; }
 .control-btn.play-btn { width: 52px; height: 52px; color: var(--lyric-background); background: var(--lyric-text); }
 .control-btn.play-btn:hover { background: var(--lyric-play-hover); }
 .favorite-btn.active { color: var(--lyric-favorite); }
@@ -176,7 +169,10 @@
 .lyrics-container.is-interactive { cursor: grab; touch-action: none; user-select: none; }
 .lyrics-container.is-interactive .lyric-line { cursor: pointer; }
 .lyrics-container.is-dragging, .lyrics-container.is-dragging .lyric-line { cursor: grabbing; }
-.lyric-line[role="button"]:hover .main-lyric { color: var(--lyric-text); }
+.lyric-line[role="button"] { scale: 1; }
+@media (hover: hover) {
+  .lyrics-container:not(.is-dragging) .lyric-line:hover { filter: none; }
+}
 .lyric-line[role="button"]:focus-visible { outline: 2px solid var(--lyric-text); outline-offset: -3px; border-radius: var(--radius-sm); filter: none !important; }
 .return-current-lyric { position: absolute; bottom: 22px; left: 50%; z-index: 30; transform: translateX(-50%); padding: 8px 16px; border: 1px solid var(--lyric-track); border-radius: 20px; color: var(--lyric-text); background: var(--lyric-background); font-size: 12px; white-space: nowrap; }
 .return-current-lyric:hover { background: var(--lyric-active-hover); }
@@ -228,11 +224,20 @@
   opacity: 0;
   transform: translate3d(var(--track-out-x, 0px), var(--track-out-y, -16px), 0) scale(var(--track-out-scale, 1));
 }
-.lyric-line { padding: 3px 20px; margin: 0; font-size: var(--base-font-size); text-align: center; line-height: 1.35; color: var(--lyric-line); }
+.lyric-line {
+  padding: 3px 20px;
+  margin: 0;
+  font-size: var(--base-font-size);
+  text-align: var(--fullscreen-lyric-alignment, center);
+  transform-origin: var(--fullscreen-lyric-alignment, center) center;
+  line-height: 1.35;
+  color: var(--lyric-line);
+  filter: var(--lyric-line-filter, none);
+}
 .whole-line-highlight .lyric-line.current { color: var(--lyric-accent); }
 /* 外层负责纵向定位，内层文字负责横向位移，两个 transform 互不覆盖。 */
 .main-lyric { width: 100%; overflow: hidden; padding: 7px 0; }
-.lyric-text { width: max-content; min-width: 100%; white-space: nowrap; text-align: center; }
+.lyric-text { width: max-content; min-width: 100%; white-space: nowrap; }
 .translation-lyric { font-size: 0.55em; font-weight: 400; line-height: 1.4; color: var(--lyric-translation); overflow-wrap: anywhere; margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .romanization-lyric { font-size: 0.48em; font-weight: 400; line-height: 1.45; color: var(--lyric-translation); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; animation: lyric-reading-in .2s ease both; }
 @keyframes lyric-reading-in { from { opacity: 0; translate: 0 -3px; } to { opacity: 1; translate: 0 0; } }

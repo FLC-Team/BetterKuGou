@@ -7,7 +7,7 @@ import { createAudioEffectsEngine } from '../../utils/audioEffectsEngine.js'
 import { getSongUrl, getLyric, getSongDetail } from '../../api/music.js'
 import { getCloudSongUrl, uploadPlayHistory } from '../../api/library.js'
 import { createListeningHistory } from '../../utils/listeningHistory.js'
-import { librarySongKey } from '../../utils/libraryMetadata.js'
+import { findQueueSongIndex, librarySongKey } from '../../utils/libraryMetadata.js'
 import PlaylistDrawer from './PlaylistDrawer.vue'
 import ContextMenu from '../common/ContextMenu.vue'
 import AnimatedSelect from '../common/AnimatedSelect.vue'
@@ -16,6 +16,7 @@ import ArtistLinks from '../common/ArtistLinks.vue'
 import LibraryActions from '../common/LibraryActions.vue'
 import LyricView from './LyricView.vue'
 import VolumeControl from './VolumeControl.vue'
+import AnimatedSlider from '../common/AnimatedSlider.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import { useSettingsStore } from '../../stores/settingsStore.js'
 import { PLAYBACK_QUALITY_OPTIONS, normalizePlaybackQuality, readPlaybackQuality } from '../../utils/playbackQuality.js'
@@ -33,6 +34,8 @@ import shuffleIcon from '../../assets/icons/shuffle.svg'
 
 export default {
   name: 'MusicPlayer',
+  emits: ['play-next', 'clear-playlist', 'playlist-updated', 'song-changed', 'playback-state-changed',
+    'lyric-view-changed', 'navigate', 'openAudioEffects', 'search', 'toggle-favorite'],
   inject: { musicLibrary: { default: null } },
   components: {
     PlaylistDrawer,
@@ -42,7 +45,8 @@ export default {
     ArtistLinks,
     LibraryActions,
     LyricView,
-    VolumeControl
+    VolumeControl,
+    AnimatedSlider
   },
   props: {
     song: {
@@ -136,6 +140,7 @@ export default {
       historyPointer: -1, // 播放历史指针，-1表示在最新位置
       isNavigatingHistory: false, // 是否正在历史记录中导航
       playNextQueue: [], // 下一首播放队列
+      playNextTurns: new WeakMap(), // A playlist row can be cancelled and inserted again while its source is loading.
       playModeMenuVisible: false, // 播放模式菜单显示状态
       playModeMenuPosition: { x: 0, y: 0 }, // 播放模式菜单位置
       // 歌词相关
@@ -254,10 +259,6 @@ export default {
     displayPlayTime() {
       return this.seekPreviewTime ?? this.currentTime
     },
-    progressPercent() {
-      if (this.duration === 0) return 0
-      return (this.displayPlayTime / this.duration) * 100
-    },
     playModeText() {
       const modeMap = {
         loop: '列表循环',
@@ -360,7 +361,7 @@ export default {
             return
           }
           
-          const songIndex = newPlaylist.findIndex(song => this.samePlaybackSource(song, this.currentSong))
+          const songIndex = findQueueSongIndex(newPlaylist, this.currentSong, this.currentIndex)
           if (songIndex !== -1) this.currentIndex = songIndex
           this.$nextTick(() => this.refreshNextPreparation())
           // 同长度替换也可能改变歌曲顺序，随机队列需同步更新。
@@ -939,7 +940,8 @@ export default {
       this.lastNaturalPosition = position
       const silent = this.settingsStore?.settings?.playback?.skipTrailingSilence !== false &&
         this.tailAnalysis && this.naturalAdvanceSinceSeek >= 0.25 && position >= this.tailAnalysis.skipAt
-      const next = this.peekNavigation()?.song
+      const selection = this.peekNavigation()
+      const next = selection?.song
       const ready = next && this.preparedNext?.ready && !this.preparedNext.controller.signal.aborted &&
         this.preparedNext.key === this.preparationKey(next, next.source === 'cloud' ? 'original' : this.qualityPreference)
       const remaining = audio.duration - position
@@ -948,8 +950,16 @@ export default {
       if (!ended && !silent && !naturalFade) return
       this.automaticAdvanceVersion = this.audioSourceVersion
       if (this.playMode === 'single' || this.samePlaybackSource(next, this.currentSong)) {
+        // Replaying the current track is one queued turn; single-repeat leaves it for a manual skip.
+        if (this.playMode !== 'single' && selection?.priority) this.cancelQueuedSong(next)
         this.getAudioTransition().settle()
         this.capturePresentedPlayback()
+        const nextIndex = this.playMode === 'single' ? this.currentIndex : findQueueSongIndex(this.playlist, next, this.currentIndex)
+        const rowChanged = nextIndex >= 0 && nextIndex !== this.currentIndex
+        if (rowChanged) {
+          this.currentIndex = nextIndex
+          this.currentSong = this.playlist[nextIndex]
+        }
         this.naturalLoopSeek = { audio, version: this.audioSourceVersion }
         audio.currentTime = 0
         // A natural repeat is another input segment, not a user seek: retain
@@ -963,6 +973,7 @@ export default {
         audio.play().catch(error => logger.error('MusicPlayer', '单曲循环重播失败:', error))
         this.refreshPresentedPlayback()
         this.syncDesktopTime(true, { discontinuity: true })
+        if (rowChanged) this.$emit('song-changed', this.currentSong)
       } else this.playNext('auto')
     },
     requestTailAnalysis() {
@@ -1212,6 +1223,11 @@ export default {
           : options.qualityChange ? !this.getActiveAudio()?.paused : true
       }
       options = { ...options, playbackIntentVersion: this.playbackIntentVersion }
+      if (transition === 'select' && !options.restoreState && !options.qualityChange && !options.preservePlaybackIntent) {
+        // An explicit play fulfills this insertion only once its source succeeds.
+        const queuedSong = this.playNextQueue.find(item => this.samePlaybackSource(item, song))
+        options.queuedSelection = queuedSong && this.playNextTurns.get(queuedSong)
+      }
       this.songLoadError = ''
       this.failedSong = null
       this.failedSongOptions = null
@@ -1289,7 +1305,9 @@ export default {
         }
         if (replaying) {
           this.cancelNextPreparation()
-          const restarting = previousAudio.ended || options.restartFromBeginning
+          const index = findQueueSongIndex(this.playlist, song, this.currentIndex)
+          const restarting = previousAudio.ended || options.restartFromBeginning ||
+            (index >= 0 && index !== findQueueSongIndex(this.playlist, this.currentSong, this.currentIndex))
           if (restarting) {
             previousAudio.currentTime = 0
             this.currentTime = 0
@@ -1301,9 +1319,10 @@ export default {
           }
           if (!this.isCurrentSongRequest(requestId)) return false
           if (restarting) { this.playbackInstanceId++; this.beginListeningHistory() }
-          const index = this.playlist.findIndex(item => this.samePlaybackSource(item, song))
+          const rowChanged = this.currentSong !== song
           if (index !== -1) this.currentIndex = index
-          if (options.navigation && !this.samePlaybackSource(this.song, song)) this.$emit('song-changed', this.currentSong)
+          if (rowChanged) this.currentSong = song
+          if (rowChanged || (options.navigation && !this.samePlaybackSource(this.song, song))) this.$emit('song-changed', this.currentSong)
           committed = true
           return true
         }
@@ -1378,7 +1397,7 @@ export default {
         else {
           this.trackTransition = transition
           this.currentSong = song
-          const index = this.playlist.findIndex(item => this.samePlaybackSource(item, song))
+          const index = findQueueSongIndex(this.playlist, song)
           if (index !== -1) this.currentIndex = index
           this.currentLyrics = ''
           this.isLyricPlaceholder = true
@@ -1433,6 +1452,7 @@ export default {
         if (!this.isDisposed) {
           this.syncDesktopTime(true)
           if (committed) {
+            if (options.queuedSelection) this.cancelQueuedSong(song, options.queuedSelection)
             this.cachePlayedSong()
             if (options.restartFromBeginning) this.$emit('playback-state-changed')
             this.$nextTick(() => this.refreshNextPreparation())
@@ -1555,7 +1575,7 @@ export default {
       this.currentLyricData = null
       this.cachedLyricData = null
       this.currentLyricsFromCache = false
-      this.playNextQueue = []
+      this.clearPlayNextQueue()
       this.playedHistory = []
       this.shuffledPlaylist = []
       this.playOrderHistory = []
@@ -1960,6 +1980,7 @@ export default {
       } else if (direction > 0 && this.playMode === 'shuffle' && transition !== 'auto') transition = 'shuffle'
       attemptedSongs.add(librarySongKey(nextSong))
       return this.requestSong(nextSong, direction < 0 ? 'previous' : transition, {
+        restartFromBeginning: selection.priority && this.samePlaybackSource(nextSong, this.currentSong),
         preservePlaybackIntent: Boolean(navigation),
         navigation: { direction, transition, attemptedSongs: [...attemptedSongs], stopVersion: this.playbackStopVersion }
       })
@@ -2240,6 +2261,12 @@ export default {
       this.$emit('toggle-favorite', this.currentSong)
     },
 
+    /** A second shortcut press also cancels an opening waiting on a song switch or lyric load. */
+    toggleLyrics() {
+      if (this.showLyricView || this.pendingLyricView) return this.closeLyrics()
+      return this.showLyrics()
+    },
+
     // 显示歌词界面
     async showLyrics() {
       if (!this.currentSong || this.isDisposed) return
@@ -2249,13 +2276,15 @@ export default {
         this.pendingLyricView = true
         return
       }
-      this.pendingLyricView = false
+      this.pendingLyricView = true
       const requestId = ++this.lyricViewRequestId
       const songHash = this.currentSong.hash
       
       // 如果没有歌词，尝试加载
-      if (!this.currentLyrics) {
-        await this.loadLyric(this.currentSong)
+      try {
+        if (!this.currentLyrics) await this.loadLyric(this.currentSong)
+      } finally {
+        if (requestId === this.lyricViewRequestId) this.pendingLyricView = false
       }
       if (this.isDisposed || requestId !== this.lyricViewRequestId ||
           this.currentSong?.hash !== songHash) return
@@ -2358,15 +2387,15 @@ export default {
     async handleRemoveSong(index) {
       if (this.isDisposed || !Number.isInteger(index) || index < 0 || index >= this.playlist.length) return
       const removedSong = this.playlist[index]
-      const wasCurrentSong = this.samePlaybackSource(removedSong, this.currentSong) ||
-        (!this.currentSong && this.samePlaybackSource(removedSong, this.loadingSongTarget))
+      const wasCurrentSong = findQueueSongIndex(this.playlist, this.currentSong || this.loadingSongTarget, this.currentIndex) === index
       const updatedPlaylist = this.playlist.filter((_, songIndex) => songIndex !== index)
-      this.playNextQueue = this.playNextQueue.filter(song => !this.samePlaybackSource(song, removedSong))
-      if (this.samePlaybackSource(this.pendingSong, removedSong)) {
+      const queued = this.playNextQueue.find(song => this.samePlaybackSource(song, removedSong))
+      if (queued && findQueueSongIndex(this.playlist, queued) === index) this.cancelQueuedSong(queued)
+      if (findQueueSongIndex(this.playlist, this.pendingSong) === index) {
         this.pendingSong = null
         this.pendingSongOptions = null
       }
-      if (this.samePlaybackSource(this.loadingSongTarget, removedSong)) {
+      if (findQueueSongIndex(this.playlist, this.loadingSongTarget) === index) {
         this.songRequestId++
         this.lyricRequestId++
         this.songAbortController?.abort()
@@ -2385,7 +2414,7 @@ export default {
         this.currentIndex = nextIndex
         await this.requestSong(updatedPlaylist[nextIndex], 'next')
       } else {
-        const currentIndex = updatedPlaylist.findIndex(song => this.samePlaybackSource(song, this.currentSong))
+        const currentIndex = findQueueSongIndex(updatedPlaylist, this.currentSong)
         if (currentIndex !== -1) this.currentIndex = currentIndex
       }
     },
@@ -2397,25 +2426,38 @@ export default {
       this.$emit('clear-playlist')
     },
 
-    /** 下一首队列按歌曲来源、账号和 hash 去重，播放列表使用事件交由父组件替换。 */
-    addToPlayNextQueue(song) {
+    /** 优先队列按音源身份去重；优先使用父组件最近发布的队列，避免同轮更新覆盖点歌。 */
+    addToPlayNextQueue(song, basePlaylist = this.playlist) {
       if (!song?.hash || this.isDisposed) return
       if (!this.playNextQueue.some(item => this.samePlaybackSource(item, song))) {
+        this.playNextTurns.set(song, Symbol())
         this.playNextQueue.push(song)
-        if (!this.playlist.some(item => this.samePlaybackSource(item, song))) {
+        if (!basePlaylist.some(item => this.samePlaybackSource(item, song))) {
           // Parent props update on Vue's next tick; retain all entries queued
           // during this tick instead of rebuilding from the stale prop alone.
-          const additions = this.playNextQueue.filter(item => !this.playlist.some(queued => this.samePlaybackSource(queued, item)))
-          this.$emit('playlist-updated', [...this.playlist, ...additions])
+          const additions = this.playNextQueue.filter(item => !basePlaylist.some(queued => this.samePlaybackSource(queued, item)))
+          this.$emit('playlist-updated', [...basePlaylist, ...additions])
         }
       }
+    },
+
+    /** 取消插播只移除优先次序，曲目仍可在原播放列表中正常接续。 */
+    cancelQueuedSong(song, expectedTurn) {
+      const index = this.playNextQueue.findIndex(item => this.samePlaybackSource(item, song))
+      if (index >= 0 && (!expectedTurn || this.playNextTurns.get(this.playNextQueue[index]) === expectedTurn)) {
+        this.playNextQueue.splice(index, 1)
+      }
+    },
+
+    clearPlayNextQueue() {
+      if (this.playNextQueue.length) this.playNextQueue = []
     },
 
     removeFromPlaylist(song) {
       if (!song?.hash) return
       const index = this.playlist.findIndex(item => this.samePlaybackSource(item, song))
       if (index !== -1) return this.handleRemoveSong(index)
-      this.playNextQueue = this.playNextQueue.filter(item => !this.samePlaybackSource(item, song))
+      this.cancelQueuedSong(song)
     },
 
     // 格式化时间

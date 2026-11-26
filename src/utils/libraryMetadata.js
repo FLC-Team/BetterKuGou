@@ -1,4 +1,4 @@
-import { getSongArtists } from './songMetadata.js'
+import { getSongArtists, getSongDurationMs } from './songMetadata.js'
 
 const listKeys = ['items', 'list', 'lists', 'info', 'songs', 'songlist', 'song_list', 'files', 'filelist',
   'albums', 'album_list', 'authors', 'author_list', 'follow_list', 'special_list', 'comments', 'comment_list', 'commentlist']
@@ -12,6 +12,18 @@ export function librarySongKey(song) {
   const hash = text(first(song?.hash, song?.Hash, song?.FileHash)).trim().toLowerCase()
   if (!hash) return ''
   return song?.source === 'cloud' ? `cloud:${text(song.sourceUserId)}:${hash}` : `catalog:${hash}`
+}
+
+/** Preserve a selected occurrence in a queue; restored copies can use the saved index or source identity. */
+export function findQueueSongIndex(queue, song, preferredIndex = -1, key = librarySongKey) {
+  if (!song) return -1
+  if (queue[preferredIndex] === song) return preferredIndex
+  const row = queue.indexOf(song)
+  if (row >= 0) return row
+  const identity = key(song)
+  if (!identity) return -1
+  if (preferredIndex >= 0 && preferredIndex < queue.length && key(queue[preferredIndex]) === identity) return preferredIndex
+  return queue.findIndex(item => key(item) === identity)
 }
 
 /** Extract only known list containers; custom dotted keys take precedence over generic lists. */
@@ -84,9 +96,7 @@ export function normalizeLibrarySong(raw, options = {}) {
     album_name: text(first(item.album_name, item.AlbumName, item.albumname, base.album_name, item.album_info?.album_name)),
     cover: text(first(item.cover, item.sizable_cover, item.imgurl, item.Image, item.image, item.img, item.album_img,
       item.album_cover, item.album_sizable_cover, item.pic, item.album_info?.sizable_cover, item.album_info?.cover)),
-    timelen: Number(first(item.timelen, item.timelength, item.duration_ms, item.audio_info?.timelength, item.audio_info?.duration_128,
-      Number.isFinite(Number(item.Duration ?? item.duration ?? item.time_length ?? item.TimeLength))
-        ? Number(item.Duration ?? item.duration ?? item.time_length ?? item.TimeLength) * 1000 : undefined, 0)) || 0,
+    timelen: getSongDurationMs(merged),
     source,
   }
   if (source === 'cloud') {

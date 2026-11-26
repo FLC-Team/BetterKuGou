@@ -62,6 +62,7 @@ function normalizeFullscreenLyrics(raw) {
     karaokeEnabled: bool('karaokeEnabled'), blurEnabled: bool('blurEnabled'),
     blurPercent: number('blurPercent', 25, 0, 100), showControls: bool('showControls'),
     position: value.position === 'left' ? 'left' : 'right',
+    alignment: ['left', 'center', 'right'].includes(value.alignment) ? value.alignment : 'center',
     fontSize: number('fontSize', 32, 16, 64), lineSpacing: number('lineSpacing', 12, 0, 40),
     fontFamily: typeof font === 'string' && font.length <= 128 && !/[\u0000-\u001f\u007f]/.test(font) ? font.trim() : '',
     backgroundMode: ['frosted', 'acrylic', 'cover', 'custom', 'main'].includes(value.backgroundMode) ? value.backgroundMode : 'frosted',
@@ -133,6 +134,7 @@ const baseDefaultSettings = Object.freeze({
   },
   software: {
     autoLaunch: false,
+    telemetryEnabled: false,
     updates: { autoCheck: true, autoDownload: false, channel: 'stable' },
     minimizeToTray: false,
     promptBeforeClose: true,
@@ -444,6 +446,7 @@ function migrateSettings(rawSettings, defaults) {
   if (!normalized.custom || typeof normalized.custom !== 'object' || Array.isArray(normalized.custom)) normalized.custom = cloneDeep(defaults.custom)
   normalized.custom.backgroundImage = normalizeBackgroundImageId(normalized.custom.backgroundImage)
   if (!normalized.software || typeof normalized.software !== 'object' || Array.isArray(normalized.software)) normalized.software = cloneDeep(defaults.software)
+  normalized.software.telemetryEnabled = normalized.software.telemetryEnabled === true
   normalized.software.minimizeToTray = normalized.software.minimizeToTray === true
   normalized.software.promptBeforeClose = typeof normalized.software.promptBeforeClose === 'boolean' ? normalized.software.promptBeforeClose : true
   const updates = normalized.software.updates && typeof normalized.software.updates === 'object' && !Array.isArray(normalized.software.updates) ? normalized.software.updates : {}
@@ -532,6 +535,7 @@ async function overwriteSettings(newSettings, options = {}) {
 
 async function resetSettings() {
   const defaults = await resolvePathDefaults(baseDefaultSettings)
+  defaults.software.telemetryEnabled = state.settings.software.telemetryEnabled
   await overwriteSettings(defaults)
 }
 
@@ -557,7 +561,14 @@ async function importSettingsFromFile() {
     const result = await bridge.import()
     if (result?.canceled) return result
     if (result?.settings) {
-      await overwriteSettings(result.settings, { persist: true })
+      // The main process has already committed the import. Refresh without writing a stale full snapshot back.
+      const previous = committedSnapshot
+      const latest = await loadFromBridge()
+      if (committedSnapshot === previous) {
+        const imported = migrateSettings(latest || result.settings, defaultSnapshot)
+        if (!latest) imported.software.telemetryEnabled = previous.software.telemetryEnabled
+        applyCommittedSettings(imported)
+      }
     }
     return result
   } catch (err) {

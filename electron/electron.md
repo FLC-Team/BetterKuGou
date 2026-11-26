@@ -9,6 +9,7 @@
 ## 重要文件
 
 - `main.js`：应用入口，编排启动、窗口、托盘、IPC 和退出清理。
+- 使用统计跟随本机已保存的授权。主窗口手动打开、重新激活或已确认音源的可听时间向前推进时记录当日活跃。Windows 登录启动使用专用参数，macOS 读取登录启动标志；自动展示首屏本身不计。主窗口顶层可通过固定 IPC 查看和清空待发队列。
 - `preload.js`：通过 `contextBridge` 暴露 `electronAPI`、`settingsAPI`、`loadingAPI`、`desktopLyricAPI`、`islandLyricAPI` 与 `taskbarLyricAPI`；事件订阅隐藏 Electron event 并返回解绑函数，`electronAPI.updates` 提供固定的更新操作及状态订阅；`waitForBackend()` 与 `notifyReady()` 仅桥接固定的启动就绪频道。`onAppNotice()` 订阅统一通知，独立歌词窗口仅通过 `reportNotice()` 转发有界纯文本。
 - `settingsStore.js`：设置默认值、Schema 补全、导入导出、自启协调与串行原子持久化。
 - `backgroundImage.mjs`：管理图片 ID 校验、大小上限和 `bk-background://image/` 资源地址，渲染与主进程共用。
@@ -24,11 +25,13 @@
 - `taskbarLyric.html`：Windows 任务栏紧凑歌词，消费与桌面/灵动岛一致的歌曲、毫秒时间及播放状态；支持单双行、翻译音译、原文位置、对齐、字体缩放、逐字填亮、换句过渡、歌曲信息、封面/Logo 及播放控制。隐藏停止绘制，重开重放暂停快照，内容高度独立计算避免原生尺寸反馈增长。
 - `taskbar-lyric:*` 设置查询及启停仅接受主窗口顶层 frame；播放控制、内容尺寸与 ready 仅接受当前歌词窗口顶层。无通用脚本或 HWND 桥接，尺寸只是有界建议；启用只在设置成功后生效，退出阻止迟到写入重建窗口，关闭等待原生资源释放。主窗口通过 `electronAPI.taskbarLyric` 获取能力、显示器与实际嵌入/回退状态；非 Windows 不创建任务栏窗口。
 
-1. `app.whenReady()` 创建加载窗口和托盘，初始化设置后并行启动本地 API 与主窗口，不等待固定定时器。渲染入口并行初始化设置与等待实际 HTTP 就绪，后端失败或 10 秒截止仍允许界面挂载；主窗口顶层页面挂载后的首帧通过 `renderer:ready` 显示窗口并关闭加载窗，仅处理一次，退出中忽略就绪。启动期间的播放指令暂存到渲染就绪后发送。
+1. 主入口先获取 `app.requestSingleInstanceLock()`。重复进程退出，已有实例处理 `second-instance` 并恢复最小化或托盘隐藏的主窗口、聚焦，渲染进程已崩溃时重载同一窗口。首次启动期间先恢复加载窗口，初始化流程负责创建主窗口。退出或安装保存期间忽略激活。
+   `app.whenReady()` 创建加载窗口和托盘，初始化设置后并行启动本地 API 与主窗口。渲染入口并行初始化设置与等待当前 API 的 HTTP 就绪，10 秒截止时解除等待。主窗口顶层页面挂载后的首帧通过 `renderer:ready` 显示窗口并关闭加载窗，退出中忽略就绪。启动期间的播放指令暂存到渲染就绪后发送。
 2. 渲染进程经 preload 请求设置或系统能力，主进程执行后通过 IPC 返回结果或广播更新。
    `electronAPI.storeBackgroundImage()` 仅接受主窗口顶层提交的有界 WebP 副本。主进程原子写入 `userData/background-images/`，返回内容 ID；`bk-background` 仅按此 ID 读取固定目录的图片，设置只保存 ID。
-   系统操作及三个独立歌词窗口的结果统一通过 `app:notice` 交给主窗口 Fue 通知。`app:report-notice` 只接受当前歌词窗口顶层文档，字段白名单为 id/title/message/type，长度分别限定 80/120/2000 字符，拒绝未知类型及额外字段。主窗挂载前最多缓存 20 条，同 id 替换，`renderer:ready` 后排空；错误或警告找回隐藏/最小化主窗，已可见时不抢焦点。安装、关闭方式等业务确认保留确认对话框。
-   设置初始化失败停止正常启动，通过 `getStartupFailure()` 只挂载 Fue 通知根，不加载业务 App 或启动后端；用户关闭或 `quitAfterStartupFailure()` 沿既有清理退出。错误界面 15 秒未就绪或页面加载失败时退出，退出清理缓存通知与等待计时器。
+   系统操作及三个独立歌词窗口的结果统一通过 `app:notice` 交给主窗口 Fue 通知。`app:report-notice` 只接受当前歌词窗口顶层文档，字段白名单为 id/title/message/type，长度分别限定 80/120/2000 字符，拒绝未知类型及额外字段。主窗挂载前最多缓存 20 条，同 id 替换，`renderer:ready` 后排空；错误或警告找回隐藏/最小化主窗，已可见时不抢焦点。
+   安装、关闭方式等业务确认经 `electronAPI.appDialog` 交给全屏 `AppDialog`。主进程按随机请求 ID、窗口与顶层文档匹配回执，只接受所列操作和布尔复选框值；主页面重载、崩溃、销毁、开始安装准备或退出时取消待确认请求。
+   设置初始化失败或本地 API 端口持续冲突时，通过 `getStartupFailure()` 只挂载 Fue 通知根。渲染进程在后端就绪等待失败时重新读取启动状态。用户关闭或调用 `quitAfterStartupFailure()` 沿既有清理退出。错误界面 15 秒未就绪或页面加载失败时退出，退出清理缓存通知与等待计时器。
    `electronAPI.audioEffects` 提供固定音效操作、状态订阅和一次性 MessagePort 连接；PCM 直达 Utility Process。初始化注册具备 CORS/流式能力的 `bk-audio`，只接受内存中已授予的媒体租约；重载/崩溃/关闭释放租约及音效连接，退出等待原生宿主关闭。原生二进制按当前平台/架构从开发目录或 `resources/audio-effects/` 加载，缺失时明确报告不可用。
 3. 播放器上报歌曲、播放状态、歌词及毫秒时间，主进程更新托盘、Windows 任务栏预览按钮并转发给桌面歌词。
    主窗口播放时关闭后台动画与定时器节流，确保最小化后的交叉淡化和自然续播及时完成；暂停、清空歌曲、重载或崩溃后恢复节流。策略复用已验证的播放器状态通道，不接受其他窗口或子 frame 控制。
@@ -36,7 +39,8 @@
    `updateTaskbarButtons()` 用 `setThumbarButtons()` 设置上一首、播放/暂停、下一首，复用 `broadcastPlayerControl()`，不还原或聚焦窗口。图标从开发 `public/taskbar/` 或生产 `dist/taskbar/` 读取并缓存；原生更新失败仅记录警告，下次显示或状态变化重试。
 4. 初始化设置后创建更新服务，传入 `app.getVersion()`、平台架构和 `userData/updates/`；更新服务自行延迟调度，主窗口和本地 API 启动不等待网络任务。开发 Worker 位于 `electron/services/updateWorker.cjs`，打包通过 extraResources 加载 `resources/updater/updateWorker.cjs`。
 5. `performApplicationCleanup()` 复用一个清理 Promise；释放窗口定时器、设置订阅、更新 Worker、快捷键、附属窗口、后端和托盘后，才允许正式退出。
-6. Windows 打包版非阻塞启动每 PID 安装退出管道。安装器明确请求后，向就绪主窗口发送带随机 requestId 的保存准备通知；仅原顶层 frame 的当前回执可被接收。保存成功并发送管道确认后正常退出，重载、崩溃、断开或超时取消请求，清理时关闭管道，不改变正常多实例启动行为。
+   主窗口获焦时释放系统级快捷键，让文本框和按钮使用正常键盘操作。失焦后重新注册启用的绑定，向主窗口分派动作。系统全屏通过固定的窗口 IPC 切换。
+6. Windows 打包版非阻塞启动每 PID 安装退出管道。安装器明确请求后，向就绪主窗口发送带随机 requestId 的保存准备通知；仅原顶层 frame 的当前回执可被接收。保存成功并发送管道确认后正常退出，重载、崩溃、断开或超时取消请求，清理时关闭管道。
 7. 初始化独立离线缓存服务，读取已提交的 `download.offlineCachePath`，空值使用 `userData/offline-playlists/`；开发 Worker 位于 services，打包 Worker 从 `resources/playlist-cache/playlistCacheWorker.cjs` 加载。设置成功广播后 configure；退出先等待进行中的目录迁移，再停止 Worker，后台缓存故障不阻断窗口与在线播放。
    `bk-cache` 的受租约保护资源支持 Fetch，供独立尾静音分析读取完整文件；`playlistCache.onSourceReady` 仅转发当前账号代次已完成保存的音源标识。分析源按需提供校验后的内容版本与有界音频元数据，不公开本机路径，不改变普通取源开销。
 
@@ -85,9 +89,9 @@
 - electronAPI.writeClipboardText(text) 仅桥接 clipboard:write-text；主进程复用主窗口顶层发送方检查，只接受最多 1 MiB UTF-8 字符串并写纯文本，不提供读取、任意格式或通用 IPC 能力，不记录复制内容。
 - `updates:*` IPC 仅接受主窗口 webContents 及其顶层 frame；检查、下载、取消和定位均由主进程服务负责，下载参数只接受服务提供的资产 ID，渲染侧不能注入下载 URL 或本机路径。状态只向主窗口广播展示字段。
 - `electronAPI.updates.onPrepareForInstall()` 订阅准备/取消通知并返回解绑函数；`completePrepareForInstall(requestId, result)` 只反馈当前准备结果，不直接授权安装或退出。保存中屏蔽托盘播放操作，过期回执无效。
-- 安装只能由 `updates:install` 的用户动作触发：Worker 先校验文件，原生对话框默认取消，明确确认后再次校验并核对文件、版本和资产身份，随后才调用 `shell.openPath()`。只允许 exe/dmg/deb/rpm，AppImage 定位后由用户处理；启动、下载完成、退出均不安装，也不自动退出应用。
+- 安装只能由 `updates:install` 的用户动作触发：Worker 先校验文件，`AppDialog` 默认聚焦取消，明确确认后再次校验并核对文件、版本和资产身份，随后才调用 `shell.openPath()`。只允许 exe/dmg/deb/rpm，AppImage 定位后由用户处理；启动、下载完成、退出均不安装，也不自动退出应用。
 - 订阅和定时任务成对释放；桌面歌词卸载时取消订阅、待执行的动画帧、结果提示定时器、WAAPI 动画和尺寸观察器，终止缩放。两份独立 HTML 使用自己的 prefers-reduced-motion 查询与变更监听，系统偏好变化立即取消旧动画，提示已进入淡出时立即清空其终态，卸载时解除媒体查询监听；连续歌曲/阶段/结果更新先取消旧动效，迟到的完成回调不清除新内容。桌面控件支持键盘聚焦显现、原生按压反馈，锁定后不可交互。
-- 标题栏 `window-close` 仅接受当前主窗口顶层来源并调用主窗口 close；系统关闭沿同一入口。`requestMainWindowClose()` 默认通过原生异步对话框询问托盘/退出/取消及“不再提示”，未勾选不保存，取消不执行；同一窗口只允许一个进行中请求，旧窗口、退出或安装准备期间的迟到结果失效。设置关闭询问后直接消费 `minimizeToTray`；退出设主动退出标志并调用 app.quit，清理中的关闭不再次询问或隐藏。
+- 标题栏 `window-close` 仅接受当前主窗口顶层来源并调用主窗口 close；系统关闭沿同一入口。`requestMainWindowClose()` 默认通过 `AppDialog` 询问托盘/退出/取消及“不再提示”，未勾选不保存，取消不执行；同一窗口只允许一个进行中的关闭请求，旧窗口、退出或安装准备期间的迟到结果失效。设置关闭询问后直接消费 `minimizeToTray`；退出设主动退出标志并调用 app.quit，清理中的关闭不再次询问或隐藏。
 - 任务栏按钮仅在 Windows 注册，等待主窗口顶层就绪期间、主页面重载/崩溃、安装保存及退出时禁用。回调检查窗口身份与实时状态，关闭后旧回调不作用于新窗口；播放/暂停图标只随音频回报更新，不做乐观切换。
 - 开发及构建后的主入口共用同一职责；Vite 处理主进程本地模块，并将加载、桌面歌词、灵动岛和任务栏歌词四份 HTML 复制到构建入口旁。
 - 灵动岛服务独立管理窗口就绪、关闭/超时/崩溃和显示器监听；所有回调绑定创建实例，显示使用 showInactive。主入口向两种歌词窗口转发同一歌曲、歌词、时间及真实可操作状态，主窗口重载/崩溃、安装准备及退出均禁用灵动岛控制。灵动岛控制、拖动及穿透 IPC 仅接受当前岛顶层来源，主窗口的显示、显示器枚举、能力查询及全屏歌词可见性通知也校验顶层来源；控制复用 prev/toggle/next，不改变原播放导航。

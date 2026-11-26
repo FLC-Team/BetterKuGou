@@ -1,4 +1,7 @@
 const fs = require('node:fs');
+const http = require('node:http');
+const { once } = require('node:events');
+const { setTimeout: delay } = require('node:timers/promises');
 const path = require('node:path');
 const express = require('express');
 const decode = require('safe-decode-uri-component');
@@ -7,7 +10,7 @@ const { createRequest } = require('./util/request');
 const dotenv = require('dotenv');
 const cache = require('./util/apicache').middleware;
 
-const SENSITIVE_QUERY_KEYS = new Set(['token', 'vip_token', 'cookie', 'password', 'pwd', 'key', 'accesskey', 'access_key', 'code', 'captcha', 'mobile', 'username', 'userid']);
+const SENSITIVE_QUERY_KEYS = new Set(['token', 'vip_token', 'cookie', 'password', 'pwd', 'key', 'accesskey', 'access_key', 'code', 'captcha', 'mobile', 'username', 'userid', 'nickname', 'signature', 'sex', 'birthday']);
 
 /** 日志仅保留路由及非敏感查询参数，直接解析原始 URL 以免预解码改变参数边界。 */
 function getSafeRequestUrl(originalUrl) {
@@ -29,7 +32,7 @@ function getSafeErrorDetails(error, depth = 0) {
   if (!error || typeof error.stack !== 'string' || depth > 2) return undefined;
   const redact = (value) => typeof value === 'string' ? value
     .replace(/Bearer\s+[\w.~+\/-]+=*/gi, 'Bearer [REDACTED]')
-    .replace(/\b(token|vip_token|cookie|password|pwd|key|accesskey|code|mobile|userid|username)(=|%3D)[^&\s]+/gi, '$1$2[REDACTED]') : value;
+    .replace(/\b(token|vip_token|cookie|password|pwd|key|accesskey|code|mobile|userid|username|nickname|signature|sex|birthday)(=|%3D)[^&\s]+/gi, '$1$2[REDACTED]') : value;
   return {
     name: error.name,
     code: error.code,
@@ -240,10 +243,10 @@ async function constructServer(moduleDefs) {
 }
 
 /**
- * Serve the KG API
+ * 启动 HTTP 服务。桌面重启时短暂等待旧监听退出，独立 API 仍立即报告绑定错误。
  * @returns {Promise<import('express').Express & ExpressExtension>}
  */
-async function startService() {
+async function startService({ retryBind = false, onBindConflict } = {}) {
   const port = Number(process.env.PORT || '6500');
   const host = process.env.HOST || '';
 
@@ -251,11 +254,22 @@ async function startService() {
 
   /** @type {import('express').Express & ExpressExtension} */
   const appExt = app;
-
-  await new Promise((resolve, reject) => {
-    appExt.service = app.listen(port, host, resolve);
-    appExt.service.once('error', reject);
-  });
+  appExt.service = http.createServer(app);
+  const deadline = performance.now() + 4000;
+  let waitingForPort = false;
+  for (;;) {
+    try {
+      await once(appExt.service.listen(port, host), 'listening');
+      break;
+    } catch (error) {
+      if (!retryBind || error.code !== 'EADDRINUSE' || performance.now() >= deadline) throw error;
+      if (!waitingForPort) {
+        waitingForPort = true;
+        onBindConflict?.();
+      }
+      await delay(100);
+    }
+  }
   console.log(`server running @ http://${host || 'localhost'}:${appExt.service.address().port}`);
 
   return appExt;

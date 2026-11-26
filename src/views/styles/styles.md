@@ -18,11 +18,11 @@
 ## 设计与保障
 
 - 设置选择器使用 `:deep(.setting-select)` 适配公共组件，保留普通与窄容器宽度；body 中的菜单动效与视口约束由 DropdownMenu 自身管理。
-- 全屏歌词面板复用设置表单布局，模糊强度、字号及行距使用带数值输出的滑块；模糊关闭时禁用强度滑块，滑块及字体输入随表单宽度收缩。
+- 全屏歌词面板复用设置表单布局，模糊强度、字号及行距使用 AnimatedSlider 和独立数值输出。页面样式负责控件的伸缩与输出对齐，模糊关闭时降低强度数值亮度，滑块由组件呈现禁用状态。
 - 文件名与对应页面一致，样式作用域由导入的 SFC 提供。
 - 颜色、阴影、间距、字体和动效引用主题包的全局 CSS 变量；页面不固定配色。
 - 主要按钮文字使用 `--color-on-primary`，设置错误状态使用 `--color-error`，白色控件使用 `--text-white`。
-- 卡片、滑块、开关及设置聚焦阴影分别使用 `--shadow-card` / `--shadow-card-soft`、`--shadow-control` / `--shadow-control-hover`、`--shadow-toggle`、`--shadow-settings-focus` / `--shadow-shortcut-focus`。
+- 卡片、表单选项、开关及设置聚焦阴影分别使用 `--shadow-card` / `--shadow-card-soft`、`--shadow-control` / `--shadow-control-hover`、`--shadow-toggle`、`--shadow-settings-focus` / `--shadow-shortcut-focus`。
 - 页面专属选择器保持在此目录，不改写全局 reset 或主题定义。
 - 列表共享规则限定在 `.list-page` 内，曲目网格只作用于 `.song-list` 的直接行，不覆盖歌手专辑卡与 FM 卡片；每个页面自行 scoped 引入，未加入全局入口。
 - 窗口渲染曲目按完整展示索引设置 is-striped，避免占位元素或离屏焦点行改变条纹；普通列表保留原有结构选择器，两者都允许悬停、聚焦及当前曲目样式覆盖。

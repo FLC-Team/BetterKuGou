@@ -58,13 +58,17 @@
           </div>
 
           <div class="col-title">
-            <ArtworkCover :src="getCoverUrl(song.Image || song.img) || ''" class="song-cover" />
+            <button type="button" class="song-cover cover-play play-btn-inline" :aria-label="'播放 ' + getSongName(song)"
+              :title="'播放 ' + getSongName(song)" @click.stop="$event.detail <= 1 && playSong(song)" @dblclick.stop>
+              <ArtworkCover :src="getCoverUrl(song.Image || song.img) || ''" />
+              <svg class="cover-play-mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 5v14l11-7z" /></svg>
+            </button>
             <div class="song-info">
               <div class="song-title-line">
-                <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="getSongName(song)">
+                <SongTitle class="song-name" :song="song" @search="$emit('search', $event)" @play="playSong" :title="getSongName(song) + '（单击搜同名，双击播放）'">
                   {{ getSongName(song) }}
                   <span v-if="(song.FileSize && song.FileSize >= 5000000) || (song.filesize && song.filesize >= 5000000)" class="quality-badge">SQ</span>
-                </button>
+                </SongTitle>
                 <SongBadges :song="song" />
               </div>
               <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />
@@ -78,12 +82,7 @@
     <div class="col-album"><button type="button" class="album-link" @click.stop="goAlbum(song)" @dblclick.stop>{{ song.AlbumName || song.album_name || '-' }}</button></div>
           <div class="col-duration">{{ formatDuration(song.Duration || song.duration || song.TimeLength) }}</div>
             <div class="action-buttons">
-              <button type="button" class="icon-btn play-btn-inline" @click.stop="playSong(song)" title="播放歌曲" @dblclick.stop>
-                <svg viewBox="0 0 1024 1024" width="16" height="16" fill="currentColor">
-                  <path d="M719.4 499.1l-296.1-215A15.9 15.9 0 00398 297v430c0 13.1 14.8 20.5 25.3 12.9l296.1-215a15.9 15.9 0 000-25.8z"/>
-                </svg>
-              </button>
-              <LibraryActions :song="song" />
+              <LibraryActions :song="song" :play-next="playNext" />
             </div>
         </div>
       </div>
@@ -104,6 +103,7 @@
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
 import SongBadges from '../components/common/SongBadges.vue'
+import SongTitle from '../components/common/SongTitle.vue'
 import ArtistLinks from '../components/common/ArtistLinks.vue'
 import LibraryActions from '../components/common/LibraryActions.vue'
 import { getSongArtists } from '../utils/songMetadata.js'
@@ -120,6 +120,7 @@ export default {
   components: {
     ArtworkCover,
     SongBadges,
+    SongTitle,
     ArtistLinks,
     LibraryActions,
     ContextMenu
@@ -419,6 +420,13 @@ export default {
 
 <style src="./styles/ListPage.css" scoped></style>
 <style scoped>
+.cover-play { position: relative; display: grid; place-items: center; overflow: hidden; padding: 0; border: 0; background: var(--color-background-light); cursor: pointer; }
+.cover-play .artwork-cover { position: absolute; inset: 0; width: 100%; height: 100%; }
+.cover-play-mark { position: relative; width: 23px; height: 23px; padding: 4px; box-sizing: border-box; color: white; background: rgb(0 0 0 / 62%); border-radius: 50%; transition: transform var(--transition-fast); }
+.cover-play:is(:hover, :focus-visible) .cover-play-mark { transform: scale(1.12); }
+.cover-play:active .cover-play-mark { transform: scale(.94); }
+.cover-play:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .cover-play .cover-play-mark { transform: none; transition: none; } }
 .lyric-match{font-size:12px;color:var(--color-text-secondary);margin:6px 0 0;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .search-tabs{display:flex;gap:10px;flex-wrap:wrap;margin:20px 0 30px;border-bottom:1px solid var(--color-border);padding-bottom:16px}.search-tabs button{border:1px solid var(--color-border);border-radius:999px;background:transparent;color:inherit;padding:9px 20px;font:inherit;cursor:pointer}.search-tabs [aria-current]{border-color:var(--color-primary);color:var(--color-primary);background:var(--color-background-light)}.search-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:24px}.search-card{display:flex;flex-direction:column;min-width:0;gap:10px;text-align:left;background:transparent;border:0;padding:0;color:inherit;cursor:pointer}.result-cover{width:100%;aspect-ratio:1;border-radius:12px;transition:transform .2s}.artist-cover{border-radius:50%}.search-card:hover .result-cover{transform:translateY(-4px)}.search-card strong{font-size:14px;line-height:1.5}.search-card>span{font-size:12px;color:var(--color-text-secondary);overflow:hidden;max-width:100%;white-space:nowrap;text-overflow:ellipsis}.search-more{display:block;margin:30px auto}.favorite-btn.active{color:var(--color-primary)}.search-tabs button:focus-visible,.search-card:focus-visible{outline:2px solid var(--color-primary);outline-offset:4px}@media(prefers-reduced-motion:reduce){.result-cover{transition:none}}
 </style>

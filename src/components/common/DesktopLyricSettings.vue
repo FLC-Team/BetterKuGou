@@ -23,7 +23,13 @@
       </div>
       <div v-for="option in opacityOptions" :key="option.key" class="desktop-row desktop-range-row" :class="{ 'is-disabled': isDisabled(option.key) }">
         <div><label :for="controlId(option.key)">{{ option.label }}</label><p :id="controlId(option.key) + '-help'">{{ option.description }}</p></div>
-        <div class="desktop-range"><input :id="controlId(option.key)" type="range" min="0" max="100" step="1" :value="preference(option.key, option.default)" :disabled="isDisabled(option.key)" :aria-describedby="controlId(option.key) + '-help'" :aria-valuetext="preference(option.key, option.default) + '%'" @input="setNumber(option.key, $event, 0, 100)"><output :for="controlId(option.key)">{{ preference(option.key, option.default) }}%</output></div>
+        <div class="desktop-range">
+          <AnimatedSlider :id="controlId(option.key)" class="desktop-range-slider" min="0" max="100" step="1"
+            :model-value="preference(option.key, option.default)" :disabled="isDisabled(option.key)"
+            :aria-describedby="controlId(option.key) + '-help'" :aria-valuetext="preference(option.key, option.default) + '%'"
+            @input="setNumber(option.key, $event, 0, 100)" />
+          <output :for="controlId(option.key)">{{ preference(option.key, option.default) }}%</output>
+        </div>
       </div>
     </AnimatedDetails>
 
@@ -33,7 +39,15 @@
       <div class="desktop-row"><div><label for="desktop-theme">歌词样式</label><p>自定义颜色留空时，沿用所选样式及主题包配色。</p></div><AnimatedSelect id="desktop-theme" :model-value="preference('theme', 'classic')" label="歌词样式" :options="themeOptions" @update:model-value="setPreference('theme', $event)" /></div>
       <div class="desktop-row"><div><label for="desktop-alignment">歌词对齐</label><p>短句按所选方向排列；长句继续跟随演唱位置。</p></div><AnimatedSelect id="desktop-alignment" :model-value="preference('alignment', 'center')" label="歌词对齐" :options="alignmentOptions" @update:model-value="setPreference('alignment', $event)" /></div>
       <div class="desktop-row desktop-font-row"><div><label for="desktop-font-family">字体</label><p id="desktop-font-help">输入本机已安装的字体名称；留空或字体不可用时使用默认字体。</p></div><div class="desktop-font"><input id="desktop-font-family" type="text" maxlength="128" autocomplete="off" placeholder="默认字体" :value="preference('fontFamily', '')" aria-describedby="desktop-font-help" @input="setPreference('fontFamily', $event.target.value)"><button id="desktop-reset-font" type="button" :disabled="!preferences.fontFamily" @click="setPreference('fontFamily', '')">恢复默认字体</button></div></div>
-      <div class="desktop-row desktop-range-row"><div><label for="desktop-stroke-width">文字描边</label><p>调节描边强度，让歌词在不同桌面背景上保持清晰。</p></div><div class="desktop-range"><input id="desktop-stroke-width" type="range" min="0" max="200" step="1" :value="preference('strokeWidth', 100)" :aria-valuetext="preference('strokeWidth', 100) + '%'" @input="setNumber('strokeWidth', $event, 0, 200)"><output for="desktop-stroke-width">{{ preference('strokeWidth', 100) }}%</output></div></div>
+      <div class="desktop-row desktop-range-row">
+        <div><label for="desktop-stroke-width">文字描边</label><p>调节描边强度，让歌词在不同桌面背景上保持清晰。</p></div>
+        <div class="desktop-range">
+          <AnimatedSlider id="desktop-stroke-width" class="desktop-range-slider" min="0" max="200" step="1"
+            :model-value="preference('strokeWidth', 100)" :aria-valuetext="preference('strokeWidth', 100) + '%'"
+            @input="setNumber('strokeWidth', $event, 0, 200)" />
+          <output for="desktop-stroke-width">{{ preference('strokeWidth', 100) }}%</output>
+        </div>
+      </div>
       <div class="desktop-subheading"><h4>文字颜色</h4><button id="desktop-reset-colors" type="button" :disabled="!colorOptions.some(option => preferences[option.key])" @click="resetColors">恢复样式配色</button></div>
       <div class="desktop-colors">
         <div v-for="option in colorOptions" :key="option.key" class="desktop-color">
@@ -48,7 +62,15 @@
       <fieldset class="desktop-shadow-controls" :disabled="!preferences.shadowEnabled" aria-label="歌词阴影选项">
         <div class="desktop-row"><div><label for="desktop-shadow-color-mode">阴影颜色</label><p>可跟随封面主色；无法读取封面时使用下方自定义颜色。</p></div><AnimatedSelect id="desktop-shadow-color-mode" :model-value="preference('shadowColorMode', 'cover')" label="阴影颜色来源" :options="shadowColorOptions" :disabled="!preferences.shadowEnabled" @update:model-value="setPreference('shadowColorMode', $event)" /></div>
         <div class="desktop-row"><div><label for="desktop-shadow-color">自定义阴影颜色</label><p>{{ preference('shadowColorMode', 'cover') === 'cover' ? '当前作为封面颜色不可用时的备用颜色。' : '使用所选颜色绘制阴影。' }}</p></div><input id="desktop-shadow-color" type="color" :value="colorValue('shadowColor')" @input="setPreference('shadowColor', $event.target.value)"></div>
-        <div v-for="option in shadowRanges" :key="option.key" class="desktop-row desktop-range-row"><div><label :for="controlId(option.key)">{{ option.label }}</label></div><div class="desktop-range"><input :id="controlId(option.key)" type="range" min="0" :max="option.max" step="1" :value="preference(option.key, option.default)" :aria-valuetext="preference(option.key, option.default) + option.unit" @input="setNumber(option.key, $event, 0, option.max)"><output :for="controlId(option.key)">{{ preference(option.key, option.default) }}{{ option.unit }}</output></div></div>
+        <div v-for="option in shadowRanges" :key="option.key" class="desktop-row desktop-range-row">
+          <div><label :for="controlId(option.key)">{{ option.label }}</label></div>
+          <div class="desktop-range">
+            <AnimatedSlider :id="controlId(option.key)" class="desktop-range-slider" min="0" :max="option.max" step="1"
+              :model-value="preference(option.key, option.default)" :aria-valuetext="preference(option.key, option.default) + option.unit"
+              @input="setNumber(option.key, $event, 0, option.max)" />
+            <output :for="controlId(option.key)">{{ preference(option.key, option.default) }}{{ option.unit }}</output>
+          </div>
+        </div>
         <div class="desktop-actions desktop-reset-row"><button id="desktop-reset-shadow" type="button" @click="resetShadow">恢复阴影参数</button></div>
       </fieldset>
     </AnimatedDetails>
@@ -64,6 +86,7 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import AnimatedDetails from './AnimatedDetails.vue'
 import AnimatedSelect from './AnimatedSelect.vue'
+import AnimatedSlider from './AnimatedSlider.vue'
 import { logger } from '../../utils/logger.js'
 
 const props = defineProps({ modelValue: { type: Object, default: () => ({}) }, beforeAction: { type: Function, required: true } })
@@ -191,7 +214,7 @@ h3, h4 { margin: 0; color: var(--color-text); font-size: var(--font-size-sm); fo
 .desktop-switch input:disabled { cursor: default; }
 .is-disabled, .desktop-shadow-controls:disabled { opacity: .5; }
 .desktop-range { display: flex; align-items: center; gap: 10px; width: 190px; max-width: 100%; flex: 0 1 190px; }
-.desktop-range input { min-width: 60px; width: 100%; height: 24px; accent-color: var(--color-primary); cursor: pointer; }
+.desktop-range-slider { flex: 1; min-width: 60px; }
 .desktop-range output { min-width: 48px; text-align: right; color: var(--color-text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .desktop-font { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; max-width: 280px; }
 .desktop-font input { min-width: 0; width: 180px; max-width: 100%; padding: 9px 12px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-background-light); color: var(--color-text); font: inherit; }

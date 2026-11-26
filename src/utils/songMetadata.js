@@ -7,6 +7,34 @@ function readNumber(value) {
   return Number.isFinite(number) ? number : null
 }
 
+/** Read documented duration units, preserving short millisecond tracks and skipping invalid placeholders. */
+export function getSongDurationMs(song) {
+  if (!song || typeof song !== 'object') return 0
+  const sources = [song, song.song, song.info, song.base].filter(value => value && typeof value === 'object')
+  for (const source of sources) {
+    for (const value of [source.timelen, source.timelength, source.duration_ms,
+      source.audio_info?.timelength, source.audio_info?.duration_128]) {
+      const number = readNumber(value)
+      if (number !== null && number > 0) return number
+    }
+  }
+  for (const source of sources) {
+    for (const value of [source.Duration, source.duration, source.time_length, source.TimeLength]) {
+      const number = readNumber(value)
+      if (number !== null && number > 0 && Number.isFinite(number * 1000)) return number * 1000
+    }
+  }
+  return 0
+}
+
+/** Format list metadata through the same explicit unit conversion used by playback queues. */
+export function formatSongDuration(song, fallback = '—') {
+  const milliseconds = getSongDurationMs(song)
+  if (!milliseconds) return fallback
+  const seconds = Math.floor(milliseconds / 1000)
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+}
+
 function isEnabled(value) {
   return value === true || value === 1 || value === '1'
 }

@@ -53,7 +53,12 @@
         </div>
         <div class="taskbar-row">
           <div><label for="taskbar-fontScale">字号缩放</label><p>调整歌词的显示字号，范围 50%–200%。</p></div>
-          <div class="range-controls"><input id="taskbar-fontScale" type="range" min="0.5" max="2" step="0.05" :value="preferences.fontScale" @input="setNumber('fontScale', $event.target.value, .5, 2)"><output for="taskbar-fontScale">{{ Math.round(preferences.fontScale * 100) }}%</output></div>
+          <div class="range-controls">
+            <AnimatedSlider id="taskbar-fontScale" class="taskbar-range-slider" min="0.5" max="2" step="0.05"
+              :model-value="preferences.fontScale" :aria-valuetext="Math.round(preferences.fontScale * 100) + '%'"
+              @input="setNumber('fontScale', $event.target.value, .5, 2)" />
+            <output for="taskbar-fontScale">{{ Math.round(preferences.fontScale * 100) }}%</output>
+          </div>
         </div>
         <div class="taskbar-row">
           <div><label for="taskbar-fontFamily">字体家族</label><p>输入本机已安装的字体名称；留空或字体不可用时使用系统字体。</p></div>
@@ -93,6 +98,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { logger } from '../../utils/logger.js'
 import AnimatedSelect from './AnimatedSelect.vue'
 import AnimatedDetails from './AnimatedDetails.vue'
+import AnimatedSlider from './AnimatedSlider.vue'
 
 const props = defineProps({ modelValue: { type: Object, required: true }, beforeAction: { type: Function, required: true }, available: { type: Boolean, default: false } })
 const emit = defineEmits(['update:modelValue'])
@@ -248,7 +254,7 @@ p { color: var(--color-text-secondary); line-height: 1.7; margin: 6px 0 0; }
 .taskbar-switch input:focus-visible + span { outline: 2px solid var(--color-primary); outline-offset: 3px; }
 .range-controls, .font-controls, .number-controls { display: flex; align-items: center; gap: 10px; }
 .range-controls { width: 220px; max-width: 100%; }
-.range-controls input { width: 100%; min-width: 50px; accent-color: var(--color-primary); }
+.taskbar-range-slider { flex: 1; min-width: 50px; }
 .range-controls output { min-width: 42px; color: var(--color-text); text-align: right; font-variant-numeric: tabular-nums; }
 input[type='text'], input[type='number'] { padding: 8px 10px; color: var(--color-text); background: var(--color-background-light); border: 1px solid var(--color-border); border-radius: 8px; font: inherit; box-sizing: border-box; }
 input:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }

@@ -5,6 +5,7 @@ const path = require('node:path')
 const vm = require('node:vm')
 const vue = require('vue')
 const { parse, compileTemplate } = require('@vue/compiler-sfc')
+const { loadAnimatedSlider } = require('./helpers/animatedSliderHarness.cjs')
 
 const root = path.join(__dirname, '..')
 const quietLogger = Object.fromEntries(['trace', 'info', 'warn', 'error'].map(level => [level, () => {}]))
@@ -26,6 +27,8 @@ function loadModule(relativePath, globals, exports) {
 function loadUtils() {
   return loadModule('src/utils/objectUtils.js', { ...vue, structuredClone }, ['cloneDeep', 'mergeDeep', 'replaceReactive'])
 }
+
+const keyboardShortcuts = loadModule('src/utils/keyboardShortcuts.js', {}, ['normalizeShortcut', 'shortcutFromEvent'])
 
 function loadStore(settingsAPI) {
   const memory = new Map()
@@ -96,6 +99,7 @@ function loadSettingsView(store, applyTheme = () => {}, options = {}) {
     console: quietConsole,
     logger: quietLogger,
     window: browserWindow,
+    ...keyboardShortcuts,
     document: {
       addEventListener: (name, callback) => listeners.set(name, callback),
       removeEventListener: (name, callback) => { if (listeners.get(name) === callback) listeners.delete(name) }
@@ -234,10 +238,10 @@ function loadApp(electronAPI = {}, overrides = {}) {
   }
   const cacheHelpers = loadModule('src/utils/playlistCache.js', { window: appWindow },
     ['initializePlaylistCacheSession', 'getPlaylistCacheAPI', 'callPlaylistCache'])
-  const localStorage = overrides.localStorage || { getItem: () => null }
-  const songMetadata = loadModule('src/utils/songMetadata.js', {}, ['getSongSearchKeyword', 'getSongArtists'])
+  const localStorage = overrides.localStorage || { getItem: () => null, setItem() {}, removeItem() {} }
+  const songMetadata = loadModule('src/utils/songMetadata.js', {}, ['getSongSearchKeyword', 'getSongArtists', 'getSongDurationMs', 'formatSongDuration'])
   const libraryMetadata = loadModule('src/utils/libraryMetadata.js', songMetadata,
-    ['extractLibraryList', 'normalizePlaylistResource', 'librarySongKey'])
+    ['extractLibraryList', 'normalizePlaylistResource', 'librarySongKey', 'findQueueSongIndex'])
   const unexpectedLibraryCall = async () => { throw new Error('This test must provide an explicit library API response') }
   // Keep the real account controller; only HTTP boundaries are supplied by each scenario.
   const libraryApi = {
@@ -261,9 +265,12 @@ function loadApp(electronAPI = {}, overrides = {}) {
     logger: quietLogger,
     process: { env: { NODE_ENV: 'production' } },
     ...songMetadata,
+    ...keyboardShortcuts,
+    ...loadModule('src/utils/searchHistory.js', { localStorage }, ['normalizeSearchHistory', 'readSearchHistory', 'writeSearchHistory']),
     ...loadModule('src/utils/musicLibrary.js', { AbortController }, ['createMusicLibrary']),
     libraryApi,
     librarySongKey: libraryMetadata.librarySongKey,
+    findQueueSongIndex: libraryMetadata.findQueueSongIndex,
     ...loadModule('src/utils/musicSharing.js', { ...songMetadata, URL }, ['buildSongShareText']),
     navigator: { onLine: true },
     AbortController,
@@ -301,7 +308,8 @@ function loadApp(electronAPI = {}, overrides = {}) {
     performMemoryCleanup, createLazyView, cachedPageNames, drain: () => shortcutUpdateQueue,
     handleInstallPreparation, preparingInstall, settingsViewRef, sameInstallSession,
     collectSessionSnapshot, queueSessionPersist, restoredPlaybackState, handleSongChanged,
-    handleSearch, handleSearchRequest, searchQuery, searchDraft,
+    handleSearch, handleSearchRequest, searchQuery, searchDraft, searchHistory, searchHistoryError, clearSearchHistory, retrySearchHistory,
+    handleEditProfile, handleProfileUpdated, profileEditorOpen,
     handleGoBack, handleBackToMain, handleShowSettings, handleCloseSettings, handleOpenAudioEffects, requestedSettingsSection,
     navigationHistory, navigationPending, canGoBack, artistData, albumData, rankData,
     selectedPlaylistData, getPageKey, rememberPageScroll, restorePageScroll, setInstallPreparation,
@@ -321,6 +329,79 @@ function loadApp(electronAPI = {}, overrides = {}) {
     }
   }
 }
+
+test('only committed searches enter persistent account history and blocked navigation does not create records', async t => {
+  const stored = new Map()
+  const localStorage = { getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value), removeItem: key => stored.delete(key) }
+  const app = loadApp({}, { localStorage }); t.after(() => app.dispose())
+  app.searchDraft.value = 'unsubmitted'
+  assert.equal(app.searchHistory.value.length, 0)
+  await app.handleSearchRequest(' First ')
+  await app.handleSearch({ filename: 'Singer - Second.mp3', singername: 'Singer' })
+  await app.handleSearchRequest('First')
+  assert.deepEqual([...app.searchHistory.value], ['First', 'Second'])
+  app.currentView.value = 'settings'
+  app.settingsViewRef.value = { flushEditableSettings: async () => false }
+  assert.equal(await app.handleSearchRequest('blocked'), false)
+  assert.deepEqual([...app.searchHistory.value], ['First', 'Second'])
+  app.userInfo.value = { userid: 'account-a' }; app.userLoggedIn.value = true
+  assert.deepEqual([...app.searchHistory.value], [])
+  app.currentView.value = 'home'
+  await app.handleSearchRequest('Private search')
+  const reopened = loadApp({}, { localStorage }); t.after(() => reopened.dispose())
+  assert.deepEqual([...reopened.searchHistory.value], ['First', 'Second'])
+  reopened.userInfo.value = { userid: 'account-a' }; reopened.userLoggedIn.value = true
+  assert.deepEqual([...reopened.searchHistory.value], ['Private search'])
+  reopened.clearSearchHistory()
+  assert.deepEqual([...reopened.searchHistory.value], [])
+  reopened.userLoggedIn.value = false
+  assert.deepEqual([...reopened.searchHistory.value], ['First', 'Second'])
+})
+
+test('history write errors keep searching usable and retry persists the latest keywords', async t => {
+  let denied = true
+  const stored = new Map()
+  const localStorage = { getItem: key => stored.get(key) ?? null, removeItem: key => stored.delete(key),
+    setItem(key, value) { if (denied) throw new Error('storage denied'); stored.set(key, value) } }
+  const app = loadApp({}, { localStorage }); t.after(() => app.dispose())
+  assert.equal(await app.handleSearchRequest('Song'), true)
+  assert.equal(app.currentView.value, 'search')
+  assert.deepEqual([...app.searchHistory.value], ['Song'])
+  assert.ok(app.searchHistoryError.value)
+  denied = false
+  app.retrySearchHistory()
+  assert.equal(app.searchHistoryError.value, '')
+  assert.equal(stored.size, 1)
+})
+
+test('profile menus share the real editor, preserve failed settings and accept only current-account updates', async t => {
+  const stored = new Map([['kugou_token', 'placeholder-token']])
+  const localStorage = { getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value), removeItem: key => stored.delete(key) }
+  const app = loadApp({}, { localStorage }); t.after(() => app.dispose())
+  await app.handleEditProfile()
+  assert.equal(app.showLogin.value, true)
+  assert.equal(app.profileEditorOpen.value, false)
+  app.showLogin.value = false
+  app.userInfo.value = { userid: 'account-a', username: 'Old', avatar: 'avatar', vip_type: 1 }
+  app.userLoggedIn.value = true
+  app.currentView.value = 'settings'
+  app.settingsViewRef.value = { flushEditableSettings: async () => false }
+  assert.equal(await app.handleEditProfile(), false)
+  assert.equal(app.profileEditorOpen.value, false)
+  app.currentView.value = 'home'
+  assert.equal(await app.handleEditProfile(), true)
+  assert.equal(app.profileEditorOpen.value, true)
+  assert.equal(app.handleProfileUpdated({ userid: 'other', username: 'Wrong' }), false)
+  assert.equal(app.userInfo.value.username, 'Old')
+  assert.equal(app.handleProfileUpdated({ userid: 'account-a', username: 'New' }), true)
+  assert.equal(app.userInfo.value.avatar, 'avatar')
+  assert.equal(app.userInfo.value.vip_type, 1)
+  assert.equal(JSON.parse(stored.get('kugou_userinfo')).username, 'New')
+  assert.equal(stored.get('kugou_token'), 'placeholder-token')
+  assert.equal(app.profileEditorOpen.value, true, 'the editor owns its close animation')
+  app.handleLogout()
+  assert.equal(app.profileEditorOpen.value, false)
+})
 
 test('detail navigation closes the overlay only after the requested navigation commits', async t => {
   const app = loadApp(); t.after(() => app.dispose())
@@ -800,7 +881,7 @@ test('fullscreen switching feedback updates and clears without replacing the con
     .replace('export default', 'const component =') + '\ncomponent', {
     logger: quietLogger, process: { env: { NODE_ENV: 'test' } },
     window: { innerWidth: 1200, innerHeight: 800 }, useSettingsStore: () => ({ settings: { playback: {} } }),
-    ContextMenu: stub, ArtistLinks: stub, ArtworkCover: stub, VolumeControl: stub, LibraryActions: stub,
+    ContextMenu: stub, ArtistLinks: stub, ArtworkCover: stub, VolumeControl: stub, LibraryActions: stub, AnimatedSlider: loadAnimatedSlider(),
     ...loadModule('src/utils/songMetadata.js', {}, ['getSongSearchKeyword']),
     repeatAllIcon: '', repeatOneIcon: '', shuffleIcon: ''
   })
@@ -1219,7 +1300,7 @@ test('artist pagination failures are diagnosed and release the loading guard', a
     .replace('export default', 'module.exports =')
   const diagnostics = []
   const sandbox = vm.createContext({
-    module: { exports: {} }, ContextMenu: {}, ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, LibraryActions: {}, nextplayIcon: '',
+    module: { exports: {} }, ContextMenu: {}, ArtworkCover: {}, SongBadges: {}, SongTitle: {}, ArtistLinks: {}, LibraryActions: {}, nextplayIcon: '',
     ...loadModule('src/utils/songMetadata.js', {}, ['getSongArtists']),
     logger: { error: (...args) => diagnostics.push(args) },
     getArtistAudios: async () => { throw new Error('Network unavailable') }
@@ -1802,6 +1883,39 @@ test('focused controls retain native Space activation while page shortcuts still
   }
 })
 
+test('letter shortcuts honor saved case, native text editing and one toggle per key press', async t => {
+  const calls = []
+  const app = loadApp({ toggleFullscreen: () => calls.push('fullscreen') })
+  t.after(() => app.dispose())
+  app.settings.shortcuts.keys = { toggleLyrics: 'L', toggleFullscreen: 'f' }
+  app.musicPlayerRef.value = { toggleLyrics: () => calls.push('lyrics') }
+  const key = (key, tagName = 'BODY', extras = {}) => ({ key, target: { tagName }, preventDefault() {}, ...extras })
+  for (const letter of ['f', 'l']) app.handleKeyDown(key(letter, 'INPUT'))
+  app.handleKeyDown(key('l', 'BODY', { isComposing: true }))
+  app.handleKeyDown(key('F', 'BODY', { shiftKey: true }))
+  assert.deepEqual(calls, [])
+  for (const letter of ['l', 'f', 'L', 'F']) {
+    app.handleKeyDown(key(letter))
+    app.handleKeyDown(key(letter, 'BODY', { repeat: true }))
+  }
+  assert.deepEqual(calls, ['lyrics', 'fullscreen', 'lyrics', 'fullscreen'])
+})
+
+test('shortcut recording detects an older lowercase binding and stores new letters consistently', async t => {
+  const fixture = loadStore()
+  await fixture.initSettings()
+  const view = loadSettingsView(fixture.useSettingsStore())
+  t.after(() => view.dispose())
+  view.localSettings.shortcuts.keys.toggleLyrics = 'Control+l'
+  const key = letter => ({ key: letter, ctrlKey: true, preventDefault() {}, stopPropagation() {} })
+  view.startEditingShortcut('toggleFullscreen')
+  await view.listeners.get('keydown')(key('L'))
+  assert.equal(view.localSettings.shortcuts.keys.toggleFullscreen, 'F')
+  view.startEditingShortcut('toggleFullscreen')
+  await view.listeners.get('keydown')(key('b'))
+  assert.equal(view.localSettings.shortcuts.keys.toggleFullscreen, 'Control+B')
+})
+
 test('local and global volume shortcuts call the audio update entry and leave typed volume drafts alone', async t => {
   let globalShortcut
   const app = loadApp({ onGlobalShortcut(callback) { globalShortcut = callback; return () => {} } })
@@ -1863,7 +1977,7 @@ test('out-of-order search responses and errors cannot replace newer results', as
     logger: quietLogger,
     ContextMenu: {},
     ArtworkCover: {},
-    SongBadges: {},
+    SongBadges: {}, SongTitle: {},
     ArtistLinks: {},
     LibraryActions: {},
     ...loadModule('src/utils/songMetadata.js', {}, ['getSongArtists']),
@@ -1907,7 +2021,7 @@ test('global shortcut registration uses resolved results and handles rejection',
   const app = loadApp({
     registerGlobalShortcut: async key => {
       if (key === 'B') throw new Error('unavailable')
-      return key === 'C'
+      return { success: key === 'C' }
     },
     unregisterGlobalShortcut: async () => true
   })
@@ -2674,6 +2788,65 @@ test('App queue selection preserves distinct cloud and catalogue entries sharing
   app.handlePlaylistUpdated([cloud, catalog])
   assert.equal(app.playlistIndex.value, 0)
   assert.equal(app.currentSong.value.source, 'cloud')
+})
+
+test('direct play inserts after the current choice, while whole-list playback preserves order and resets priorities', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  const [a, b, c, d, e] = ['a', 'b', 'c', 'd', 'e'].map(hash => ({ hash }))
+  const hashes = () => Array.from(app.playlist.value, song => song.hash)
+  let cleared = 0
+  app.musicPlayerRef.value = { clearPlayNextQueue() { cleared++ } }
+  await app.handlePlayAll([a, b, c])
+  app.handlePlay(d)
+  assert.deepEqual(hashes(), ['a', 'd', 'b', 'c'])
+  assert.equal(app.currentSong.value.hash, 'd')
+  assert.equal(app.playlist.value[app.playlistIndex.value + 1].hash, 'b')
+  app.handlePlay(e)
+  assert.deepEqual(hashes(), ['a', 'd', 'e', 'b', 'c'])
+  assert.equal(app.currentSong.value.hash, 'e')
+  app.handlePlay({ ...b })
+  assert.deepEqual(hashes(), ['a', 'd', 'e', 'b', 'c'])
+  assert.equal(app.playlistIndex.value, 3)
+  assert.equal(cleared, 1)
+  await app.handlePlayAll([a, b, c], 1)
+  assert.deepEqual(hashes(), ['a', 'b', 'c'])
+  assert.equal(app.playlistIndex.value, 1)
+  assert.equal(app.currentSong.value.hash, 'b')
+  assert.equal(cleared, 2)
+})
+
+test('a same-tick play-next reads the current list, and selecting the mounted target explicitly resumes it', async t => {
+  const app = loadApp()
+  t.after(() => app.dispose())
+  const [a, b, c, d] = ['a', 'b', 'c', 'd'].map(hash => ({ hash }))
+  await app.handlePlayAll([a, b])
+  const resumed = []
+  app.musicPlayerRef.value = {
+    song: a,
+    requestSong(song) { resumed.push(song.hash) },
+    addToPlayNextQueue(song, latestQueue) { app.handlePlaylistUpdated([...latestQueue, song]) }
+  }
+  app.handlePlay(c)
+  await app.handlePlayNext(d)
+  assert.deepEqual(Array.from(app.playlist.value, song => song.hash), ['a', 'c', 'b', 'd'])
+  app.handlePlay({ ...a })
+  assert.deepEqual(resumed, ['a'])
+  assert.equal(app.currentSong.value.hash, 'a')
+  assert.equal(app.playlistIndex.value, 0)
+})
+
+test('a restored list starts on the saved occurrence even when an earlier row has the same audio hash', async t => {
+  const queue = [{ hash: 'same', fileid: 1 }, { hash: 'same', fileid: 2 }, { hash: 'after', fileid: 3 }]
+  const saved = { playlist: queue, currentSong: { ...queue[1] }, playlistIndex: 1 }
+  const app = loadApp({}, {
+    settingsReady: true, settings: { software: { restorePlaylist: true } }, getSessionSnapshot: () => saved
+  })
+  t.after(() => app.dispose())
+  assert.equal(app.currentSong.value, app.playlist.value[1])
+  assert.equal(app.playlistIndex.value, 1)
+  app.musicPlayerRef.value = { getPlaybackSnapshot: () => ({ currentSong: { ...queue[1] }, playbackState: {} }) }
+  assert.equal(app.collectSessionSnapshot().playlistIndex, 1)
 })
 
 test('opening song details closes playback overlays without replacing the audio or queue', async t => {

@@ -4,6 +4,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const vue = require('vue')
 const { registerAppNotice } = require('./helpers/noticeHarness.cjs')
+const { loadAnimatedSlider } = require('./helpers/animatedSliderHarness.cjs')
 const { parse, compileScript } = require('@vue/compiler-sfc')
 
 const filename = path.join(__dirname, '../src/components/common/DesktopLyricSettings.vue')
@@ -29,8 +30,8 @@ function mount(t, options = {}) {
     async show() { calls.push('show'); return options.show ? options.show() : true },
     async resetPosition() { calls.push('resetPosition'); return options.recover ? options.recover() : true }
   }
-  const Component = new Function('Vue', 'window', 'logger', 'AnimatedSelect', 'AnimatedDetails', compiled)(motionVue,
-    { electronAPI: { desktopLyric: api } }, { warn() {} }, AnimatedSelect, AnimatedDetails)
+  const Component = new Function('Vue', 'window', 'logger', 'AnimatedSelect', 'AnimatedDetails', 'AnimatedSlider', compiled)(motionVue,
+    { electronAPI: { desktopLyric: api } }, { warn() {} }, AnimatedSelect, AnimatedDetails, loadAnimatedSlider())
   const node = (type, text = '') => ({ type, text, props: {}, children: [], parent: null })
   const renderer = vue.createRenderer({
     createElement: node, createText: value => node('text', value), createComment: () => node('comment'),

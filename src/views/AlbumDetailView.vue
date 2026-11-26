@@ -2,7 +2,7 @@
   <div class="album-detail-view list-page" :aria-busy="loading">
     <div class="list-content">
       <AppNotice :message="error" title="专辑加载失败" type="error" :actions="[{ label: '重试', run: load, disabled: loading }]" />
-      <button type="button" class="back-btn" @click="$emit('navigate', 'home')">← 返回发现</button>
+      <button type="button" class="back-btn" :disabled="!canGoBack" @click="$emit('back')">← 返回</button>
       <header class="collection-hero">
         <ArtworkCover :src="getCover(album)" class="collection-art" mark="♪" />
         <div class="collection-copy">
@@ -31,7 +31,7 @@
             <ArtworkCover :src="song.cover || ''" class="song-cover" />
             <div class="song-info">
               <div class="song-title-line">
-                <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="getSongName(song.name)">{{ getSongName(song.name) }}</button>
+                <SongTitle class="song-name" :song="song" @search="$emit('search', $event)" @play="$emit('play', $event)" :title="getSongName(song.name)">{{ getSongName(song.name) }}</SongTitle>
                 <SongBadges :song="song" />
                 <LibraryActions :song="song" />
               </div>
@@ -54,23 +54,25 @@
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
 import SongBadges from '../components/common/SongBadges.vue'
+import SongTitle from '../components/common/SongTitle.vue'
 import LibraryActions from '../components/common/LibraryActions.vue'
 import ArtistLinks from '../components/common/ArtistLinks.vue'
-import { getSongArtists } from '../utils/songMetadata.js'
+import { getSongArtists, getSongDurationMs } from '../utils/songMetadata.js'
 import { logger } from '../utils/logger.js'
 
 import { getAlbumDetail, getAlbumSongs, getImagesByHash } from '../api/music.js'
 
 export default {
   inject: { songActions: { default: null } },
-  components: { ArtworkCover, SongBadges, ArtistLinks, LibraryActions },
+  components: { ArtworkCover, SongBadges, SongTitle, ArtistLinks, LibraryActions },
   name: 'AlbumDetailView',
   props: {
     albumId: { type: [String, Number], required: false },
     albumName: { type: String, default: '' },
+    canGoBack: { type: Boolean, default: false },
     currentSong: { type: Object, default: null }
   },
-  emits: ['navigate','play','search'],
+  emits: ['back', 'navigate', 'play', 'search'],
   data() {
     return {
       id: this.albumId || null,
@@ -147,7 +149,7 @@ export default {
         const singername = singerArray.map(a => a.name).join('、') || it.singername || it.SingerName || it.author_name
         const rawName = it.audio_name || it.song_name || it.name || it.filename || it.remark
         const name = rawName || (typeof it.filename === 'string' ? it.filename.split(' - ').slice(1).join(' - ') : '未知歌曲')
-        const timelen = (it.timelength || it.timelen || it.Duration || it.duration || 0) * (it.Duration || it.duration ? 1000 : 1)
+        const timelen = getSongDurationMs(it)
         return { ...it, hash, cover, singerinfo: singerArray, singername, name, filename: name, timelen }
       })
     },

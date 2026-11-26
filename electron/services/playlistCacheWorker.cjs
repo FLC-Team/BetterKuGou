@@ -10,6 +10,7 @@ const { parentPort, workerData, isMainThread } = require('node:worker_threads')
 
 const API_BASE = 'http://localhost:6500'
 const CACHE_LIMITS = [2048, 4096, 6144, 8192, 10240, -1]
+const ACCESS_FLUSH_MS = 5000
 const QUALITY = new Set(['128', '320', 'flac', 'high'])
 const SECRET_FIELD = /(?:token|cookie|accesskey|password|authorization|secret|signature)|^(?:url|play_url|playurl|audio_url|sign)$/i
 const LYRIC_FIELDS = new Set(['status', 'content', 'decodeContent', 'language', 'trans', 'translation', 'lang', 'multilang', 'lyric_translation', 'lyricTranslation', 'translationData', 'contenttype', 'charset', 'fmt', 'data'])
@@ -153,17 +154,23 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
   const active = new Map()
   const leases = new Map()
   const deferredDeletes = new Map()
+  const verifiedFiles = new WeakMap()
+  const pendingAccess = new Map()
   let session = null
   let current = null
   let generation = 0
   let revision = 0
   let enabled = true
+  let configured = false
   let concurrency = 3
   let qualityPreference = '128'
   let limitBytes = limitBytesOverride ?? 2 * 1024 ** 3
   let usedBytes = 0
   let stopped = false
   let schedulerTimer = null
+  let accessTimer = null
+  let accessRevision = 0
+  let trimPending = false
   let lastUsageReport = 0
   let capacityChain = Promise.resolve()
   let diskChain = Promise.resolve()
@@ -195,6 +202,7 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
   }
 
   async function writeIndex(index) {
+    const access = pendingAccess.get(index)
     const serialized = JSON.stringify(index)
     if (Buffer.byteLength(serialized) > 16 * 1024 ** 2) throw cacheError('INVALID_PLAYLIST', '歌单缓存内容过大')
     const target = indexPath(index)
@@ -209,6 +217,7 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
           await new Promise(resolve => setTimeout(resolve, 25 * (attempt + 1)))
         }
       }
+      if (pendingAccess.get(index) === access) pendingAccess.delete(index)
     } finally { await fsp.rm(temp, { force: true }).catch(() => {}) }
   }
 
@@ -216,10 +225,11 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
   function largestIndexSize() { return Math.max(0, ...[...accounts.values()].map(index => Buffer.byteLength(JSON.stringify(index)))) }
 
   // Called only under capacityChain. Metadata's temporary atomic-write copy counts too.
-  async function ensureSpace(extra) {
+  async function ensureSpace(extra, canEvict = true) {
     usedBytes = await diskUsage()
     const changed = new Set()
-    if (limitBytes < 0) return changed
+    if (limitBytes < 0 || usedBytes + reservedBytes() + extra <= limitBytes) return changed
+    if (!canEvict) return null
     const candidates = []
     for (const index of accounts.values()) {
       for (const record of Object.values(index.songs)) {
@@ -240,18 +250,38 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
 
   async function persist(index) {
     return withCapacity(async () => {
+      const indices = index ? new Set([index]) : new Set(pendingAccess.keys())
+      if (!indices.size) return
       // Account for the full new index before it is written, including large playlist snapshots.
       let changed
-      try { changed = await ensureSpace(largestIndexSize()) } catch (error) {
+      try { changed = await ensureSpace(largestIndexSize(), Boolean(index)) } catch (error) {
         if (error.changed?.size) await withDisk(async () => { for (const item of error.changed) if (item !== index) await writeIndex(item) })
         throw error
       }
-      changed.add(index)
+      if (!changed) return
+      for (const item of indices) changed.add(item)
       return withDisk(async () => {
         for (const item of changed) await writeIndex(item)
         usedBytes = await diskUsage()
       })
     })
+  }
+
+  async function flushAccess() {
+    try { await persist() } catch (error) {
+      console.warn('[playlistCacheWorker] 无法保存缓存最近访问记录', { name: error?.name, code: error?.code })
+    }
+  }
+
+  /** Keep LRU current in memory and coalesce access-only index writes across leases and playlist visits. */
+  function touchIndex(index) {
+    pendingAccess.set(index, ++accessRevision)
+    if (accessTimer) return
+    accessTimer = setTimeout(() => {
+      accessTimer = null
+      if (!migration && !stopped) void flushAccess()
+    }, ACCESS_FLUSH_MS)
+    accessTimer.unref?.()
   }
 
   const ready = (async () => {
@@ -344,6 +374,7 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
   }
   function recordAllowed(record) {
     if (!current || current.paused || current.suppressed) return false
+    if (record.kind === 'artwork') return true
     const playlists = current.playlists.filter(item => item.songs.some(song => songIdentity(song) === songIdentity(record.song)))
     return !playlists.length || playlists.some(item => !item.paused)
   }
@@ -514,7 +545,8 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
   function schedule() {
     if (schedulerTimer) { clearTimeout(schedulerTimer); schedulerTimer = null }
     if (stopped || migration || !enabled || !session || !current || current.paused || current.suppressed) return
-    const queue = [...Object.values(current.songs), ...Object.values(current.artworks)].filter(record => recordAllowed(record) && (record.status === 'queued' || record.status === 'waiting-network' && record.nextAttempt <= Date.now()))
+    const queue = [...Object.values(current.songs), ...Object.values(current.artworks)]
+      .filter(record => (record.status === 'queued' || record.status === 'waiting-network' && record.nextAttempt <= Date.now()) && recordAllowed(record))
     queue.sort((a, b) => (b.requestedAt || 0) - (a.requestedAt || 0))
     for (const record of queue) {
       if (active.size >= concurrency) break
@@ -790,6 +822,8 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
 
   /** The main process waits for reads opened against old paths before requesting source cleanup. */
   async function finalizeMigration() {
+    // Cleanup compares a rewritten target index with current state, including recent accesses.
+    if (retiredDirectories.length) await flushAccess()
     for (let index = retiredDirectories.length - 1; index >= 0; index--) {
       const transaction = retiredDirectories[index]
       if (await removeMigrationFiles(transaction, transaction.sourceRoot, true)) retiredDirectories.splice(index, 1)
@@ -802,14 +836,23 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
   async function configure(settings = {}) {
     await ready
     const download = settings.download || settings
-    enabled = download.offlinePlaylistCacheEnabled !== false
-    concurrency = Number.isInteger(download.concurrentDownloads) ? Math.max(1, Math.min(10, download.concurrentDownloads)) : 3
+    const nextEnabled = download.offlinePlaylistCacheEnabled !== false
+    const nextConcurrency = Number.isInteger(download.concurrentDownloads) ? Math.max(1, Math.min(10, download.concurrentDownloads)) : 3
     const size = CACHE_LIMITS[download.cacheSizeIndex] ?? CACHE_LIMITS[0]
+    const nextLimit = limitBytesOverride ?? (size < 0 ? -1 : size * 1024 ** 2)
+    const nextQuality = normalizeQuality(settings.playback?.quality)
+    // Playback checkpoints also save settings. Only recheck disk usage when cache preferences change.
+    if (configured && nextEnabled === enabled && nextConcurrency === concurrency &&
+        nextLimit === limitBytes && nextQuality === qualityPreference) return snapshot()
+    configured = false
     const previousLimit = limitBytes
-    limitBytes = limitBytesOverride ?? (size < 0 ? -1 : size * 1024 ** 2)
-    qualityPreference = normalizeQuality(settings.playback?.quality)
+    enabled = nextEnabled
+    concurrency = nextConcurrency
+    limitBytes = nextLimit
+    qualityPreference = nextQuality
     if (!enabled || limitBytes >= 0 && (previousLimit < 0 || limitBytes < previousLimit)) await cancelActive()
     await trim()
+    configured = true
     publish()
     schedule()
     return snapshot()
@@ -887,16 +930,25 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
     return snapshot()
   }
 
-  async function verify(index, record) {
-    if (!record?.file || record.status !== 'complete') return false
-    let target
+  function sameFileVersion(first, second) {
+    return second.isFile() && sameFile(first, second) && first.size === second.size &&
+      first.mtimeNs === second.mtimeNs && first.ctimeNs === second.ctimeNs && first.birthtimeNs === second.birthtimeNs
+  }
+
+  /** Reuse SHA256 only while the file identity and change timestamps match the verified version. */
+  async function verify(target, record) {
+    const { size, sha256 } = record
+    if (!Number.isSafeInteger(size)) return false
     try {
-      target = filePath(index.account, record.file)
-      const stat = await fsp.stat(target)
-      if (!stat.isFile() || stat.size !== record.size) return false
+      const stat = await fsp.lstat(target, { bigint: true })
+      if (!stat.isFile() || stat.size !== BigInt(size)) return false
+      const verified = verifiedFiles.get(record)
+      if (verified?.target === target && verified.sha256 === sha256 && sameFileVersion(verified.stat, stat)) return true
       const hash = crypto.createHash('sha256')
       for await (const chunk of fs.createReadStream(target)) hash.update(chunk)
-      return hash.digest('hex') === record.sha256
+      if (hash.digest('hex') !== sha256 || !sameFileVersion(stat, await fsp.lstat(target, { bigint: true }))) return false
+      verifiedFiles.set(record, { target, sha256, stat })
+      return true
     } catch { return false }
   }
 
@@ -924,13 +976,19 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
   async function acquire(record, analysis = false) {
     const index = current
     if (!index || !record?.file || record.status !== 'complete') return null
+    // A just-completed download can still be publishing its index.
+    const task = active.get(`${index.account}:${record.key}`)
+    if (task?.record === record) {
+      await task.promise
+      if (current !== index || !record.file || record.status !== 'complete') return null
+    }
     const audioMetadata = analysis ? readAnalysisMetadata(record, filePath(index.account, record.file)) : null
     if (analysis && !audioMetadata) return null
     const leaseId = crypto.randomBytes(24).toString('hex')
     const resource = { leaseId, account: index.account, file: record.file, path: filePath(index.account, record.file), size: record.size, mime: record.mime, extname: record.extname, bitrate: record.bitrate, requestedQuality: record.quality, detail: record.detail || record.song || null, status: 1 }
     if (analysis) Object.assign(resource, { sha256: record.sha256, audioMetadata })
     leases.set(leaseId, resource)
-    if (!(await verify(index, record))) {
+    if (!(await verify(resource.path, record))) {
       leases.delete(leaseId)
       await removeRecord(index, record, record.kind)
       await persist(index)
@@ -938,17 +996,25 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
       return null
     }
     record.lastUsed = Date.now()
-    // A full disk must not prevent playback of a valid leased file just to update its LRU time.
-    await persist(index).catch(() => {})
+    touchIndex(index)
     return copy(resource)
   }
 
   async function trim() {
     return withCapacity(async () => {
       let changed
-      try { changed = await ensureSpace(largestIndexSize()) } catch (error) { changed = error.changed || new Set() }
-      if (changed.size) await withDisk(async () => { for (const index of changed) await writeIndex(index) })
-      usedBytes = await diskUsage()
+      try {
+        changed = await ensureSpace(largestIndexSize())
+        trimPending = false
+      } catch (error) {
+        if (error.code !== 'SPACE') throw error
+        trimPending = true
+        changed = error.changed
+      }
+      if (changed.size) await withDisk(async () => {
+        for (const index of changed) await writeIndex(index)
+        usedBytes = await diskUsage()
+      })
     })
   }
 
@@ -972,16 +1038,17 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
     const lease = leases.get(leaseId)
     if (!lease) return false
     leases.delete(leaseId)
+    if (isLeased(lease.account, lease.file)) return true
     const target = filePath(lease.account, lease.file)
     const index = accounts.get(lease.account)
     const referenced = index && [...Object.values(index.songs), ...Object.values(index.artworks)].some(record => record.file === lease.file)
-    if ((deferredDeletes.has(target) || !referenced) && !isLeased(lease.account, lease.file)) {
+    if (deferredDeletes.has(target) || !referenced) {
       await fsp.rm(target, { force: true })
       deferredDeletes.delete(target)
       usedBytes = await diskUsage()
       publish()
     }
-    await trim()
+    if (trimPending) await trim()
     return true
   }
 
@@ -990,6 +1057,10 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
     const key = digest(raw)
     const existing = current.artworks[key]
     if (existing?.status === 'complete' || active.has(`${current.account}:${key}`)) return snapshot()
+    if (existing?.status === 'queued') {
+      schedule()
+      return snapshot()
+    }
     current.artworks[key] = { key, kind: 'artwork', url: raw, status: 'queued', attempts: 0, requestedAt: Date.now() }
     await persist(current)
     schedule()
@@ -1052,7 +1123,10 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
     stopped = true
     if (schedulerTimer) clearTimeout(schedulerTimer)
     schedulerTimer = null
+    if (accessTimer) clearTimeout(accessTimer)
+    accessTimer = null
     await cancelActive()
+    await flushAccess()
     await diskChain
   }
 
@@ -1060,9 +1134,11 @@ function createCacheEngine({ cacheRoot, apiBase = API_BASE, allowLocalTestUrls =
     const playlist = selectedPlaylist(id)
     if (!playlist) return null
     playlist.openedAt = Date.now()
-    current.playlists = [playlist, ...current.playlists.filter(item => item !== playlist)]
-    await persist(current)
-    publish()
+    touchIndex(current)
+    if (current.playlists[0] !== playlist) {
+      current.playlists = [playlist, ...current.playlists.filter(item => item !== playlist)]
+      publish()
+    }
     return copy(playlist)
   }
 

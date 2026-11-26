@@ -55,7 +55,12 @@
         </div>
         <div class="island-row">
           <div><label for="island-font-size">字号</label><p>14–40 像素，整体大小还可在下方调整。</p></div>
-          <div class="range-controls"><input id="island-font-size" type="range" min="14" max="40" step="1" :value="preferences.fontSize" @input="setNumber('fontSize', $event.target.value, 14, 40, true)"><output for="island-font-size">{{ preferences.fontSize }} px</output></div>
+          <div class="range-controls">
+            <AnimatedSlider id="island-font-size" class="island-range-slider" min="14" max="40" step="1"
+              :model-value="preferences.fontSize" :aria-valuetext="preferences.fontSize + ' 像素'"
+              @input="setNumber('fontSize', $event.target.value, 14, 40, true)" />
+            <output for="island-font-size">{{ preferences.fontSize }} px</output>
+          </div>
         </div>
         <div class="color-controls">
           <div v-for="color in colorOptions" :key="color.key" class="color-control">
@@ -69,7 +74,12 @@
         <template #summary><span>透明度与大小</span></template>
         <div v-for="slider in appearanceOptions" :key="slider.key" class="island-row">
           <div><label :for="'island-' + slider.key">{{ slider.label }}</label><p>{{ slider.description }}</p></div>
-          <div class="range-controls"><input :id="'island-' + slider.key" type="range" :min="slider.min" :max="slider.max" step="0.01" :value="preferences[slider.key]" @input="setNumber(slider.key, $event.target.value, slider.min, slider.max)"><output :for="'island-' + slider.key">{{ Math.round(preferences[slider.key] * 100) }}%</output></div>
+          <div class="range-controls">
+            <AnimatedSlider :id="'island-' + slider.key" class="island-range-slider" :min="slider.min" :max="slider.max" step="0.01"
+              :model-value="preferences[slider.key]" :aria-valuetext="Math.round(preferences[slider.key] * 100) + '%'"
+              @input="setNumber(slider.key, $event.target.value, slider.min, slider.max)" />
+            <output :for="'island-' + slider.key">{{ Math.round(preferences[slider.key] * 100) }}%</output>
+          </div>
         </div>
       </AnimatedDetails>
 
@@ -100,6 +110,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { logger } from '../../utils/logger.js'
 import AnimatedSelect from './AnimatedSelect.vue'
 import AnimatedDetails from './AnimatedDetails.vue'
+import AnimatedSlider from './AnimatedSlider.vue'
 
 const props = defineProps({
   modelValue: { type: Object, required: true },
@@ -281,7 +292,7 @@ input[type="text"], input[type="number"] { min-width: 0; max-width: 250px; paddi
 .position-controls input { width: 76px; }
 .side-controls .island-select { width: 110px; }
 .range-controls { width: 230px; flex: 0 1 230px; }
-.range-controls input { min-width: 80px; width: 100%; accent-color: var(--color-primary); }
+.island-range-slider { flex: 1; min-width: 80px; }
 .range-controls output { min-width: 50px; text-align: right; font-variant-numeric: tabular-nums; color: var(--color-text); }
 .color-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; padding-top: 20px; }
 .color-control > label { display: block; margin-bottom: 10px; color: var(--color-text); }

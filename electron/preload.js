@@ -10,6 +10,11 @@ function subscribe(channel, callback) {
 }
 
 const electronAPI = {
+  telemetry: {
+    foregroundActivity: () => ipcRenderer.send('telemetry:foreground-activity'),
+    getPending: () => ipcRenderer.invoke('telemetry:get-pending'),
+    clearPending: () => ipcRenderer.invoke('telemetry:clear-pending')
+  },
   audioEffects: {
     getStatus: () => ipcRenderer.invoke('audio-effects:getStatus'),
     listPlugins: () => ipcRenderer.invoke('audio-effects:listPlugins'),
@@ -35,10 +40,16 @@ const electronAPI = {
   waitForBackend: () => ipcRenderer.invoke('backend:ready'),
   notifyReady: () => ipcRenderer.send('renderer:ready'),
   onAppNotice: callback => subscribe('app:notice', callback),
+  appDialog: {
+    onRequest: callback => subscribe('app-dialog:request', callback),
+    onCancel: callback => subscribe('app-dialog:cancel', callback),
+    respond: (requestId, result) => ipcRenderer.send('app-dialog:response', requestId, result)
+  },
   getStartupFailure: () => ipcRenderer.invoke('app:get-startup-failure'),
   quitAfterStartupFailure: () => ipcRenderer.invoke('app:quit-after-startup-failure'),
   minimize: () => ipcRenderer.send('window-minimize'),
   maximize: () => ipcRenderer.send('window-maximize'),
+  toggleFullscreen: () => ipcRenderer.send('window-toggle-fullscreen'),
   unmaximize: () => ipcRenderer.send('window-unmaximize'),
   close: () => ipcRenderer.send('window-close'),
   onMaximized: (cb) => subscribe('window-is-maximized', cb),

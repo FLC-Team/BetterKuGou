@@ -128,6 +128,7 @@ function normalizeFullscreenLyrics(raw) {
     karaokeEnabled: bool('karaokeEnabled'), blurEnabled: bool('blurEnabled'),
     blurPercent: number('blurPercent', 25, 0, 100), showControls: bool('showControls'),
     position: value.position === 'left' ? 'left' : 'right',
+    alignment: ['left', 'center', 'right'].includes(value.alignment) ? value.alignment : 'center',
     fontSize: number('fontSize', 32, 16, 64), lineSpacing: number('lineSpacing', 12, 0, 40),
     fontFamily: typeof font === 'string' && font.length <= 128 && !/[\u0000-\u001f\u007f]/.test(font) ? font.trim() : '',
     backgroundMode: ['frosted', 'acrylic', 'cover', 'custom', 'main'].includes(value.backgroundMode) ? value.backgroundMode : 'frosted',
@@ -259,6 +260,7 @@ function ensureSchema(settings) {
   normalized.custom.backgroundImage = normalizeBackgroundImageId(normalized.custom.backgroundImage)
   normalized.audioEffects = normalizeAudioEffects(normalized.audioEffects)
   if (!isPlainObject(normalized.software)) normalized.software = cloneDeep(defaultsCache.software)
+  normalized.software.telemetryEnabled = normalized.software.telemetryEnabled === true
   normalized.software.minimizeToTray = normalized.software.minimizeToTray === true
   normalized.software.promptBeforeClose = typeof normalized.software.promptBeforeClose === 'boolean' ? normalized.software.promptBeforeClose : true
   const updates = isPlainObject(normalized.software.updates) ? normalized.software.updates : {}
@@ -372,6 +374,7 @@ function createDefaults(app) {
     },
     software: {
       autoLaunch: false,
+      telemetryEnabled: false,
       updates: { autoCheck: true, autoDownload: false, channel: 'stable' },
       restorePlaylist: true,
       restorePlaybackState: true,
@@ -449,7 +452,7 @@ function getSettings() {
 }
 
 /** 按调用顺序执行整个设置事务，成功落盘后才发布缓存和通知。 */
-async function setSettings(nextSettings, { merge = true, removedPaths = [] } = {}) {
+async function setSettings(nextSettings, { merge = true, removedPaths = [], allowTelemetryChange = false } = {}) {
   if (!settingsCache) {
     throw new Error('Settings store not initialized')
   }
@@ -463,14 +466,14 @@ async function setSettings(nextSettings, { merge = true, removedPaths = [] } = {
   }
   const payload = cloneDeep(nextSettings)
   const removals = cloneDeep(removedPaths)
-  const task = commitQueue.then(() => commitSettings(payload, merge, removals))
+  const task = commitQueue.then(() => commitSettings(payload, merge, removals, allowTelemetryChange))
   // 调用者仍能收到本次失败，后续事务继续使用最后一次成功的缓存。
   commitQueue = task.catch(() => {})
   return task
 }
 
 /** 队列内读取已提交状态，协调系统自启设置与磁盘提交，失败时保留旧缓存。 */
-async function commitSettings(nextSettings, merge, removedPaths = []) {
+async function commitSettings(nextSettings, merge, removedPaths, allowTelemetryChange) {
   let updated
   if (merge) {
     const base = removedPaths.length ? cloneDeep(settingsCache) : settingsCache
@@ -485,6 +488,10 @@ async function commitSettings(nextSettings, merge, removedPaths = []) {
     updated = cloneDeep(nextSettings)
   }
   updated = ensureSchema(updated)
+  // 只有主窗口显式编辑能改变本机授权，导入和排队中的旧快照保留最近一次已提交的选择。
+  if (!merge || !allowTelemetryChange || typeof nextSettings.software?.telemetryEnabled !== 'boolean') {
+    updated.software.telemetryEnabled = settingsCache.software.telemetryEnabled
+  }
   // 路径只能在迁移已校验后提交；旧草稿、重置和导入不能绕过文件迁移。
   updated.download.offlineCachePath = settingsCache.download.offlineCachePath
   if (!updated.software) {
@@ -601,7 +608,9 @@ async function exportSettings(targetPath) {
   if (!targetPath) {
     throw new Error('targetPath is required for export')
   }
-  const data = JSON.stringify(getSettings(), null, 2)
+  const backup = getSettings()
+  delete backup.software.telemetryEnabled
+  const data = JSON.stringify(backup, null, 2)
   await fsp.writeFile(targetPath, data, 'utf8')
   return targetPath
 }

@@ -11,7 +11,7 @@ function desktopFixture({ realMain = false } = {}) {
   const handlers = new Map()
   ipc.handle = (channel, handler) => handlers.set(channel, handler)
   const app = new EventEmitter()
-  Object.assign(app, { isPackaged: true, whenReady: () => new Promise(() => {}), commandLine: { appendSwitch() {} } })
+  Object.assign(app, { isPackaged: true, requestSingleInstanceLock: () => true, whenReady: () => new Promise(() => {}), commandLine: { appendSwitch() {} } })
   const windows = []
   const dialogs = []
   const screen = Object.assign(new EventEmitter(), {
@@ -208,7 +208,7 @@ test('translation preferences immediately update an already mounted lyric view',
   const source = fs.readFileSync(path.resolve(__dirname, '../src/components/player/LyricView.js'), 'utf8')
     .replace(/^import\b[\s\S]*?from\s+['"][^'"]+['"]\s*;?\s*$/gm, '')
     .replace('export default', 'module.exports =')
-  const sandbox = { module: { exports: {} }, ContextMenu: {}, VolumeControl: {}, ArtistLinks: {}, ArtworkCover: {}, LibraryActions: {} }
+  const sandbox = { module: { exports: {} }, ContextMenu: {}, VolumeControl: {}, ArtistLinks: {}, ArtworkCover: {}, LibraryActions: {}, AnimatedSlider: {} }
   vm.runInNewContext(source, sandbox)
   let measured = 0
   const lyric = { showTranslation: true, styleCache: new Map([['line', 'cached']]), handleLongLyric() { measured++ } }

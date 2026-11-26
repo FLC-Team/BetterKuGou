@@ -12,10 +12,11 @@
 import { computed, inject, onBeforeUnmount, onDeactivated, ref } from 'vue'
 import ContextMenu from './ContextMenu.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
-const props = defineProps({ song: { type: Object, default: null }, moreOnly: Boolean })
+const props = defineProps({ song: { type: Object, default: null }, moreOnly: Boolean, playNext: Function })
 const library = inject('musicLibrary', null), actions = inject('songActions', null)
 const open = ref(false), position = ref({ x: 0, y: 0 })
 const items = computed(() => [
+  ...(props.playNext ? [{ label: '下一首播放', action: () => { props.playNext(props.song); close() } }] : []),
   { label: library?.isFavorite(props.song) ? '取消收藏' : '收藏歌曲', disabled: library?.isFavoritePending(props.song), action: () => act('toggle-favorite') },
   { label: '添加到歌单', action: () => act('add-to-playlist') },
   { label: '下载歌曲', action: () => act('download') },

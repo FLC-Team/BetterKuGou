@@ -36,6 +36,8 @@
           autocomplete="off"
           spellcheck="false"
           @focus="openSearchHints"
+          @click="openSearchHints"
+          @input="openSearchHints"
           @keydown="handleSearchKey"
           @compositionstart="startComposition"
           @compositionend="endComposition"
@@ -48,11 +50,14 @@
         <span v-else class="search-hint" aria-hidden="true">↵</span></Transition>
       </form>
       <Transition name="ui-pop" @before-leave="$event.setAttribute('inert', '')" @before-enter="$event.removeAttribute('inert')" @leave-cancelled="$event.removeAttribute('inert')"><section v-if="showSearchHints" ref="searchHints" class="search-suggestions" aria-label="搜索提示">
-        <div class="suggestion-heading"><strong>{{ searchKeyword.trim() ? '搜索建议' : '大家都在搜' }}</strong><button type="button" aria-label="关闭搜索提示" @click="closeSearchHints">×</button></div>
+        <div class="suggestion-heading"><strong>{{ searchKeyword.trim() ? '搜索建议' : historyKeywords.length ? '搜索历史' : '大家都在搜' }}</strong><div class="suggestion-controls"><button v-if="!searchKeyword.trim() && historyKeywords.length" type="button" class="clear-history" @mousedown.prevent @click="clearHistory">清空历史</button><button type="button" aria-label="关闭搜索提示" @click="closeSearchHints">×</button></div></div>
         <p v-if="hintsLoading" role="status">正在查找…</p>
         <p v-else-if="!hintsError && !suggestionOptions.length">{{ searchKeyword.trim() ? '暂无建议，按回车搜索当前关键词。' : '暂无热搜，输入关键词开始搜索。' }}</p>
-        <div id="search-suggestions" role="listbox" :aria-label="searchKeyword.trim() ? '搜索建议' : '热门搜索'">
-          <button v-for="(keyword, index) in suggestionOptions" :id="`search-suggestion-${index}`" :key="keyword" type="button" role="option" :aria-selected="index === activeSuggestion" @mousedown.prevent @click="chooseSuggestion(keyword)"><span>{{ String(index + 1).padStart(2, '0') }}</span>{{ keyword }}</button>
+        <div id="search-suggestions" role="listbox" :aria-label="searchKeyword.trim() ? '搜索建议' : '搜索历史与热门搜索'">
+          <template v-for="(keyword, index) in suggestionOptions" :key="keyword">
+            <div v-if="!searchKeyword.trim() && historyKeywords.length && index === historyKeywords.length" class="hot-heading" role="presentation">大家都在搜</div>
+            <button :id="`search-suggestion-${index}`" type="button" role="option" :aria-selected="index === activeSuggestion" @mousedown.prevent @click="chooseSuggestion(keyword)"><span aria-hidden="true">{{ !searchKeyword.trim() && index < historyKeywords.length ? '↺' : String(index + 1 - (searchKeyword.trim() ? 0 : historyKeywords.length)).padStart(2, '0') }}</span>{{ keyword }}</button>
+          </template>
         </div>
       </section></Transition>
     </div></Transition>
@@ -92,6 +97,7 @@
 
     <!-- 用户菜单 -->
     <AppNotice :message="hintsError" title="搜索提示" type="error" :actions="[{ label: '重试', run: retrySearchHints }]" />
+    <AppNotice :message="historyError" title="搜索历史" type="warning" :actions="[{ label: '重试', run: () => $emit('retry-search-history') }]" />
     <UserMenu
       :visible="showUserMenu"
       :userInfo="userInfo"
@@ -120,8 +126,10 @@ export default {
   components: {
     UserMenu
   },
-  emits: ['update:modelValue', 'back', 'show-login', 'edit-profile', 'open-settings', 'logout', 'search'],
+  emits: ['update:modelValue', 'back', 'show-login', 'edit-profile', 'open-settings', 'logout', 'search', 'clear-search-history', 'retry-search-history'],
   props: {
+    searchHistory: { type: Array, default: () => [] },
+    historyError: { type: String, default: '' },
     canGoBack: {
       type: Boolean,
       default: false
@@ -170,13 +178,15 @@ export default {
     }
   },
   computed: {
-    suggestionOptions() { return this.searchKeyword.trim() ? this.suggestions : this.hotKeywords },
+    historyKeywords() { return this.searchHistory || [] },
+    suggestionOptions() { return this.searchKeyword.trim() ? this.suggestions : [...this.historyKeywords, ...this.hotKeywords.filter(word => !this.historyKeywords.includes(word))] },
     searchKeyword: {
       get() { return this.modelValue },
       set(value) { this.$emit('update:modelValue', value) }
     }
   },
   watch: {
+    searchHistory() { if (!this.searchKeyword.trim()) this.activeSuggestion = -1 },
     modelValue(value) { if (this.showSearchHints && !this.composing) this.scheduleSuggestions(value) },
     userLoggedIn(value) { if (!value) this.showUserMenu = false },
     isLyricViewVisible(newVal) {
@@ -208,6 +218,7 @@ export default {
     this.unsubscribeUnmaximized?.()
   },
   methods: {
+    clearHistory() { this.activeSuggestion = -1; this.$emit('clear-search-history') },
     /** Follow known search-word containers only; service text remains plain text in the template. */
     readSearchWords(response) {
       const words = [], seen = new Set()
@@ -357,7 +368,11 @@ export default {
     clearSearch() {
       this.searchKeyword = ''
       this.activeSuggestion = -1
-      this.$refs.searchInput?.focus()
+      this.$nextTick(() => {
+        if (!this.$refs.searchInput) return
+        this.$refs.searchInput.focus()
+        this.openSearchHints()
+      })
     }
   }
 }
@@ -468,6 +483,9 @@ export default {
 .search-suggestions { position:absolute; top:calc(100% + 10px); left:0; right:0; max-height:min(480px,70vh); overflow:auto; background:var(--color-background); border:1px solid var(--color-border); border-radius:16px; box-shadow:0 12px 38px #0002; padding:12px; font-size:12px; color:var(--color-text); }
 .suggestion-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:3px 5px 10px; color:var(--color-text-secondary); }
 .suggestion-heading strong { font-size:11px; font-weight:500; }
+.suggestion-controls { display:flex; align-items:center; gap:8px; }
+.suggestion-heading .clear-history { font-size:11px; }
+.hot-heading { padding:14px 8px 6px; color:var(--color-text-secondary); font-size:11px; }
 .search-suggestions button { background:transparent; border:0; color:inherit; cursor:pointer; font:inherit; border-radius:7px; }
 .suggestion-heading button { padding:2px 6px; font-size:18px; }
 .search-suggestions p { padding:10px 5px; color:var(--color-text-secondary); line-height:1.7; }

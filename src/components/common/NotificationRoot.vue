@@ -12,9 +12,10 @@ let readyFrame
 let disposed = false
 let previousFocus
 const quitAfterStartupFailure = () => window.electronAPI?.quitAfterStartupFailure?.()
-/** F8 reaches notifications even from a modal focus trap; Escape returns to the originating control. */
+/** F8 进入最新通知，全屏业务确认期间优先保留弹窗焦点。 */
 function focusNotifications(event) {
   if (event.key !== 'F8' || event.ctrlKey || event.altKey || event.metaKey) return
+  if (event.target?.closest?.('dialog.app-dialog[open]')) return
   const notification = [...(host?.shadowRoot?.querySelectorAll('.fue-alert:not(.fue-alert-leave-active)') || [])].at(-1)
   if (!notification) return
   event.preventDefault()

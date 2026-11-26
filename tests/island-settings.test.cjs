@@ -5,6 +5,7 @@ const path = require('node:path')
 const vm = require('node:vm')
 const vue = require('vue')
 const { registerAppNotice } = require('./helpers/noticeHarness.cjs')
+const { loadAnimatedSlider } = require('./helpers/animatedSliderHarness.cjs')
 const { parse, compileTemplate, compileScript } = require('@vue/compiler-sfc')
 
 const root = path.join(__dirname, '..')
@@ -107,7 +108,8 @@ function mountControls(t, options = {}) {
   const manager = new Function(managerCode)()
   const DropdownMenu = new Function('Vue', 'contextMenuManager', 'window', 'document', 'ResizeObserver', compiledMenu)(motionVue, manager, window, document, Observer)
   const AnimatedSelect = new Function('Vue', 'DropdownMenu', 'window', 'MutationObserver', compiledSelect)(motionVue, DropdownMenu, window, Observer)
-  const Component = new Function('Vue', 'window', 'logger', 'AnimatedSelect', 'AnimatedDetails', compiledComponent)(motionVue, window, logger, AnimatedSelect, AnimatedDetails)
+  const Component = new Function('Vue', 'window', 'logger', 'AnimatedSelect', 'AnimatedDetails', 'AnimatedSlider', compiledComponent)(
+    motionVue, window, logger, AnimatedSelect, AnimatedDetails, loadAnimatedSlider())
   const nodes = item => [item, ...item.children.flatMap(nodes)]
   const text = item => item.text + item.children.map(text).join('')
   const invoke = (item, name, value = {}) => {

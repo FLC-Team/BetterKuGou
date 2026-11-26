@@ -174,7 +174,7 @@ test('release waits for every matrix build and validates all real installer name
   }
 })
 
-test('publication resumes partial drafts, verifies uploads and leaves published releases intact', async t => {
+test('publication bypasses a stale release list, resumes partial drafts and verifies the same release ID', async t => {
   const directory = testDirectory(t)
   const files = await stageInstallerFiles(directory)
   const tag = `v${manifest.version}`
@@ -190,13 +190,29 @@ test('publication resumes partial drafts, verifies uploads and leaves published 
   let interruptUpload = true
   let dropLastUpload = false
   const runGh = args => {
-    if (args[0] === 'api') return release ? JSON.stringify(release) : ''
+    if (args[0] === 'api') {
+      // A newly created draft and its uploaded assets are absent from the lagging list index.
+      if (args.at(-1) === `repos/${repo}/releases`) return ''
+      if (args[1] === 'graphql') {
+        assert.ok(args.includes(`tag=${tag}`) && args.includes('owner=FLC-Team') && args.includes('name=BetterKuGou'))
+        return JSON.stringify({ data: { repository: { release: release ? { databaseId: release.id } : null } } })
+      }
+      assert.deepEqual(args, ['api', `repos/${repo}/releases/41`])
+      return JSON.stringify(release)
+    }
     const [group, command, ref, repoFlag, repository, ...flags] = args
     assert.deepEqual([group, ref, repoFlag, repository], ['release', tag, '--repo', repo])
+    if (command === 'view') {
+      assert.deepEqual(flags, ['--json', 'databaseId'])
+      if (!release) throw Object.assign(new Error('missing fixture release'), { status: 1, stderr: 'release not found\n' })
+      return JSON.stringify({ databaseId: release.id })
+    }
     writes.push({ command, flags })
     if (command === 'create') {
+      assert.equal(release, undefined, 'never recreate an existing draft')
       assert.ok(flags.includes('--draft') && flags.includes('--verify-tag') && flags.includes('--latest=false'))
-      release = { tag_name: tag, draft: true, prerelease, assets: [] }
+      // The exact CLI lookup also supports drafts whose tag is still pending in REST.
+      release = { id: 41, tag_name: '', draft: true, prerelease, assets: [] }
     } else if (command === 'upload') {
       assert.equal(release.draft, true)
       assert.ok(flags.every(file => files.includes(file) && !release.assets.some(asset => asset.name === path.basename(file))))
@@ -210,6 +226,7 @@ test('publication resumes partial drafts, verifies uploads and leaves published 
       assert.equal(release.assets.length, files.length)
       assert.ok(flags.includes('--draft=false') && flags.includes(`--latest=${!prerelease}`))
       release.draft = false
+      release.tag_name = tag
     } else assert.fail(`Unexpected GitHub command ${command}`)
     return ''
   }
@@ -246,6 +263,100 @@ test('publication resumes partial drafts, verifies uploads and leaves published 
   release.assets.pop()
   await assert.rejects(publishRelease(input, runGh), /已公开，但安装包或发布类型不完整/)
   assert.deepEqual(writes, [])
+})
+
+test('publication preserves lookup failures and rejects invalid release identity without remote writes', async t => {
+  const directory = testDirectory(t)
+  await stageInstallerFiles(directory)
+  const tag = `v${manifest.version}`
+  const repository = 'FLC-Team/BetterKuGou'
+  const input = { tag, directory, repository }
+  for (const stderr of [
+    'HTTP 401: Bad credentials', 'HTTP 403: Resource not accessible by integration',
+    'HTTP 404: Not Found', 'HTTP 429: API rate limit exceeded', 'HTTP 503: Service Unavailable',
+    'Post https://api.github.com/graphql: dial tcp: lookup api.github.com: no such host'
+  ]) {
+    const failure = Object.assign(new Error(stderr), { status: 1, stderr })
+    const calls = []
+    await assert.rejects(publishRelease(input, args => {
+      calls.push(args)
+      throw failure
+    }), error => error === failure)
+    assert.deepEqual(calls, [['release', 'view', tag, '--repo', repository, '--json', 'databaseId']])
+  }
+
+  for (const output of ['{invalid', '{}', '{"databaseId":0}', '{"databaseId":"41"}', '{"databaseId":9007199254740992}']) {
+    const calls = []
+    await assert.rejects(publishRelease(input, args => { calls.push(args); return output }))
+    assert.equal(calls.length, 1, 'invalid lookup never reaches an API mutation')
+  }
+
+  const valid = { id: 41, tag_name: tag, draft: true, prerelease: false, assets: [] }
+  for (const release of [
+    { ...valid, id: 42 }, { ...valid, tag_name: 'v0.0.0' }, { ...valid, draft: false, tag_name: '' },
+    { ...valid, draft: 'true' }, { ...valid, prerelease: undefined }, { ...valid, assets: undefined }, null
+  ]) {
+    await assert.rejects(publishRelease(input, args => {
+      if (args[0] === 'release') {
+        assert.equal(args[1], 'view', 'invalid identity must not create, upload or publish')
+        return '{"databaseId":41}'
+      }
+      assert.deepEqual(args, ['api', `repos/${repository}/releases/41`])
+      return JSON.stringify(release)
+    }), /发布记录身份或内容无效/)
+  }
+
+  const failure = Object.assign(new Error('HTTP 404 after exact lookup'), { status: 1, stderr: 'HTTP 404: Not Found' })
+  await assert.rejects(publishRelease(input, args => {
+    if (args[0] === 'release') {
+      assert.equal(args[1], 'view')
+      return '{"databaseId":41}'
+    }
+    throw failure
+  }), error => error === failure)
+})
+
+test('a CLI not-found result cannot hide a failed draft lookup or recreate an existing draft', async t => {
+  const directory = testDirectory(t)
+  await stageInstallerFiles(directory)
+  const tag = `v${manifest.version}`
+  const repository = 'FLC-Team/BetterKuGou'
+  const input = { tag, directory, repository }
+  const missing = () => { throw Object.assign(new Error('missing'), { status: 1, stderr: 'release not found\n' }) }
+  for (const stderr of ['HTTP 403: Resource not accessible by integration', 'HTTP 503: Service Unavailable', 'connection reset']) {
+    const failure = Object.assign(new Error(stderr), { status: 1, stderr })
+    const calls = []
+    await assert.rejects(publishRelease(input, args => {
+      calls.push(args.slice(0, 2))
+      if (args[0] === 'release') return missing()
+      throw failure
+    }), error => error === failure)
+    assert.deepEqual(calls, [['release', 'view'], ['api', 'graphql']])
+  }
+  for (const response of [
+    {}, { data: { repository: null } }, { data: { repository: {} } },
+    { data: { repository: { release: null } }, errors: [{ message: 'Resource not accessible' }] }
+  ]) {
+    await assert.rejects(publishRelease(input, args => {
+      if (args[0] === 'release') { assert.equal(args[1], 'view'); return missing() }
+      assert.equal(args[1], 'graphql')
+      return JSON.stringify(response)
+    }), /发布查询响应无效/)
+  }
+
+  const writes = []
+  const stopUpload = new Error('reached the existing draft upload')
+  await assert.rejects(publishRelease(input, args => {
+    if (args[0] === 'release' && args[1] === 'view') return missing()
+    if (args[0] === 'api' && args[1] === 'graphql') return '{"data":{"repository":{"release":{"databaseId":41}}}}'
+    if (args[0] === 'api') {
+      assert.deepEqual(args, ['api', `repos/${repository}/releases/41`])
+      return JSON.stringify({ id: 41, tag_name: tag, draft: true, prerelease: false, assets: [] })
+    }
+    writes.push(args[1])
+    throw stopUpload
+  }), error => error === stopUpload)
+  assert.deepEqual(writes, ['upload'])
 })
 
 test('actual backend resource copy retains runtime files and excludes local settings and credentials', async t => {

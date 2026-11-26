@@ -9,6 +9,7 @@ import ContextMenu from '../common/ContextMenu.vue'
 import ArtistLinks from '../common/ArtistLinks.vue'
 import ArtworkCover from '../common/ArtworkCover.vue'
 import VolumeControl from './VolumeControl.vue'
+import AnimatedSlider from '../common/AnimatedSlider.vue'
 import LibraryActions from '../common/LibraryActions.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
 import repeatAllIcon from '../../assets/icons/repeat_all.svg'
@@ -24,7 +25,7 @@ const lyricSegmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter
 
 export default {
   name: 'LyricView',
-  components: { ContextMenu, ArtistLinks, ArtworkCover, VolumeControl, LibraryActions },
+  components: { ContextMenu, ArtistLinks, ArtworkCover, VolumeControl, LibraryActions, AnimatedSlider },
   props: {
     readBackgroundBeat: Function,
     stopBackgroundBeat: Function,
@@ -141,6 +142,7 @@ export default {
       browseReturnTimer: null,
       lyricPointer: null,
       suppressLyricClick: false,
+      pendingLyricClick: null,
       lyricMenuVisible: false,
       lyricMenuPosition: { x: 0, y: 0 },
       lyricMenuSnapshot: null,
@@ -260,10 +262,6 @@ export default {
       const time = this.seekPreviewTime ?? this.previewTime ?? this.currentPlayTime
       return Number.isFinite(time) ? Math.max(0, Math.min(time, this.duration || 0)) : 0
     },
-    progressPercentage() {
-      if (!Number.isFinite(this.duration) || this.duration <= 0) return 0
-      return this.displayPlayTime / this.duration * 100
-    },
     playModeIcon() {
       return this.playMode === 'single' ? repeatOneIcon : this.playMode === 'shuffle' ? shuffleIcon : repeatAllIcon
     },
@@ -289,6 +287,7 @@ export default {
       return {
         '--base-font-size': `${this.lyricFontSize}px`,
         '--current-font-size': `${this.lyricFontSize * 1.125}px`,
+        '--fullscreen-lyric-alignment': this.fullscreenPreferences.alignment,
         '--fullscreen-lyric-font': font ? `${JSON.stringify(font)}, var(--font-family)` : undefined
       }
     },
@@ -640,7 +639,7 @@ export default {
         this.returnToCurrentLyric()
       }, 5000)
     },
-    /** 只在超过 6px 后捕获指针，普通单击仍由实际歌词行接收。 */
+    /** 只在超过 6px 后捕获指针，正常点击仍由实际歌词行接收。 */
     startLyricPointer(event, key) {
       if (!this.canBrowseLyrics || !this.isCurrentLyricEvent(event, key) ||
           event.button !== 0 || event.isPrimary === false || this.lyricPointer) return
@@ -668,6 +667,7 @@ export default {
         pointer.position = this.browsePosition
         pointer.dragging = true
         this.suppressLyricClick = true
+        this.pendingLyricClick = null
         pointer.host?.setPointerCapture?.(pointer.id)
       }
       event.preventDefault()
@@ -695,6 +695,7 @@ export default {
       if (!this.canBrowseLyrics || !this.isCurrentLyricEvent(event, key) || this.lyricPointer || event.ctrlKey) return
       if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return
       event.preventDefault()
+      this.pendingLyricClick = null
       this.closeLyricMenu()
       this.beginLyricBrowsing()
       const unit = event.deltaMode === 1 ? this.lyricLineHeight
@@ -721,6 +722,7 @@ export default {
       this.copyFeedback = ''
     },
     returnToCurrentLyricWithoutSync() {
+      this.pendingLyricClick = null
       this.lyricMenuVisible = false
       this.lyricMenuSnapshot = null
       contextMenuManager.unregisterMenu(this.closeLyricMenu)
@@ -747,13 +749,23 @@ export default {
         this.handleLyricEscape()
       }
     },
+    /** 双击须由同一行的两次有效点击组成，拖动或取消的手势不能作为其中一次。 */
+    recordLyricClick(index, event, key) {
+      const previous = this.pendingLyricClick
+      this.pendingLyricClick = null
+      if (this.suppressLyricClick || !this.isLyricLineInteractive(index) || !this.isCurrentLyricEvent(event, key)) return
+      const { detail } = event
+      if (detail === 1 || (detail === 2 && previous?.detail === 1 && previous.index === index && previous.key === key)) {
+        this.pendingLyricClick = { index, key, detail }
+      }
+    },
     activateLyricLine(index, event, key) {
       if (!this.isLyricLineInteractive(index) || !this.isCurrentLyricEvent(event, key)) return
-      if (this.suppressLyricClick && event?.type !== 'keydown') {
-        this.suppressLyricClick = false
-        event?.preventDefault?.()
-        return
-      }
+      if (event.type === 'dblclick') {
+        const click = this.pendingLyricClick
+        this.pendingLyricClick = null
+        if (this.suppressLyricClick || click?.detail !== 2 || click.index !== index || click.key !== key) return
+      } else if (event.type !== 'keydown') return
       this.seekTo(this.parsedLyrics[index].time)
     },
     focusLyricLine(index, key) {
@@ -767,6 +779,7 @@ export default {
     /** 菜单保存纯文本快照，空格和翻译不经过逐字 DOM 或后续歌曲状态。 */
     showLyricMenu(event, index, key) {
       if (!this.isLyricLineInteractive(index) || !this.isCurrentLyricEvent(event, key)) return
+      this.pendingLyricClick = null
       contextMenuManager.closeActiveMenu()
       this.releaseLyricPointer()
       this.beginLyricBrowsing()
@@ -1136,12 +1149,13 @@ export default {
         transform: `translate(-50%, -50%) translateY(${translateY}px) scale(${scale})`,
         opacity: distance > maxVisibleDistance ? 0 : opacity,
         visibility: distance > maxVisibleDistance ? 'hidden' : 'visible',
-        filter: blurEnabled && blur > 0 ? `blur(${blur * blurPercent / 25}px)` : 'none',
+        '--lyric-line-filter': blurEnabled && blur > 0 ? `blur(${blur * blurPercent / 25}px)` : 'none',
         fontSize: isCurrent ? 'var(--current-font-size)' : 'var(--base-font-size)',
         fontWeight: fontWeight,
         zIndex: isCurrent ? 10 : 1,
         transition: this.lyricPointer?.dragging ? 'none' : this.lineTransitionDuration > 0
-          ? `transform ${this.lineTransitionDuration}s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.3s ease, filter 0.3s ease` : 'none',
+          ? `transform ${this.lineTransitionDuration}s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.3s ease, filter 0.22s ease`
+          : 'filter 0.22s ease',
         pointerEvents: distance <= maxVisibleDistance && this.isLyricLineInteractive(index) ? 'auto' : 'none'
       }
     },

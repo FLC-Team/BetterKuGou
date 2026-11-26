@@ -5,6 +5,7 @@ const path = require('node:path')
 const vm = require('node:vm')
 const vue = require('vue')
 const { parse, compileTemplate } = require('@vue/compiler-sfc')
+const { loadSongTitle } = require('./helpers/songTitleHarness.cjs')
 
 function deferred() {
   let resolve
@@ -41,7 +42,7 @@ function loadFavorites({ props = {}, api = {}, cache = {}, reactiveView = false,
     ContextMenu: {},
     WindowedList: {},
     ArtworkCover: {}, LibraryActions: {}, PlaylistOverview: {},
-    SongBadges: {},
+    SongBadges: {}, SongTitle: {},
     ArtistLinks: {},
     getSongArtists: metadata.getSongArtists,
     filterSongs: metadata.filterSongs,
@@ -69,9 +70,7 @@ function loadFavorites({ props = {}, api = {}, cache = {}, reactiveView = false,
       return api.getAllPlaylistTracks?.(...args) ?? Promise.resolve([{ hash: 'song-a' }])
     },
     setTimeout(callback, delay) { const id = ++timerId; timers.set(id, { callback, delay }); return id },
-    clearTimeout(id) { timers.delete(id) },
-    confirm: () => true,
-    alert() {}
+    clearTimeout(id) { timers.delete(id) }
   })
   vm.runInContext(source, sandbox)
   const options = sandbox.module.exports
@@ -152,7 +151,7 @@ function mountFavoriteActions(t, ordinaryPlaylist) {
   const emitted = []
   const Page = {
     components: { ...f.options.components, ContextMenu: contextMenu, WindowedList: windowedList,
-      ArtworkCover: leaf, SongBadges: leaf, ArtistLinks: leaf, LibraryActions: leaf, PlaylistOverview: leaf },
+      ArtworkCover: leaf, SongBadges: leaf, SongTitle: loadSongTitle(), ArtistLinks: leaf, LibraryActions: leaf, PlaylistOverview: leaf },
     directives: f.options.directives, methods: f.options.methods, computed: f.options.computed, emits: f.options.emits,
     watch: Object.fromEntries(['favoriteList', 'searchQuery', 'sortOrder'].map(key => [key, f.options.watch[key]])),
     data: () => ({ ...f.options.data(), favoriteList: songs, currentSong: null, musicLibrary: library,
@@ -263,7 +262,7 @@ test('favorite song labels remove filename extensions while preserving meaningfu
   await vue.nextTick()
   const titles = f.buttons().filter(item => item.props.class === 'song-name')
   assert.deepEqual(titles.map(item => f.nodeText(item).trim()), ['Track (Live)', 'Track - Part Two'])
-  titles[0].props.onClick({ stopPropagation() {} })
+  titles[0].props.onClick({ detail: 0, stopPropagation() {} })
   const searched = f.emitted.find(event => event[0] === 'search')[1]
   assert.equal(searched.hash, 'file-song')
   assert.equal(searched.name, 'Artist - Track (Live).MP3')
@@ -586,6 +585,57 @@ function attachCloudLibrary(favorites, waitForWrite) {
   return { library, remoteWrites }
 }
 
+test('playlist confirmations act only on the account and resource that opened them', async () => {
+  const playlist = { id: 23, name: 'Fixture playlist' }
+  const songs = [{ hash: 'song-a' }]
+  const changes = []
+  const requests = []
+  const library = {
+    state: { resource: playlist },
+    bindFavorites: resource => changes.push(['bind', resource]),
+    removeSongs: (resource, selection) => changes.push(['remove', resource, selection])
+  }
+  let answer = deferred()
+  const { view, storage } = loadFavorites({ props: {
+    musicLibrary: library,
+    askAppDialog(options) { requests.push(options); return answer.promise }
+  } })
+  view.requestScope = { ...view.readIdentity(), playlistKey: view.playlistKey() }
+
+  const binding = view.bindFavoritePlaylist(playlist)
+  assert.equal(requests.at(-1).defaultAction, 'cancel')
+  assert.deepEqual(changes, [])
+  answer.resolve({ action: 'bind' })
+  await binding
+
+  answer = deferred()
+  const canceled = view.removeSelectedSongs(songs)
+  assert.equal(requests.at(-1).tone, 'danger')
+  answer.resolve({ action: null })
+  await canceled
+  assert.deepEqual(changes, [['bind', playlist]])
+
+  answer = deferred()
+  const staleResource = view.removeSelectedSongs(songs)
+  library.state.resource = { id: 29, name: 'Another playlist' }
+  answer.resolve({ action: 'remove' })
+  await staleResource
+  assert.deepEqual(changes, [['bind', playlist]])
+
+  answer = deferred()
+  const removal = view.removeSelectedSongs(songs)
+  answer.resolve({ action: 'remove' })
+  await removal
+  assert.deepEqual(changes, [['bind', playlist], ['remove', library.state.resource, songs]])
+
+  answer = deferred()
+  const staleAccount = view.bindFavoritePlaylist(playlist)
+  storage.set('kugou_userid', 'account-b')
+  answer.resolve({ action: 'bind' })
+  await staleAccount
+  assert.equal(changes.length, 2)
+})
+
 test('favorite edits keep the displayed list until cloud confirmation and use account entry IDs', async () => {
   const response = deferred()
   const favorites = loadFavorites()
@@ -698,8 +748,10 @@ test('search and sorting keep row identity, whole-playlist playback and right-cl
   const selected = favorites.view.filteredFavoriteList[0]
   favorites.view.playSong(selected)
   assert.equal(favorites.emitted.at(-1)[0], 'play-all')
-  assert.equal(favorites.emitted.at(-1)[1].map(song => song.hash).join(','), 'c,a,b')
-  assert.equal(favorites.emitted.at(-1)[1][0], complete[2])
+  assert.equal(favorites.emitted.at(-1)[1], complete)
+  assert.equal(favorites.emitted.at(-1)[2], 2)
+  favorites.view.playSong(complete[1])
+  assert.equal(favorites.emitted.at(-1)[2], 1, 'an immediate selection of another row wins')
   favorites.view.showContextMenu({ clientX: 12, clientY: 24 }, selected)
   await Promise.resolve()
   favorites.view.contextMenuItems.find(item => item.label === '下一首播放').action()

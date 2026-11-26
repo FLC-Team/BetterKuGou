@@ -50,6 +50,7 @@ function fixture({ platform = 'linux', packaged = false, controls = {} } = {}) {
   }
   Window.getAllWindows = () => windows.filter(window => !window.destroyed)
   const app = Object.assign(new EventEmitter(), { isPackaged: packaged, commandLine: { appendSwitch() {} },
+    requestSingleInstanceLock: () => true,
     whenReady: () => new Promise(() => {}), getPath: () => '/test-private', getAppPath: () => '/test-app',
     getVersion: () => '1.0.0', quit() {} })
   const protocol = { registerSchemesAsPrivileged(value) { privileged = value },
@@ -92,9 +93,9 @@ function fixture({ platform = 'linux', packaged = false, controls = {} } = {}) {
       throw new Error(`Unexpected dependency: ${name}`)
     }
   })
-  // Allow built-in path/URL and read-only icon lookup; no real service or settings store may run.
+  // Allow built-ins used by the main process; no real service or settings store may run.
   const originalRequire = context.require
-  context.require = name => ['path', 'url', 'fs'].includes(name) ? require(name) : originalRequire(name)
+  context.require = name => ['path', 'url', 'fs', 'node:crypto'].includes(name) ? require(name) : originalRequire(name)
   vm.runInContext(fs.readFileSync(path.join(root, 'electron/main.js'), 'utf8'), context)
   const api = vm.runInContext('({createWindow,initializeAudioEffects,subscribeToSettingsUpdates,performApplicationCleanup})', context)
   api.createWindow(); api.initializeAudioEffects(); api.subscribeToSettingsUpdates()

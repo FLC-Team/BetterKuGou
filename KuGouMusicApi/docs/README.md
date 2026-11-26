@@ -504,6 +504,12 @@ https://long.open.weixin.qq.com/connect/l/qrconnect?f=json&uuid=xxx 该接口直
 
 **接口地址：** `/user/detail`
 
+### 修改个人资料
+
+登录后通过 JSON POST `/user/update` 修改当前账号资料。以下字段至少提供一项：`nickname`（1–50 字符）、`signature`（最多 200 字符）、`sex`（`0` 女、`1` 男、`2` 保密）、`birthday`（`yyyy-MM-dd`）。`signature` 和 `birthday` 支持空串清空；未提供的字段不改变。
+
+认证使用现有 `cookie` 的 `token/userid`，不要把凭证写入示例或日志。协议适配来源为 [MakcRe/KuGouMusicApi 的 user_update 模块](https://github.com/MakcRe/KuGouMusicApi/blob/main/module/user_update.js)，保留仓库 MIT 许可。本地接口按上游协议使用 HTTP 连接用户服务，资料字段未经传输加密，请勿填写敏感信息；本实现不包含头像上传、密码或安全绑定修改。
+
 ### 获取用户 vip 信息
 
 说明：登陆后调用此接口，可以获取用户 vip 信息

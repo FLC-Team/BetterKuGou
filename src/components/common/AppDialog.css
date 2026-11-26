@@ -1,0 +1,118 @@
+.app-dialog {
+  --dialog-accent: var(--color-primary);
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: clamp(12px, 4vw, 40px);
+  border: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-background) 65%, transparent);
+  backdrop-filter: blur(9px) brightness(.75);
+  -webkit-app-region: no-drag;
+}
+
+.app-dialog::backdrop { background: transparent; }
+.app-dialog[open] { display: grid; animation: app-dialog-in 210ms ease-out both; }
+.app-dialog[data-tone="danger"] { --dialog-accent: var(--color-error); }
+
+.dialog-panel {
+  width: min(100%, 690px);
+  margin: auto;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 22px;
+  background: var(--color-background-light);
+  box-shadow: 0 26px 90px #0005;
+  animation: app-dialog-panel-in 250ms cubic-bezier(.18, .8, .25, 1) both;
+}
+
+.dialog-intro {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(18px, 4vw, 34px);
+  padding: clamp(22px, 5vw, 44px);
+  background: radial-gradient(ellipse at 0 0, color-mix(in srgb, var(--dialog-accent) 13%, transparent), transparent 62%);
+}
+
+.dialog-record {
+  display: grid;
+  place-items: center;
+  width: clamp(70px, 13vw, 114px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--dialog-accent) 35%, var(--color-border));
+  background: repeating-radial-gradient(circle, transparent 0 4px, color-mix(in srgb, var(--dialog-accent) 22%, transparent) 5px 6px);
+  color: var(--dialog-accent);
+}
+
+.dialog-record svg {
+  width: 47%;
+  padding: 9%;
+  border-radius: 50%;
+  background: var(--color-background-light);
+}
+
+.dialog-eyebrow { color: var(--dialog-accent); font-size: 11px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase; }
+.dialog-eyebrow span { color: var(--color-text-secondary); letter-spacing: .05em; }
+.dialog-intro h2 { margin-top: 7px; font-size: clamp(22px, 3.4vw, 34px); line-height: 1.18; overflow-wrap: anywhere; }
+.dialog-intro h2 + p { margin-top: 12px; color: var(--color-text-secondary); line-height: 1.7; white-space: pre-line; overflow-wrap: anywhere; }
+
+.dialog-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 18px;
+  padding: 18px clamp(18px, 5vw, 44px);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-background);
+}
+
+.dialog-checkbox { display: inline-flex; align-items: center; gap: 8px; min-height: 38px; cursor: pointer; }
+.dialog-checkbox input { width: 16px; height: 16px; accent-color: var(--color-primary); cursor: inherit; }
+.dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-inline-start: auto; }
+.dialog-actions button {
+  min-height: 40px;
+  padding: 7px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  color: var(--color-text);
+  background: var(--color-background-light);
+  font-weight: 650;
+}
+.dialog-actions button:hover { background: var(--color-background-lighter); }
+.dialog-actions [data-variant="primary"] { color: var(--color-on-primary); background: var(--color-primary); border-color: var(--color-primary); }
+.dialog-actions [data-variant="primary"]:hover { background: var(--color-primary-hover); }
+.dialog-actions [data-variant="danger"] { color: var(--color-text); background: var(--color-error-light); border-color: var(--color-error); }
+.dialog-actions [data-variant="danger"]:hover { background: color-mix(in srgb, var(--color-error) 25%, var(--color-background)); }
+
+.app-dialog[data-closing] { animation: app-dialog-out 150ms ease-in both; }
+.app-dialog[data-closing] .dialog-panel { animation: app-dialog-panel-out 150ms ease-in both; pointer-events: none; }
+
+@keyframes app-dialog-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes app-dialog-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes app-dialog-panel-in { from { transform: translateY(18px) scale(.98); } to { transform: none; } }
+@keyframes app-dialog-panel-out { from { transform: none; } to { transform: translateY(10px) scale(.985); } }
+
+@media (max-width: 490px) {
+  .dialog-intro { grid-template-columns: 1fr; }
+  .dialog-record { width: 54px; }
+  .dialog-footer { padding-block: 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-dialog[open], .app-dialog .dialog-panel { animation: none; }
+}
+
+@media (forced-colors: active) {
+  .app-dialog { background: Canvas; backdrop-filter: none; }
+  .dialog-panel, .dialog-footer, .dialog-actions button { border-color: ButtonText; }
+  .dialog-record { display: none; }
+  .dialog-intro { grid-template-columns: 1fr; }
+}

@@ -5,6 +5,7 @@ import { getUserPlaylists, getPlaylistTracks } from '../../api/music.js'
 import { getAllPlaylistTracks } from '../../api/library.js'
 import ArtworkCover from '../../components/common/ArtworkCover.vue'
 import SongBadges from '../../components/common/SongBadges.vue'
+import SongTitle from '../../components/common/SongTitle.vue'
 import LibraryActions from '../../components/common/LibraryActions.vue'
 import PlaylistOverview from '../../components/common/PlaylistOverview.vue'
 import ArtistLinks from '../../components/common/ArtistLinks.vue'
@@ -21,12 +22,13 @@ import nextplayIcon from '../../assets/icons/nextplay.svg'
 
 export default {
   name: 'FavoriteView',
-  inject: { musicLibrary: { default: null } },
+  inject: { musicLibrary: { default: null }, askAppDialog: { default: null } },
   directives: { listMotion },
   emits: ['play', 'play-all', 'play-next', 'remove-from-playlist', 'search', 'navigate', 'favorites-changed', 'download', 'share', 'add-to-playlist', 'show-details', 'manage-playlist'],
   components: {
     ArtworkCover,
     SongBadges,
+    SongTitle,
     LibraryActions,
     PlaylistOverview,
     ArtistLinks,
@@ -76,7 +78,7 @@ export default {
       contextMenuPosition: { x: 0, y: 0 },
       currentContextSong: null,
       sortOrder: 'none', // 排序状态: 'none', 'asc', 'desc'
-      isPlayingSong: false, // 防止重复播放请求
+      lastRequestedSong: null,
       nextplayIcon: nextplayIcon
     }
   },
@@ -541,7 +543,15 @@ export default {
       this.errorMessage = this.musicLibrary.state.error || ''
     },
     async bindFavoritePlaylist(resource) {
-      if (!confirm(`确认将“${resource.name}”作为本账号的我喜欢歌单？之后的收藏操作会同步到此歌单。`)) return
+      const scope = this.requestScope
+      const choice = await this.askAppDialog?.({
+        eyebrow: '我的收藏',
+        title: '绑定我喜欢的歌单？',
+        message: `之后的收藏操作会同步到本账号的“${resource.name}”。`,
+        actions: [{ id: 'cancel', label: '取消' }, { id: 'bind', label: '绑定歌单', variant: 'primary' }],
+        defaultAction: 'cancel'
+      })
+      if (choice?.action !== 'bind' || !this.isActive || this.isDisposed || !scope || !this.hasCurrentScope(scope)) return
       try { await this.musicLibrary.bindFavorites(resource); this.applyCloudFavorites() }
       catch (error) { this.errorMessage = error.message || '绑定失败，请重试' }
     },
@@ -559,8 +569,19 @@ export default {
       this.selectedIndices = checked ? [...new Set([...this.selectedIndices, song.index])] : this.selectedIndices.filter(index => index !== song.index)
     },
     async removeSelectedSongs(songs = this.selectedSongs) {
+      const scope = this.requestScope
       const resource = this.isPlaylistView ? this.playlistResource : this.musicLibrary?.state.resource
-      if (!resource || !songs.length || !confirm(`确定从“${resource.name || this.pageTitle}”移除 ${songs.length} 首歌曲？此操作会同步到酷狗账号。`)) return
+      if (!resource || !songs.length) return
+      const choice = await this.askAppDialog?.({
+        eyebrow: '歌单管理',
+        title: `移除 ${songs.length} 首歌曲？`,
+        message: `将从“${resource.name || this.pageTitle}”移除这些歌曲。此操作会同步到酷狗账号。`,
+        tone: 'danger',
+        actions: [{ id: 'cancel', label: '取消' }, { id: 'remove', label: '移除歌曲', variant: 'danger' }],
+        defaultAction: 'cancel'
+      })
+      const currentResource = this.isPlaylistView ? this.playlistResource : this.musicLibrary?.state.resource
+      if (choice?.action !== 'remove' || !this.isActive || this.isDisposed || !scope || !this.hasCurrentScope(scope) || resource !== currentResource) return
       try { await this.musicLibrary.removeSongs(resource, songs); if (this.isPlaylistView) await this.loadFavorites(true) }
       catch (error) { this.errorMessage = error.message || '移除失败，请刷新后重试' }
     },
@@ -575,34 +596,16 @@ export default {
     
     getSongName(song) { return getSongSearchKeyword(song) || '未知歌曲' },
     
-    // 播放歌曲
+    /** 歌单内搜索或排序只影响显示。点播时保留完整曲序，仅抑制同一行的重复激活。 */
     playSong(song) {
-      // 防止重复快速点击
-      if (this.isDisposed || this.isPlayingSong || !song) return
-      
-      this.isPlayingSong = true
+      if (this.isDisposed || !song || this.lastRequestedSong === song) return
+      this.lastRequestedSong = song
       
       try {
-        // 检查是否开启了"自动将全部歌单歌曲加入播放列表"功能
-        if (this.settings?.playback?.enqueueFullPlaylist && this.favoriteList.length > 0) {
-          logger.trace('FavoriteView', '自动加入全部歌曲到播放列表')
-          // 找到当前歌曲在列表中的索引
-          const songIndex = this.favoriteList.findIndex(s => s.hash === song.hash)
-          
-          if (songIndex !== -1) {
-            // 重新排列歌单,让当前歌曲排在第一位
-            const reorderedList = [
-              song,
-              ...this.favoriteList.slice(0, songIndex),
-              ...this.favoriteList.slice(songIndex + 1)
-            ]
-            this.$emit('play-all', reorderedList)
-          } else {
-            // 如果找不到,就正常播放全部
-            this.$emit('play-all', this.favoriteList)
-          }
+        const index = this.settings?.playback?.enqueueFullPlaylist ? this.favoriteList.indexOf(song) : -1
+        if (index >= 0) {
+          this.$emit('play-all', this.favoriteList, index)
         } else {
-          // 只播放单曲
           this.$emit('play', song)
         }
       } catch (error) {
@@ -613,7 +616,7 @@ export default {
         if (!this.isDisposed) {
           this.playSongTimer = setTimeout(() => {
             this.playSongTimer = null
-            if (!this.isDisposed) this.isPlayingSong = false
+            this.lastRequestedSong = null
           }, 500)
         }
       }

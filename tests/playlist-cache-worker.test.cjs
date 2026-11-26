@@ -1,5 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const streams = require('node:fs')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 const http = require('node:http')
@@ -350,6 +351,8 @@ test('detects on-disk corruption and supports preferred-quality misses with expl
   await f.playlist()
   await f.play()
   const source = await f.complete()
+  const timestamp = new Date('2024-01-01T00:00:00Z')
+  await fs.utimes(source.path, timestamp, timestamp)
   assert.equal(await f.send('getSource', { hash: 'song-a', quality: '320' }), null)
   const fallback = await f.send('getSource', { hash: 'song-a', quality: '320', allowFallback: true })
   assert.equal(fallback.requestedQuality, '128')
@@ -357,8 +360,46 @@ test('detects on-disk corruption and supports preferred-quality misses with expl
   const corrupted = Buffer.from(f.audio)
   corrupted[150] = 0xff
   await fs.writeFile(source.path, corrupted)
+  await fs.utimes(source.path, timestamp, timestamp)
   assert.equal(await f.send('getSource', { hash: 'song-a', quality: '128' }), null)
   assert.equal(f.engine().snapshot().playlists[0].cached, 0)
+})
+
+test('cache hits reuse the checksum and batch access writes without rescanning on lease release or unrelated settings saves', async t => {
+  const f = await fixture(t)
+  await f.playlist('older', ['song-a'], false)
+  await f.playlist('newer', ['song-b'], false)
+  await f.play()
+  await f.complete()
+  await f.restart()
+  await f.send('configure', { download: {} })
+
+  const account = crypto.createHash('sha256').update('account-a').digest('hex')
+  const indexPath = path.join(f.directory, account, 'index.json')
+  const before = JSON.parse(await fs.readFile(indexPath, 'utf8'))
+  const checksumReads = t.mock.method(streams, 'createReadStream')
+  const directoryReads = t.mock.method(fs, 'readdir')
+  const writes = t.mock.method(fs, 'writeFile')
+
+  for (let repeat = 0; repeat < 3; repeat++) {
+    assert.equal((await f.send('readPlaylist', { id: 'older' })).id, 'older')
+    const source = await f.send('getSource', { hash: 'song-a', quality: '128' })
+    assert.ok(source)
+    await f.send('releaseSource', { leaseId: source.leaseId })
+    await f.send('configure', { download: {}, playback: { lastPosition: repeat } })
+  }
+  assert.equal(checksumReads.mock.callCount(), 1)
+  assert.equal(directoryReads.mock.callCount(), 0)
+  assert.equal(writes.mock.callCount(), 0)
+  assert.equal(f.engine().snapshot().playlists[0].id, 'older')
+
+  await f.login(null)
+  await f.engine().stop()
+  assert.equal(writes.mock.callCount(), 1)
+  const after = JSON.parse(await fs.readFile(indexPath, 'utf8'))
+  assert.equal(before.playlists[0].id, 'newer')
+  assert.equal(after.playlists[0].id, 'older')
+  assert.ok(after.songs['song-a:128'].lastUsed >= before.songs['song-a:128'].lastUsed)
 })
 
 test('clear retains complete playlist metadata, protects existing leases across logout and suppresses automatic re-download', async t => {
@@ -503,10 +544,16 @@ test('simultaneous downloads reserve remaining bytes before writing and expose p
   assert.equal(await f.send('getSource', { hash: 'song-b', quality: '128' }), null)
 })
 
-test('artwork is cached on demand, type-checked and isolated by account', async t => {
+test('artwork is cached on demand, deduplicated while queued, type-checked and isolated by account', async t => {
   const f = await fixture(t)
   assert.equal(await f.send('getArtwork', { url: `${f.origin}/cover` }), null)
+  await f.send('pause')
   await f.send('cacheArtwork', { url: `${f.origin}/cover` })
+  const writes = t.mock.method(fs, 'writeFile')
+  await f.send('cacheArtwork', { url: `${f.origin}/cover` })
+  assert.equal(writes.mock.callCount(), 0, 'another visible row can share the already queued cover')
+  writes.mock.restore()
+  await f.send('resume')
   const image = await until(() => f.send('getArtwork', { url: `${f.origin}/cover` }))
   assert.equal(image.extname, 'png')
   await f.send('releaseSource', { leaseId: image.leaseId })

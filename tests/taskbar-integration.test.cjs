@@ -19,7 +19,7 @@ function fixture(t, platform = 'win32') {
     desktopLyrics: {}, playback: { showTranslation: true }, software: { updates: {}, minimizeToTray: false } }
   const writes = [], metrics = { shows: 0, closes: 0, previews: 0, reset: 0, sizes: [], messages: [], configurations: [] }
   let current = null, serviceOptions = null, nativeDark
-  const app = Object.assign(new EventEmitter(), { isPackaged: true, whenReady: () => new Promise(() => {}),
+  const app = Object.assign(new EventEmitter(), { isPackaged: true, requestSingleInstanceLock: () => true, whenReady: () => new Promise(() => {}),
     commandLine: { appendSwitch() {} }, quit() {}, getPath: () => '/controlled-user-data', getVersion: () => '0.2.0', getAppPath: () => path.resolve(__dirname, '..') })
   const nativeTheme = Object.assign(new EventEmitter(), { shouldUseDarkColors: true })
   const screen = Object.assign(new EventEmitter(), {

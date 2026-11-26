@@ -1,3 +1,5 @@
+import { findQueueSongIndex } from './libraryMetadata.js'
+
 /** Abortable media/API wait; cancelling a candidate never changes the confirmed deck. */
 export function waitForPlaybackOperation(operation, { signal, audio, timeout = 15000 } = {}) {
   return new Promise((resolve, reject) => {
@@ -101,7 +103,7 @@ export function selectPlaybackCandidate({ playlist, shuffledPlaylist, playMode, 
     if (queued) return { song: queued, priority: true }
   }
   const ordered = playMode === 'shuffle' && shuffledPlaylist.length ? shuffledPlaylist : playlist
-  const targetIndex = ordered.findIndex(song => key(song) === key(target))
+  const targetIndex = findQueueSongIndex(ordered, target, -1, key)
   for (let offset = 1; offset <= ordered.length; offset++) {
     const index = (Math.max(0, targetIndex) + direction * offset + ordered.length) % ordered.length
     const song = ordered[index]

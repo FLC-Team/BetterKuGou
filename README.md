@@ -48,6 +48,12 @@
 
 缓存保存在应用用户数据目录的 `offline-playlists` 文件夹。退出账号后停止缓存并隐藏私有内容，原账号重新登录后可继续使用；缓存故障、歌词或封面缺失不阻断正常播放。
 
+### 搜索与账号资料
+
+空搜索框展示最近 20 条已提交的搜索词，按账号保存在本机，重启后保留；可点击复用或清空历史。列表及播放队列中的歌名，单击约 500ms 后搜索，双击播放并取消待执行的搜索；键盘激活立即搜索。
+
+登录后从标题栏或侧栏账号菜单打开“编辑资料”，可将昵称、个性签名、性别和生日同步保存到酷狗；失败保留草稿，确认成功后更新本机账号显示。资料接口沿用上游 HTTP 协议，界面会提示勿填写敏感信息；此入口暂不提供头像上传。
+
 ### VST3 音频效果
 
 打开“设置 → 聆听 → 音频效果”，扫描已安装的插件或添加自选目录，将效果器加入效果链；可排序、旁路、打开原生编辑窗口及设置置顶。插件参数与效果链自动保存在本机。支持当前歌曲 BPM 自动估算、手动覆盖和倍速/半速修正，供插件节拍同步使用，不改变歌曲播放速度。
@@ -60,6 +66,8 @@
 - Windows 升级时：在安装器点击更新后，支持协作的客户端先保存设置和播放会话并正常退出。旧版、保存失败或超时会提示手动退出并重试，不强制结束进程。首次更新到支持该流程的版本时，需要从托盘退出旧版。
 - macOS：打开 DMG，将应用拖入 Applications。覆盖升级前先退出 BetterKuGou，再拖入并按 Finder 提示替换。
 - Linux：DEB/RPM 使用系统安装工具安装或升级，操作前先退出应用；AppImage 先退出旧版，再用新版文件替换，赋予可执行权限后重新运行。
+
+Linux 系统包的安装操作使用管理员权限，启动客户端时使用普通桌面用户执行 `betterkugou`。安装器为 `chrome-sandbox` 设置 `root:root` 与 `4755`，不需要把整个 `/opt/BetterKuGou` 目录改为用户所有，也不要使用 `sudo betterkugou`。DEB/RPM 通过包管理器检查运行依赖及二进制所需版本；版本不足时升级系统库或选用兼容系统构建的安装包，不要强行忽略依赖。客户端自带 Node.js 运行环境，无需另装系统 Node.js。AppImage 不经过系统包依赖解析，仍需兼容的系统库与可用的沙箱环境。
 
 Windows 安装器先验证并解包新版，再替换程序目录。替换失败时恢复旧版程序。遇到旧安装或混有额外文件的目录，确认后会把旧目录保留在同一磁盘的备份位置。以前装在受保护程序目录之外的全局版会被阻止原地覆盖。卸载按安装文件清单清理，保留目录中另行添加的文件及应用设置。降级保留数据，旧版本可能无法读取新版设置。Windows 安装需要交互确认。
 
@@ -93,6 +101,7 @@ Windows 安装器先验证并解包新版，再替换程序目录。替换失败
    ```
 
 仅验证界面与 Electron 编译时可运行 `npm run build`。打包会自动构建目标架构的原生音效宿主，最终安装包输出到 `release/`。
+Linux 构建需要 `binutils`，DEB 还需要 `dpkg-dev`。打包钩子从 Electron、音频宿主及随包动态库读取实际系统库版本要求；DEB 使用 `dpkg-shlibdeps`，RPM 从 ELF 读取 SONAME 与符号版本，过滤应用自带库。无法确认版本要求时阻止打包。
 
 安装界面维护见 [安装模块速查](installer/installer.md)。Windows 下可使用 `pwsh -NoProfile -File scripts/generate-installer-assets.ps1` 从公共 Logo 重新生成安装图像；macOS/Linux 打包直接使用已提交资源。
 
@@ -131,6 +140,19 @@ npm run build # Vue 与 Electron 构建
 5. 提交 Pull Request
 
 ## 常见问题
+
+- Linux 日志出现 `connect ECONNREFUSED 127.0.0.1:7897`：后端继承了系统或终端中的代理配置，但该端口没有可用代理。启动对应代理，或仅本次清除代理环境后运行：
+
+  ```bash
+  env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+    -u http_proxy -u https_proxy -u all_proxy \
+    -u NPM_CONFIG_PROXY -u NPM_CONFIG_HTTP_PROXY -u NPM_CONFIG_HTTPS_PROXY \
+    -u npm_config_proxy -u npm_config_http_proxy -u npm_config_https_proxy \
+    betterkugou
+  ```
+
+- “请在我喜欢页面确认账号的收藏歌单”：打开“我喜欢”并选择属于该账号的收藏歌单。应用不会按名称猜测目标并写入云端。
+
 - Q: 使用什么账号登录？
 - A: 使用酷狗账号登录，所有的数据都会从酷狗服务器获取
 

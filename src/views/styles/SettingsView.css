@@ -72,10 +72,9 @@
 .settings-view :deep(.setting-select), .path-input, .number-input, .setting-font-input { max-width: 100%; min-height: 36px; padding: 8px 11px; color: var(--color-text); background: var(--color-background-light); border: 1px solid var(--color-border); border-radius: var(--radius-sm); font-size: var(--font-size-xs); }
 .settings-view :deep(.setting-select) { min-width: 140px; max-width: 230px; }
 .setting-range { display: flex; align-items: center; gap: 10px; width: min(190px, 48%); }
-.setting-range input { min-width: 0; width: 100%; height: 24px; accent-color: var(--color-primary); cursor: pointer; }
-.setting-range input:disabled { cursor: default; }
+.setting-range-slider { flex: 1; min-width: 0; }
 .setting-range output { min-width: 4ch; text-align: right; white-space: nowrap; color: var(--color-text-secondary); font-size: var(--font-size-xs); font-variant-numeric: tabular-nums; }
-.setting-range-disabled .setting-range { opacity: .5; }
+.setting-range-disabled .setting-range output { opacity: .5; }
 .setting-font-input { width: min(190px, 48%); min-width: 0; }
 .path-input { width: 50%; text-overflow: ellipsis; }
 .number-input { width: 75px; }
@@ -95,6 +94,8 @@
 .about-links { gap: 22px; margin-top: 28px; color: var(--color-text-secondary); font-size: 11px; }
 .about-links button:hover { color: var(--color-primary); }
 .note-text { margin-top: 15px; color: var(--color-text-secondary); font-size: 11px; line-height: 1.8; }
+.telemetry-preview { max-height: 19rem; margin-top: 10px; padding: 12px 16px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--color-border); border-radius: 8px; color: var(--color-text); font-size: 12px; line-height: 1.6; user-select: text; }
+.telemetry-preview:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 .custom-color-panel { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 20px 0; }
 .color-setting { display: flex; align-items: center; justify-content: space-between; gap: 9px; min-width: 0; font-size: 11px; color: var(--color-text-secondary); }
 .color-setting input { border: 0; padding: 0; width: 35px; height: 28px; background: transparent; }

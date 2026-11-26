@@ -19,6 +19,7 @@ function loadMain({ platform = 'win32', packaged = true, startFails = false } = 
   }
   const app = Object.assign(new EventEmitter(), {
     isPackaged: packaged, commandLine: { appendSwitch() {} },
+    requestSingleInstanceLock: () => true,
     whenReady: () => new Promise(() => {}), getPath: () => '/user-data',
     getAppPath: () => '/app', getVersion: () => '1.0.0', quitCalls: 0,
     quit() { this.quitCalls += 1 }

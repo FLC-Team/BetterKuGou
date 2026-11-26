@@ -2,14 +2,14 @@
   <div class="music-player" :class="{ 'player-style-netease': playerStyle === 'netease', 'player-ready': Boolean(barSong), 'player-loading': isSongPending }">
     <!-- 默认样式：进度条在顶部 -->
     <div v-if="playerStyle !== 'netease'" class="progress-bar-container">
-      <input 
-        type="range" 
-        class="progress-bar" 
-        :style="{ '--progress': (barSongIsUnconfirmed ? 0 : progressPercent) + '%' }"
-        min="0" 
+      <AnimatedSlider
+        class="progress-bar"
+        variant="seek"
         :max="barSongIsUnconfirmed ? 0 : duration"
-        :disabled="barSongIsUnconfirmed || isSongPending"
-        :value="barSongIsUnconfirmed ? 0 : displayPlayTime"
+        :disabled="barSongIsUnconfirmed || isSongPending || !Number.isFinite(duration) || duration <= 0"
+        :model-value="barSongIsUnconfirmed ? 0 : displayPlayTime"
+        aria-label="歌曲进度"
+        :aria-valuetext="barSongIsUnconfirmed ? '等待歌曲就绪' : `${formatTime(displayPlayTime)} / ${formatTime(duration)}`"
         @input="handleProgressDrag"
         @change="handleProgressChange"
         @pointercancel="cancelProgressDrag"
@@ -134,14 +134,14 @@
         <div v-if="playerStyle === 'netease'" class="netease-progress-wrapper">
           <span class="time-text">{{ barSongIsUnconfirmed ? '--:--' : formatTime(displayPlayTime) }}</span>
           <div class="progress-bar-container">
-            <input 
-              type="range" 
-              class="progress-bar" 
-              :style="{ '--progress': (barSongIsUnconfirmed ? 0 : progressPercent) + '%' }"
-              min="0" 
+            <AnimatedSlider
+              class="progress-bar"
+              variant="seek"
               :max="barSongIsUnconfirmed ? 0 : duration"
-              :disabled="barSongIsUnconfirmed || isSongPending"
-              :value="barSongIsUnconfirmed ? 0 : displayPlayTime"
+              :disabled="barSongIsUnconfirmed || isSongPending || !Number.isFinite(duration) || duration <= 0"
+              :model-value="barSongIsUnconfirmed ? 0 : displayPlayTime"
+              aria-label="歌曲进度"
+              :aria-valuetext="barSongIsUnconfirmed ? '等待歌曲就绪' : `${formatTime(displayPlayTime)} / ${formatTime(duration)}`"
               @input="handleProgressDrag"
               @change="handleProgressChange"
               @pointercancel="cancelProgressDrag"
@@ -232,11 +232,16 @@
       <PlaylistDrawer
         :visible="showPlaylist"
         :playlist="playlist"
+        :upcoming="playNextQueue"
+        :single-repeat="playMode === 'single'"
         :currentSong="currentSong"
+        :current-index="currentIndex"
         :isPlaying="isPlaying"
         @close="showPlaylist = false"
         @open="showPlaylist = true"
         @play="handlePlaylistPlay"
+        @play-next="$emit('play-next', $event)"
+        @cancel-next="cancelQueuedSong"
         @remove="handleRemoveSong"
         @clear="handleClearPlaylist"
         @search="searchSong"

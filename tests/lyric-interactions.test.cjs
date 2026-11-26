@@ -5,9 +5,11 @@ const test = require('node:test')
 const vm = require('node:vm')
 const vue = require('vue')
 const { registerAppNotice } = require('./helpers/noticeHarness.cjs')
+const { loadAnimatedSlider } = require('./helpers/animatedSliderHarness.cjs')
 const { compile } = require('@vue/compiler-dom')
 
 const directory = path.join(__dirname, '..', 'src', 'components', 'player')
+const AnimatedSlider = loadAnimatedSlider()
 const source = fs.readFileSync(path.join(directory, 'LyricView.js'), 'utf8')
   .replace(/^import[^\n]*\n/gm, '').replace('export default {', 'globalThis.component = {')
 const template = fs.readFileSync(path.join(directory, 'LyricView.vue'), 'utf8').match(/^<template>([\s\S]*)<\/template>\s*<script/m)[1]
@@ -69,7 +71,7 @@ function environment(options = {}) {
   const sandbox = {
     window, document, navigator: options.browser ? { clipboard: { writeText: async text => clipboard.push(text) } } : {},
     process: { env: { NODE_ENV: 'test' } }, performance, ContextMenu: { render: () => null }, VolumeControl: { render: () => null }, ArtistLinks: { render: () => null }, ArtworkCover: { render: () => null }, LibraryActions: { render: () => null }, contextMenuManager: menuManager,
-    useSettingsStore: () => settingsStore, repeatAllIcon: '', repeatOneIcon: '', shuffleIcon: '',
+    AnimatedSlider, useSettingsStore: () => settingsStore, repeatAllIcon: '', repeatOneIcon: '', shuffleIcon: '',
     logger: Object.fromEntries(['trace', 'debug', 'info', 'error', 'warn'].map(level => [level, (...args) => {
       if (level === 'warn') warnings.push(args)
     }])),
@@ -130,6 +132,13 @@ function wheel(lyric, deltaY, overrides = {}) {
   return event
 }
 
+function doubleClickLyric(lyric, index) {
+  const key = lyric.lyricContentKey
+  lyric.recordLyricClick(index, pointer({ type: 'click', detail: 1 }), key)
+  lyric.recordLyricClick(index, pointer({ type: 'click', detail: 2 }), key)
+  lyric.activateLyricLine(index, pointer({ type: 'dblclick', detail: 2 }), key)
+}
+
 test('whole-line highlighting still follows time and custom blur keeps the current line clear', t => {
   const { lyric, settingsStore } = fixture(t)
   let wordReads = 0
@@ -138,16 +147,17 @@ test('whole-line highlighting still follows time and custom blur keeps the curre
   lyric.syncPlaybackTime(15)
   assert.equal(lyric.currentLyricIndex, 3)
   assert.equal(wordReads, 0)
-  assert.equal(lyric.getLyricLineStyle(3).filter, 'none')
-  const previousBlur = lyric.getLyricLineStyle(2).filter
+  assert.equal(lyric.getLyricLineStyle(3)['--lyric-line-filter'], 'none')
+  const previousBlur = lyric.getLyricLineStyle(2)['--lyric-line-filter']
   settingsStore.settings.fullscreenLyrics.blurPercent = 100
-  assert.equal(lyric.getLyricLineStyle(2).filter, `blur(${Number.parseFloat(previousBlur.slice(5)) * 4}px)`)
+  assert.equal(lyric.getLyricLineStyle(2)['--lyric-line-filter'], `blur(${Number.parseFloat(previousBlur.slice(5)) * 4}px)`)
   settingsStore.settings.fullscreenLyrics.blurEnabled = false
-  assert.equal(lyric.getLyricLineStyle(2).filter, 'none')
+  assert.equal(lyric.getLyricLineStyle(2)['--lyric-line-filter'], 'none')
 })
 
-test('dragging starts only beyond six pixels, never seeks and suppresses only the following pointer click', t => {
+test('dragging starts only beyond six pixels and cannot supply either click of a double-click seek', t => {
   const { lyric, window, emitted, listeners } = fixture(t)
+  const key = lyric.lyricContentKey
   lyric.currentPlayTime = 10
   lyric.syncPlaybackTime(10)
   lyric.startLyricPointer(pointer(), lyric.lyricContentKey)
@@ -160,12 +170,15 @@ test('dragging starts only beyond six pixels, never seeks and suppresses only th
   assert.equal(lyric.currentLyricIndex, 2)
   assert.equal(lyric.getLyricLineStyle(2).transition, 'none')
   window.dispatch('pointerup', pointer({ clientY: 107 }))
-  lyric.activateLyricLine(3, pointer({ type: 'click' }), lyric.lyricContentKey)
+  lyric.recordLyricClick(3, pointer({ type: 'click', detail: 1 }), key)
   assert.deepEqual(emitted, [])
   assert.equal(listeners.get('pointermove').size, 0)
   lyric.startLyricPointer(pointer(), lyric.lyricContentKey)
   window.dispatch('pointerup', pointer())
-  lyric.activateLyricLine(3, pointer({ type: 'click' }), lyric.lyricContentKey)
+  lyric.recordLyricClick(3, pointer({ type: 'click', detail: 2 }), key)
+  lyric.activateLyricLine(3, pointer({ type: 'dblclick', detail: 2 }), key)
+  assert.deepEqual(emitted, [])
+  doubleClickLyric(lyric, 3)
   assert.deepEqual(emitted, [{ name: 'seek', value: 15 }])
   assert.equal(lyric.browsePosition, null)
 })
@@ -247,11 +260,11 @@ test('bridge layout is continuous when browsing begins and the real bridge can e
   assert.equal(lyric.getLyricRelativePosition(1), position)
 })
 
-test('line activation and keyboard activation use timestamps and preserve the current pause state', t => {
+test('double-click and keyboard activation use timestamps and preserve the current pause state', t => {
   const { lyric, emitted } = fixture(t)
   lyric.isPlaying = false
   wheel(lyric, 30 * lyric.lyricLineHeight)
-  lyric.activateLyricLine(30, pointer({ type: 'click' }), lyric.lyricContentKey)
+  doubleClickLyric(lyric, 30)
   assert.deepEqual(emitted, [{ name: 'seek', value: 150 }])
   assert.equal(lyric.isPlaying, false)
   assert.equal(lyric.browsePosition, null)
@@ -285,7 +298,7 @@ test('only real active lyric layers browse, copy or seek; placeholders, inert la
     const key = reason === 'stale' ? 'old:ready' : lyric.lyricContentKey
     lyric.handleLyricWheel({ ...event, deltaY: 100 }, key)
     lyric.startLyricPointer(event, key)
-    lyric.activateLyricLine(1, event, key)
+    lyric.activateLyricLine(1, { ...event, type: 'keydown' }, key)
     lyric.showLyricMenu(event, 1, key)
     assert.equal(lyric.browsePosition, null, reason)
     assert.equal(lyric.lyricPointer, null, reason)
@@ -463,8 +476,18 @@ test('the production template exposes keyboard seek, the return button, copy fee
   const line = all().find(element => element.props['aria-label'] === '跳转至 00:10，second')
   assert.equal(line.props.role, 'button')
   assert.equal(line.props.tabindex, 0)
-  line.props.onKeydown[1](pointer({ type: 'keydown', key: ' ', code: 'Space' }))
+  const firstLine = all().find(element => element.props['aria-label'] === '跳转至 00:00，first')
+  firstLine.props.onClick(pointer({ type: 'click', detail: 1 }))
+  assert.deepEqual(seeks, [])
+  line.props.onClick(pointer({ type: 'click', detail: 2 }))
+  line.props.onDblclick(pointer({ type: 'dblclick', detail: 2 }))
+  assert.deepEqual(seeks, [])
+  line.props.onClick(pointer({ type: 'click', detail: 1 }))
+  line.props.onClick(pointer({ type: 'click', detail: 2 }))
+  line.props.onDblclick(pointer({ type: 'dblclick', detail: 2 }))
   assert.deepEqual(seeks, [10])
+  line.props.onKeydown[1](pointer({ type: 'keydown', key: ' ', code: 'Space' }))
+  assert.deepEqual(seeks, [10, 10])
   wheel(lyric, lyric.lyricLineHeight)
   await vue.nextTick()
   const back = all().find(element => element.props.class === 'return-current-lyric')

@@ -58,7 +58,7 @@
             <ArtworkCover :src="song.sizable_cover || song.imgurl || song.album_img || ''" class="song-cover" />
             <div class="song-info">
               <div class="song-title-line">
-                <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="song.songname || song.filename || '未知歌曲'">{{ song.songname || song.filename }}</button>
+                <SongTitle class="song-name" :song="song" @search="$emit('search', $event)" @play="handlePlay" :title="song.songname || song.filename || '未知歌曲'">{{ song.songname || song.filename }}</SongTitle>
                 <SongBadges :song="song" />
               </div>
               <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />
@@ -86,6 +86,7 @@
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
 import SongBadges from '../components/common/SongBadges.vue'
+import SongTitle from '../components/common/SongTitle.vue'
 import ArtistLinks from '../components/common/ArtistLinks.vue'
 import LibraryActions from '../components/common/LibraryActions.vue'
 import { logger } from '../utils/logger.js'
@@ -103,7 +104,7 @@ function getAccountIdentity() {
 }
 
 export default {
-  components: { ArtworkCover, SongBadges, ArtistLinks, LibraryActions },
+  components: { ArtworkCover, SongBadges, SongTitle, ArtistLinks, LibraryActions },
   name: 'DailyRecommendView',
   inject: { library: { from: 'musicLibrary', default: null } },
   emits: ['navigate', 'play', 'play-all', 'search', 'play-next', 'toggle-favorite', 'add-to-playlist', 'download', 'share', 'show-details'],
@@ -242,12 +243,8 @@ export default {
       this.$emit('navigate', 'home')
     },
     
-    handlePlay(song) {
-      logger.trace('DailyRecommendView', '[DailyRecommend] handlePlay调用:', song)
-      logger.trace('DailyRecommendView', '[DailyRecommend] 设置 - enqueueFullPlaylist:', this.settings?.playback?.enqueueFullPlaylist)
-      
-      // 规范化歌曲数据字段
-      const normalizedSong = {
+    normalizeDailySong(song) {
+      return {
         ...song,
         name: song.songname || song.filename || song.name,
         singername: song.author_name || song.singername,
@@ -256,64 +253,20 @@ export default {
         album_name: song.album_name || song.remark,
         timelen: Number(song.timelen) || Number(song.duration || song.time_length || 0) * 1000
       }
-      
-      // 检查是否开启了"自动将全部歌单歌曲加入播放列表"功能
-      if (this.settings?.playback?.enqueueFullPlaylist && this.songs.length > 0) {
-        logger.trace('DailyRecommendView', '[DailyRecommend] 自动加入全部歌曲到播放列表')
-        // 找到当前歌曲在列表中的索引
-        const songIndex = this.songs.findIndex(s => s.hash === song.hash)
-        
-        if (songIndex !== -1) {
-          // 规范化所有歌曲数据
-          const normalizedSongs = this.songs.map(s => ({
-            ...s,
-            name: s.songname || s.filename || s.name,
-            singername: s.author_name || s.singername,
-            author_name: s.author_name || s.singername,
-            cover: s.sizable_cover || s.imgurl || s.album_img,
-            album_name: s.album_name || s.remark,
-            timelen: Number(s.timelen) || Number(s.duration || s.time_length || 0) * 1000
-          }))
-          
-          // 重新排列歌单,让当前歌曲排在第一位
-          const reorderedList = [
-            normalizedSongs[songIndex],
-            ...normalizedSongs.slice(0, songIndex),
-            ...normalizedSongs.slice(songIndex + 1)
-          ]
-          this.$emit('play-all', reorderedList)
-        } else {
-          // 如果找不到,就正常播放全部
-          const normalizedSongs = this.songs.map(s => ({
-            ...s,
-            name: s.songname || s.filename || s.name,
-            singername: s.author_name || s.singername,
-            author_name: s.author_name || s.singername,
-            cover: s.sizable_cover || s.imgurl || s.album_img,
-            album_name: s.album_name || s.remark,
-            timelen: Number(s.timelen) || Number(s.duration || s.time_length || 0) * 1000
-          }))
-          this.$emit('play-all', normalizedSongs)
-        }
+    },
+    /** 直接点播和播放全部共用曲目数据，整单点播仅指定起点。 */
+    handlePlay(song) {
+      const index = this.settings?.playback?.enqueueFullPlaylist ? this.songs.indexOf(song) : -1
+      if (index >= 0) {
+        this.$emit('play-all', this.songs.map(this.normalizeDailySong), index)
       } else {
-        // 只播放单曲
-        this.$emit('play', normalizedSong)
+        this.$emit('play', this.normalizeDailySong(song))
       }
     },
     
     handlePlayAll() {
       logger.trace('DailyRecommendView', '[DailyRecommend] 播放全部')
-      // 规范化所有歌曲数据字段
-      const normalizedSongs = this.songs.map(song => ({
-        ...song,
-        name: song.songname || song.filename || song.name,
-        singername: song.author_name || song.singername,
-        author_name: song.author_name || song.singername,
-        cover: song.sizable_cover || song.imgurl || song.album_img,
-        album_name: song.album_name || song.remark,
-        timelen: Number(song.timelen) || Number(song.duration || song.time_length || 0) * 1000
-      }))
-      this.$emit('play-all', normalizedSongs)
+      this.$emit('play-all', this.songs.map(this.normalizeDailySong))
     },
     
     formatDuration(seconds) {

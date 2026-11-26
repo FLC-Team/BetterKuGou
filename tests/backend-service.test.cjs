@@ -83,6 +83,11 @@ function createService({ exitsOnKill = true, platform = 'win32', signalError = n
   })
   return {
     service, timers, statuses, processes, requests, killers, signals,
+    startListening() {
+      const child = service.start()
+      child.emit('message', 'backend:listening')
+      return child
+    },
     runTimer(delay) {
       const timer = [...timers.values()].find((entry) => entry.delay === delay)
       assert.ok(timer, `Expected timer with delay ${delay}`)
@@ -119,18 +124,21 @@ test('concurrent stop calls share one task and prevent startup during shutdown',
   assert.equal(child.listenerCount('exit'), 0)
 })
 
-test('startup probes immediately and all callers share real HTTP readiness', async () => {
+test('startup waits for its own listener before probing and all callers share HTTP readiness', async () => {
   const fixture = createService()
   assert.equal(await fixture.service.waitUntilReady(), false)
-  fixture.service.start()
+  const child = fixture.service.start()
   const ready = fixture.service.waitUntilReady()
   assert.equal(ready, fixture.service.waitUntilReady())
-  assert.equal(fixture.requests.length, 1)
-  fixture.processes[0].stdout.emit('data', Buffer.from('server running @ http://localhost:6500'))
+  child.stdout.emit('data', Buffer.from('server running @ http://localhost:6500'))
+  fixture.service.checkHealth()
+  assert.equal(fixture.requests.length, 0, 'an existing listener cannot satisfy startup')
   let settled = false
   ready.then(() => { settled = true })
   await Promise.resolve()
   assert.equal(settled, false)
+  child.emit('message', 'backend:listening')
+  assert.equal(fixture.requests.length, 1)
   fixture.requests[0].respond(200)
   assert.equal(await ready, true)
   assert.equal(fixture.statuses.at(-1).status, 'connected')
@@ -139,9 +147,34 @@ test('startup probes immediately and all callers share real HTTP readiness', asy
   await fixture.service.stop()
 })
 
+test('a persistent port conflict completes startup with an explicit error without probing the listener', async () => {
+  const fixture = createService()
+  const child = fixture.service.start()
+  const ready = fixture.service.waitUntilReady()
+  child.emit('message', 'backend:port-in-use')
+  assert.equal(await ready, false)
+  assert.equal(fixture.requests.length, 0)
+  assert.equal(fixture.statuses.at(-1).status, 'error')
+  assert.equal(fixture.statuses.at(-1).code, 'EADDRINUSE')
+  assert.equal(fixture.timers.size, 0)
+  await fixture.service.stop()
+})
+
+test('the startup deadline preserves a port conflict already reported by the child', async () => {
+  const fixture = createService()
+  const child = fixture.service.start()
+  const ready = fixture.service.waitUntilReady()
+  child.emit('message', 'backend:waiting-for-port')
+  fixture.runTimer(10_000)
+  assert.equal(await ready, false)
+  assert.equal(fixture.requests.length, 0)
+  assert.equal(fixture.statuses.at(-1).code, 'EADDRINUSE')
+  await fixture.service.stop()
+})
+
 test('connection refusal and non-2xx responses retry until startup is actually ready', async () => {
   const fixture = createService()
-  fixture.service.start()
+  fixture.startListening()
   const ready = fixture.service.waitUntilReady()
   fixture.requests[0].emit('error', Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }))
   assert.equal(fixture.requests[0].destroyed, true)
@@ -158,7 +191,7 @@ test('connection refusal and non-2xx responses retry until startup is actually r
 
 test('explicit health checks immediately replace old requests and require successful HTTP responses', async () => {
   const fixture = createService()
-  fixture.service.start()
+  fixture.startListening()
   fixture.requests[0].respond(200)
   await fixture.service.waitUntilReady()
   fixture.service.checkHealth()
@@ -178,7 +211,7 @@ test('explicit health checks immediately replace old requests and require succes
 test('the overall startup deadline releases waiting callers and cancels requests or retries', async () => {
   for (const pendingRetry of [false, true]) {
     const fixture = createService()
-    fixture.service.start()
+    fixture.startListening()
     const ready = fixture.service.waitUntilReady()
     if (pendingRetry) fixture.requests[0].respond(503)
     fixture.runTimer(10_000)
@@ -193,6 +226,18 @@ test('the overall startup deadline releases waiting callers and cancels requests
   }
 })
 
+test('startup deadline also releases callers while the child is waiting to bind', async () => {
+  const fixture = createService()
+  const child = fixture.service.start()
+  const ready = fixture.service.waitUntilReady()
+  fixture.runTimer(10_000)
+  assert.equal(await ready, false)
+  child.emit('message', 'backend:listening')
+  assert.equal(fixture.requests.length, 0)
+  assert.equal(fixture.timers.size, 0)
+  await fixture.service.stop()
+})
+
 test('launch failures, process errors, exits and stopping all release startup callers', async () => {
   for (const options of [{ entryExists: false }, { forkError: new Error('fork failed') }]) {
     const fixture = createService(options)
@@ -203,7 +248,7 @@ test('launch failures, process errors, exits and stopping all release startup ca
   }
   for (const termination of ['error', 'exit', 'stop']) {
     const fixture = createService()
-    const child = fixture.service.start()
+    const child = fixture.startListening()
     const ready = fixture.service.waitUntilReady()
     if (termination === 'stop') await fixture.service.stop()
     else child.emit(termination, termination === 'exit' ? 1 : new Error('process failed'))
@@ -216,7 +261,7 @@ test('launch failures, process errors, exits and stopping all release startup ca
 
 test('a request timeout during startup retries within the same deadline', async () => {
   const fixture = createService()
-  fixture.service.start()
+  fixture.startListening()
   const ready = fixture.service.waitUntilReady()
   fixture.requests[0].emit('timeout')
   assert.equal(fixture.requests[0].destroyed, true)
@@ -252,7 +297,7 @@ test('a local HTTP server can become ready after an initial 503 without any fixe
     }
   })
   try {
-    fixture.service.start()
+    fixture.startListening()
     const ready = fixture.service.waitUntilReady()
     await Promise.race([firstProbe, failedProbe])
     assert.equal(attempts, 1)
@@ -269,7 +314,7 @@ test('a local HTTP server can become ready after an initial 503 without any fixe
 
 test('shutdown destroys pending health requests and suppresses stale callbacks', async () => {
   const fixture = createService()
-  fixture.service.start()
+  fixture.startListening()
   const ready = fixture.service.waitUntilReady()
   const request = fixture.requests[0]
   await fixture.service.stop()
@@ -284,7 +329,7 @@ test('shutdown destroys pending health requests and suppresses stale callbacks',
 
 test('health timeouts after startup report a disconnection and release the request', async () => {
   const fixture = createService()
-  fixture.service.start()
+  fixture.startListening()
   fixture.requests[0].respond(200)
   await fixture.service.waitUntilReady()
   fixture.service.checkHealth()
@@ -297,7 +342,7 @@ test('health timeouts after startup report a disconnection and release the reque
 
 test('replacing a pending startup preserves the new readiness promise against old callbacks', async () => {
   const fixture = createService({ exitsOnKill: false })
-  const previous = fixture.service.start()
+  const previous = fixture.startListening()
   const oldReady = fixture.service.waitUntilReady()
   const oldRequest = fixture.requests[0]
   const pending = fixture.service.stop()
@@ -308,9 +353,13 @@ test('replacing a pending startup preserves the new readiness promise against ol
   const current = fixture.service.start()
   const ready = fixture.service.waitUntilReady()
   oldRequest.respond(200)
+  previous.emit('message', 'backend:listening')
+  previous.emit('message', 'backend:port-in-use')
   previous.emit('exit', 1)
   assert.equal(fixture.service.waitUntilReady(), ready)
   assert.equal(fixture.statuses.some(status => status.status === 'connected'), false)
+  assert.equal(fixture.requests.length, 1)
+  current.emit('message', 'backend:listening')
   fixture.requests[1].respond(200)
   assert.equal(await ready, true)
   const finalStop = fixture.service.stop()

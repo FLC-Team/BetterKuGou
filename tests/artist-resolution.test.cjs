@@ -66,9 +66,9 @@ test('artist lookup propagates transport, business, and malformed-response failu
 function createArtist(t, respond, options = {}) {
   const lookup = createLookup(respond)
   const requests = []
-  const { getSongArtists } = loadModule('src/utils/songMetadata.js', {}, ['getSongArtists'])
+  const { getSongArtists, getSongDurationMs } = loadModule('src/utils/songMetadata.js', {}, ['getSongArtists', 'getSongDurationMs'])
   const sandbox = {
-    ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, LibraryActions: {}, logger, getSongArtists,
+    ArtworkCover: {}, SongBadges: {}, SongTitle: {}, ArtistLinks: {}, LibraryActions: {}, logger, getSongArtists, getSongDurationMs,
     findArtistByName: lookup.findArtistByName,
     async getArtistDetail(id) {
       requests.push(['detail', id])

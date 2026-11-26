@@ -148,6 +148,9 @@ test('song normalization preserves entry identity, rights, cloud ownership and e
   assert.equal(metadata.normalizeLibrarySong({ time_length: 350 }).timelen, 350000)
   assert.equal(metadata.normalizeLibrarySong({ TimeLength: 324 }).timelen, 324000)
   assert.equal(metadata.normalizeLibrarySong({ timelength: 194923 }).timelen, 194923)
+  assert.equal(metadata.normalizeLibrarySong({ timelen: 0, duration: 180 }).timelen, 180000)
+  assert.equal(metadata.normalizeLibrarySong({ timelen: 'invalid', audio_info: { duration_128: 180125 } }).timelen, 180125)
+  assert.equal(metadata.normalizeLibrarySong({ timelen: 180125, Duration: 180 }).timelen, 180125)
 })
 
 test('public related versions and searched playlists retain proven nested identities and rights', () => {

@@ -34,12 +34,6 @@
   outline-offset: 2px;
 }
 
-:where(input[type="range"])::-webkit-slider-thumb {
-  transition: scale var(--ui-motion-fast), box-shadow var(--ui-motion-fast);
-}
-:where(input[type="range"]):not(:disabled):is(:hover, :focus-visible)::-webkit-slider-thumb { scale: 1.12; }
-:where(input[type="range"]):not(:disabled):active::-webkit-slider-thumb { scale: 1.2; }
-
 :where(input[type="checkbox"], input[type="radio"]):not(:disabled, [inert], [inert] *):hover { scale: 1.08; }
 :where(input[type="checkbox"], input[type="radio"]):not(:disabled, [inert], [inert] *):active { scale: .93; }
 

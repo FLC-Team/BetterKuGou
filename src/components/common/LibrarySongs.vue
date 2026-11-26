@@ -25,8 +25,8 @@
             <span v-else class="index-number">{{ String(index + 1).padStart(2, '0') }}</span>
           </div>
           <div class="col-title">
-            <ArtworkCover :src="song.cover || song.sizable_cover || song.imgurl || ''" class="song-cover" />
-            <div class="song-info"><div class="song-title-line"><button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop>{{ title(song) }}</button><SongBadges :song="song" /></div><ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" /></div>
+            <ArtworkCover :src="song.cover || song.sizable_cover || song.imgurl || ''" viewport class="song-cover" />
+            <div class="song-info"><div class="song-title-line"><SongTitle class="song-name" :song="song" @search="$emit('search', $event)" @play="$emit('play', $event)">{{ title(song) }}</SongTitle><SongBadges :song="song" /></div><ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" /></div>
           </div>
           <div class="col-artist"><ArtistLinks class="artist-link" :song="song" @select="$emit('navigate', 'artist', $event)" /></div>
           <div class="col-album"><button type="button" class="album-link" :disabled="!albumId(song)" @click.stop="$emit('navigate', 'album', { id: albumId(song), name: song.album_name })" @dblclick.stop>{{ song.album_name || '—' }}</button></div>
@@ -47,15 +47,16 @@
 import ArtworkCover from './ArtworkCover.vue'
 import ArtistLinks from './ArtistLinks.vue'
 import SongBadges from './SongBadges.vue'
+import SongTitle from './SongTitle.vue'
 import WindowedList from './WindowedList.vue'
 import ContextMenu from './ContextMenu.vue'
 import contextMenuManager from '../../utils/contextMenuManager.js'
-import { getSongSearchKeyword } from '../../utils/songMetadata.js'
+import { getSongSearchKeyword, formatSongDuration } from '../../utils/songMetadata.js'
 import { librarySongKey } from '../../utils/libraryMetadata.js'
 
 export default {
   name: 'LibrarySongs',
-  components: { ArtworkCover, ArtistLinks, SongBadges, WindowedList, ContextMenu },
+  components: { ArtworkCover, ArtistLinks, SongBadges, SongTitle, WindowedList, ContextMenu },
   inject: { library: { from: 'musicLibrary', default: null } },
   props: { songs: { type: Array, default: () => [] }, currentSong: { type: Object, default: null },
     total: { type: Number, default: null }, label: { type: String, default: '歌曲列表' }, showToolbar: { type: Boolean, default: true },
@@ -103,7 +104,7 @@ export default {
     title(song) { return getSongSearchKeyword(song) || song.name || song.filename || '未知歌曲' },
     albumId(song) { return song.album_id ?? song.AlbumID ?? song.albumid ?? null },
     sameSong(song, current) { const key = librarySongKey(song); return !!key && key === librarySongKey(current) },
-    duration(song) { const seconds = Number(song.duration || (song.timelen || 0) / 1000); return seconds > 0 ? `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}` : '—' },
+    duration(song) { return formatSongDuration(song) },
     openMenu(event, song) {
       contextMenuManager.closeActiveMenu()
       const rect = event.currentTarget.getBoundingClientRect()

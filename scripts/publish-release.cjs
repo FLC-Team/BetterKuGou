@@ -47,13 +47,40 @@ async function publishRelease({ tag, directory, repository }, runGh = args => ex
   const prerelease = version.split('+', 1)[0].includes('-')
   const flags = [`--prerelease=${prerelease}`, `--latest=${!prerelease}`]
   const gh = (command, ...args) => runGh(['release', command, tag, '--repo', repository, ...args])
+  let releaseId
 
+  /** CLI resolves pending draft tags directly; the releases list can lag behind creation. */
   function readRelease() {
-    const selectTag = `.[] | select(.tag_name == ${JSON.stringify(tag)}) | @json`
-    const output = runGh(['api', '--paginate', '--jq', selectTag, `repos/${repository}/releases`]).trim()
-    const matches = output ? output.split(/\r?\n/).map(line => JSON.parse(line)) : []
-    if (matches.length > 1) throw new Error(`找到多个 ${tag} 的发布记录，请先处理冲突。`)
-    return matches[0]
+    if (releaseId === undefined) {
+      let lookup
+      try {
+        lookup = JSON.parse(gh('view', '--json', 'databaseId'))
+      } catch (error) {
+        if (error.status !== 1 || String(error.stderr || '').trim() !== 'release not found') throw error
+        // CLI combines REST/GraphQL lookups and can mask one failure with the other's 404.
+        // Confirm absence directly before permitting a new draft; preserve any API failure.
+        const [owner, name] = repository.split('/')
+        const response = JSON.parse(runGh(['api', 'graphql',
+          '-f', 'query=query($owner:String!,$name:String!,$tag:String!){repository(owner:$owner,name:$name){release(tagName:$tag){databaseId}}}',
+          '-f', `owner=${owner}`, '-f', `name=${name}`, '-f', `tag=${tag}`]))
+        if (response.errors?.length || !response.data?.repository || !Object.hasOwn(response.data.repository, 'release')) {
+          throw new Error(`${tag} 的发布查询响应无效。`)
+        }
+        lookup = response.data.repository.release
+        if (lookup === null) return undefined
+      }
+      if (!Number.isSafeInteger(lookup?.databaseId) || lookup.databaseId <= 0) {
+        throw new Error(`${tag} 的发布 ID 无效。`)
+      }
+      releaseId = lookup.databaseId
+    }
+    const release = JSON.parse(runGh(['api', `repos/${repository}/releases/${releaseId}`]))
+    if (!release || release.id !== releaseId || typeof release.draft !== 'boolean'
+      || typeof release.prerelease !== 'boolean' || !Array.isArray(release.assets)
+      || (release.tag_name !== tag && !(release.draft && release.tag_name === ''))) {
+      throw new Error(`${tag} 的发布记录身份或内容无效。`)
+    }
+    return release
   }
 
   async function missingAssets(release) {

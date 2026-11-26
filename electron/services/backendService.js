@@ -20,6 +20,7 @@ function createBackendService({
   isQuitting = () => false
 }) {
   let backendProcess = null
+  let listeningProcess = null
   let startupTimer = null
   let healthTimer = null
   let healthRequest = null
@@ -68,9 +69,9 @@ function createBackendService({
     return backendProcess && !stopPromise ? readinessPromise : Promise.resolve(false)
   }
 
-  /** 立即探测当前实例；启动期短暂失败重试，统一启动期限防止无限等待。 */
+  /** 只有当前子进程确认已绑定端口后才探测 HTTP，避免将旧监听者误判为就绪。 */
   function checkHealth() {
-    if (!backendProcess || stopPromise) return
+    if (!backendProcess || listeningProcess !== backendProcess || stopPromise) return
     const processToCheck = backendProcess
     cancelHealthCheck()
     logger.trace('backendService', '🔍 测试后端连接...')
@@ -153,7 +154,7 @@ function createBackendService({
       return null
     }
 
-    const env = { ...process.env, PORT: String(BACKEND_PORT), HOST: 'localhost' }
+    const env = { ...process.env, PORT: String(BACKEND_PORT), HOST: 'localhost', BK_BACKEND_PARENT_PID: String(process.pid) }
     let launchedProcess
     try {
       launchedProcess = utilityProcess.fork(path.resolve(entry), [], {
@@ -170,20 +171,36 @@ function createBackendService({
       return null
     }
     backendProcess = launchedProcess
+    let waitingForPort = false
+    const reportPortConflict = () => {
+      completeReadiness(false)
+      onProgress(30, '后端端口仍被占用', 'backend')
+      onStatus({ status: 'error', code: 'EADDRINUSE', port: BACKEND_PORT, error: `Backend port ${BACKEND_PORT} is still in use` })
+    }
 
     launchedProcess.stdout.on('data', (data) => {
       if (backendProcess !== launchedProcess || stopPromise) return
       const message = data.toString().trim()
       logger.trace('backendService', `📤 [后端输出] ${message}`)
-      if (resolveReadiness && (message.includes('listening') || message.includes('started') || message.includes(String(BACKEND_PORT)))) {
-        onProgress(40, '后端服务已启动', 'backend')
-        onStatus({ status: 'running', port: BACKEND_PORT })
-      }
     })
 
     launchedProcess.stderr.on('data', (data) => {
       const message = data.toString().trim()
       logger.error('backendService', `📥 [后端错误] ${message}`)
+    })
+
+    launchedProcess.on('message', message => {
+      if (backendProcess !== launchedProcess || stopPromise || !resolveReadiness) return
+      if (message === 'backend:listening' && listeningProcess !== launchedProcess) {
+        listeningProcess = launchedProcess
+        onProgress(40, '后端服务已启动', 'backend')
+        onStatus({ status: 'running', port: BACKEND_PORT })
+        checkHealth()
+      } else if (message === 'backend:waiting-for-port') {
+        waitingForPort = true
+      } else if (message === 'backend:port-in-use') {
+        reportPortConflict()
+      }
     })
 
     launchedProcess.on('error', (error) => {
@@ -196,6 +213,7 @@ function createBackendService({
     launchedProcess.once('exit', (code) => {
       logger.trace('backendService', `🔚 后端进程退出，退出代码: ${code}`)
       if (code !== 0 && !isQuitting()) logger.error('backendService', '❌ 后端异常退出')
+      if (listeningProcess === launchedProcess) listeningProcess = null
       if (backendProcess === launchedProcess) {
         backendProcess = null
         completeReadiness(false)
@@ -206,14 +224,16 @@ function createBackendService({
     startupTimer = setTimeout(() => {
       startupTimer = null
       if (backendProcess !== launchedProcess || stopPromise) return
+      if (waitingForPort && listeningProcess !== launchedProcess) {
+        reportPortConflict()
+        return
+      }
       const error = new Error('Backend startup timed out', { cause: lastStartupError })
       completeReadiness(false)
       logger.error('backendService', '❌ 后端启动超时:', error)
       onProgress(30, '后端启动超时', 'backend')
       onStatus({ status: 'error', error: error.message })
     }, STARTUP_TIMEOUT)
-    checkHealth()
-
     return launchedProcess
   }
 
@@ -245,6 +265,7 @@ function createBackendService({
       processToStop.removeListener('exit', handleExit)
       if (!error && backendProcess === processToStop) {
         backendProcess = null
+        listeningProcess = null
         onStatus({ status: 'disconnected', port: BACKEND_PORT })
       }
       stopPromise = null

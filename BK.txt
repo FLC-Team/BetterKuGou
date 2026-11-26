@@ -4,7 +4,7 @@
 
 ## 更新日期：2026-11-08
 
-全屏与桌面歌词默认逐字左右填亮。全屏复用真实音频逐帧采样，可在“歌词窗口”的“全屏歌词”面板调整高亮、模糊强度、控件、排版和背景来源及动效。桌面用有上限的权威时间插值，下一句保持句首并自然上移。当前时序、缓存和生命周期说明见 src/components/player/player.md 与 electron/electron.md。
+全屏与桌面歌词默认逐字左右填亮。全屏复用真实音频逐帧采样，可在“歌词窗口”的“全屏歌词”面板调整高亮、模糊强度、控件、排版和背景来源及动效。文字对齐独立于歌词栏位置，悬停渐变去除该行模糊，双击或使用键盘跳转句首。桌面用有上限的权威时间插值，下一句保持句首并自然上移。当前时序、缓存和生命周期说明见 src/components/player/player.md 与 electron/electron.md。
 桌面歌词设置由 DesktopLyricSettings 编辑原有草稿，双端 normalizeDesktopLyrics 校验后持久化；独立窗口消费显示/动效/字体配色/阴影，主进程策略处理暂停与同屏全屏隐藏、悬停透明、置顶和解锁热点。Windows 外部全屏观察器按需运行，隐藏窗口停止绘制，节能模式降低刷新频率。详见 electron/services/services.md 与 src/stores/stores.md。
 Windows 任务栏歌词等待 `windowsTaskbar.ps1` 提供首个任务栏快照；`taskbarLyricService.js` 在所选任务栏收起时隐藏歌词并保留已有嵌入，展开后按设置与播放状态恢复。详见 electron/services/services.md。
 
@@ -16,6 +16,9 @@ Windows 任务栏歌词等待 `windowsTaskbar.ps1` 提供首个任务栏快照�
   - `styles/`：Artist、Favorite、Settings 的 scoped 样式。
 - `src/components/`：可复用组件。
   - `common/`：`ContextMenu.vue`。
+  - `common/AppDialog.vue`：主窗口全屏动画确认，供关闭窗口、更新安装、批量下载和歌单操作共用。
+  - `common/AnimatedSlider.vue`：设置、音量和播放进度的原生数值输入，共用主题轨道及悬停、聚焦和按压反馈；播放器继续分开处理预览与提交。
+  - `common/ArtworkCover.vue`：歌单曲目封面进入视口后优先查本地缓存，限制在途查询并清理滑过的未完成加载。
   - `layout/`：`TitleBar.vue`、`Sidebar.vue`、`UserMenu.vue`。
   - `player/`：播放器、歌词、播放列表及独立逻辑/样式。
 - `src/api/`：登录与音乐 HTTP 封装，目标为 `localhost:6500`；识别酷狗认证失效响应并通知根组件退出假登录状态。
@@ -24,14 +27,15 @@ Windows 任务栏歌词等待 `windowsTaskbar.ps1` 提供首个任务栏快照�
 - `src/components/common/ThemePackages.vue`：主题切换、文件导入更新、移除、独立视觉快照导出及主界面背景选择。
 - `electron/main.js`：窗口、托盘、IPC、快捷键和应用退出编排。
 - `electron/services/backendService.js`：本地 API 启停、健康检查和超时清理。
+- `electron/services/playlistCacheWorker.cjs`：维护离线歌单和媒体缓存。首次或文件变化时读取媒体复核摘要，连续访问共用校验结果并合并写入访问记录。
 - `electron/settingsStore.js`：主进程设置的串行原子持久化与损坏文件备份。
 - `KuGouMusicApi/server.js`：动态 API 路由、缓存、请求转发和敏感参数脱敏。
 
 ## 关键函数
 
 - `createBackendService(options)`：创建独立的 API 生命周期服务。
-- `backendService.start()`：解析开发/生产 API 路径并通过 `utilityProcess.fork()` 启动。
-- `backendService.checkHealth()`：请求本地根路由并向渲染进程广播连接状态。
+- `backendService.start()`：解析开发/生产 API 路径，使用 `utilityProcess.fork()` 启动并传入父进程 PID。
+- `backendService.checkHealth()`：仅在本次子进程确认绑定后探测本地根路由并广播连接状态。
 - `backendService.stop()`：清理定时器、终止 Utility Process，超时后按 PID 清理进程树。
 - `performApplicationCleanup()`：清理快捷键、窗口、后端服务、托盘和内存任务。
 - `initSettingsStore(app)`：加载、迁移、补全并保存用户设置。
@@ -49,8 +53,8 @@ Windows 任务栏歌词等待 `windowsTaskbar.ps1` 提供首个任务栏快照�
 
 ## 数据流
 
-1. Vite 启动 Electron，Electron 初始化设置与系统托盘。
-2. 主进程调用 `backendService.start()` 启动端口 6500 的本地 API。
+1. Electron 获取单实例锁后初始化设置与系统托盘。重复启动由已有实例恢复和聚焦窗口。
+2. `backendService.start()` 启动本地 API。父进程退出后子进程释放端口。重启遇到旧监听时限时重试绑定，持续冲突显示启动错误。
 3. Vue 通过 `settingsAPI` 加载设置；`App.vue` 恢复会话并渲染 `views/index.js` 暴露的页面。
 4. 页面调用 `src/api/auth.js` 或 `src/api/music.js`，本地 API 再请求酷狗服务；若返回认证错误 `20017`，`music.js` 派发认证失效事件，由 `App.vue` 清理会话并显示登录页。
 5. `MusicPlayer.js` 管理音频、歌词和队列；状态经 `saveSessionSnapshot()` 写回主进程。
@@ -79,10 +83,10 @@ Windows 任务栏歌词等待 `windowsTaskbar.ps1` 提供首个任务栏快照�
 - 编译：`npm run build`
 - 当前平台目录包：`npm run electron:build -- --dir`
 - Windows 安装包：`npm run build:win`
-- 输出：`dist/`、`dist-electron/`、`release/`
   Windows NSIS 先校验目录和空间，在目标卷严格解包并替换程序目录。安装失败恢复旧文件，卸载按清单清理，保留额外文件。
   GitHub 按 Windows x64/x86/ARM64、macOS x64/ARM64、Linux x64/ARM64 分开发布。更新随客户端架构选包，Linux 优先同安装格式。
   应用内更新先由 GitHub 官方发布核对资产及 SHA-256。代理用于发现和传输。
+- 输出：`dist/`、`dist-electron/`、`release/`
 
 ## 最近变更记录
 

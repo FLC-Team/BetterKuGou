@@ -1,0 +1,11 @@
+{
+  "name": "betterkugou-telemetering",
+  "private": true,
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node server.cjs",
+    "test": "node --test contract.spec.cjs"
+  }
+}

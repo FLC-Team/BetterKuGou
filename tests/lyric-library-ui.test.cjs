@@ -4,6 +4,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const vue = require('vue')
 const { registerAppNotice } = require('./helpers/noticeHarness.cjs')
+const { loadAnimatedSlider } = require('./helpers/animatedSliderHarness.cjs')
 const { parse, compileScript } = require('@vue/compiler-sfc')
 
 const motionVue = { ...vue,
@@ -49,7 +50,7 @@ function mount(t, options = {}) {
   }
   const AnimatedDetails = { setup(_props, { slots }) { return () => vue.h('details-stub', [slots.summary?.(), slots.default?.()]) } }
   const emptyComponent = { setup() { return () => vue.h('component-stub') } }
-  const globals = { Vue: motionVue, window: { electronAPI: { lyricLibrary: options.browser ? undefined : api },
+  const globals = { Vue: motionVue, window: { electronAPI: { lyricLibrary: options.browser ? undefined : api, telemetry: options.telemetry },
     getComputedStyle() { return { paddingTop: '0' } }, addEventListener() {}, removeEventListener() {} },
     document: { removeEventListener() {} }, logger: { warn() {}, info() {}, error() {} }, AnimatedSelect, AnimatedDetails,
     LyricLibrary: { setup() { return () => vue.h('library-stub') } } }
@@ -61,7 +62,7 @@ function mount(t, options = {}) {
     const defaults = () => ({
       playback: { lyricLibrary: { enabled: true }, fullscreenLyrics: false },
       download: {}, custom: {}, shortcuts: { keys: {} }, software: {},
-      fullscreenLyrics: { blurEnabled: true, blurPercent: 25, backgroundMode: 'frosted', backgroundImage: '' },
+      fullscreenLyrics: { blurEnabled: true, blurPercent: 25, position: 'right', alignment: 'center', backgroundMode: 'frosted', backgroundImage: '' },
       desktopLyrics: {}, islandLyrics: {}, taskbarLyrics: {}
     })
     settings = vue.reactive(defaults())
@@ -83,7 +84,8 @@ function mount(t, options = {}) {
     }
     Object.assign(globals, { packageInfo: { version: '0.0.0' }, applyTheme() {}, ThemePackages: emptyComponent,
       ThemeAdjustments: emptyComponent, AppUpdates: emptyComponent, PlaylistCacheSettings: emptyComponent, MusicDownloadSettings: emptyComponent, AudioEffectsSettings: emptyComponent,
-      DesktopLyricSettings: emptyComponent, IslandLyricSettings: emptyComponent, TaskbarLyricSettings: emptyComponent, BackgroundImageSetting })
+      DesktopLyricSettings: emptyComponent, IslandLyricSettings: emptyComponent, TaskbarLyricSettings: emptyComponent, BackgroundImageSetting,
+      AnimatedSlider: loadAnimatedSlider() })
     globals.LyricLibrary = compile('components/common/LyricLibrary.vue', globals)
     globals.LyricSettings = compile('components/common/LyricSettings.vue', globals)
   }
@@ -145,14 +147,77 @@ test('library reads wait for persisted settings, failed persistence stops reads 
   assert.match(ui.text(), /测试曲目/)
 })
 
+test('privacy settings persist explicit consent and let the user inspect, refresh and clear queued reports', async t => {
+  const report = { app_version: '1.0.1', os_arch: 'arm64', app_arch: 'x64' }
+  let reports = [report], failRead = false
+  const telemetry = {
+    async getPending() {
+      if (failRead) throw new Error('Queue unavailable')
+      return reports
+    },
+    async clearPending() { reports = [] }
+  }
+  const ui = mount(t, { settingsViewMode: true, telemetry })
+  ui.button('隐私与使用统计').props.onClick()
+  await flush()
+  assert.equal(ui.byId('privacy-section').props.hidden, false)
+  const toggle = ui.byId('share-usage-statistics')
+  assert.equal(toggle.props.checked, false)
+  await toggle.props.onChange({ target: { checked: true } })
+  assert.equal(ui.settings.software.telemetryEnabled, true)
+  await ui.button('查看待发送数据').props.onClick()
+  await flush()
+  assert.deepEqual(JSON.parse(ui.field('pre').text), [report])
+  failRead = true
+  await ui.button('刷新预览').props.onClick()
+  await flush()
+  assert.equal(ui.field('pre'), undefined)
+  assert.doesNotMatch(ui.text(), /当前没有待发送数据/)
+  failRead = false
+  await ui.button('重新读取待发送数据').props.onClick()
+  await flush()
+  await ui.button('清空待发送数据').props.onClick()
+  await flush()
+  assert.deepEqual(reports, [])
+  assert.match(ui.text(), /当前没有待发送数据/)
+  await toggle.props.onChange({ target: { checked: false } })
+  assert.equal(ui.settings.software.telemetryEnabled, false)
+})
+
+test('late telemetry previews cannot restore reports after consent changes or leaving the panel', async t => {
+  let response = deferred()
+  const ui = mount(t, { settingsViewMode: true, telemetry: { getPending: () => response.promise, clearPending() {} } })
+  ui.button('隐私与使用统计').props.onClick()
+  await flush()
+  const read = ui.button('查看待发送数据').props.onClick()
+  ui.settings.software.telemetryEnabled = true
+  await flush()
+  response.resolve([{ app_version: '1.0.0' }]); await read
+  assert.equal(ui.field('pre'), undefined)
+  response = deferred()
+  const secondRead = ui.button('查看待发送数据').props.onClick()
+  ui.button('更新与备份').props.onClick()
+  await flush()
+  response.resolve([{ app_version: '1.0.0' }]); await secondRead
+  ui.button('隐私与使用统计').props.onClick()
+  await flush()
+  assert.equal(ui.field('pre'), undefined)
+  assert.equal(ui.button('查看待发送数据').props.disabled, false)
+})
+
 test('fullscreen lyric options save separately from playback auto-open and retain disabled blur strength', async t => {
   const ui = mount(t, { settingsViewMode: true })
   ui.button('全屏歌词').props.onClick()
   await flush()
   assert.equal(ui.byId('fullscreen-section').props.hidden, false)
+  const alignment = ui.byId('fullscreen-alignment')
+  assert.equal(alignment.parent.parent.props.id, 'fullscreen-section')
+  assert.deepEqual(alignment.props.options.map(option => option.value), ['left', 'center', 'right'])
+  assert.equal(alignment.props.modelValue, 'center')
+  alignment.props['onUpdate:modelValue']('right')
 
   const slider = ui.byId('fullscreen-blur-percent')
-  slider.props['onUpdate:modelValue'](65)
+  slider.props.onInput({ target: { value: '65', valueAsNumber: 65 } })
   ui.byId('fullscreen-blur').props['onUpdate:modelValue'](false)
   ui.byId('fullscreen-background-image').props.onChoose('placeholder-managed-image')
   await flush()
@@ -161,7 +226,7 @@ test('fullscreen lyric options save separately from playback auto-open and retai
   assert.equal(await ui.flushSettings(), true)
   assert.equal(ui.settings.playback.fullscreenLyrics, false)
   assert.deepEqual(ui.settings.fullscreenLyrics, {
-    blurEnabled: false, blurPercent: 65, backgroundMode: 'custom', backgroundImage: 'placeholder-managed-image'
+    blurEnabled: false, blurPercent: 65, position: 'right', alignment: 'right', backgroundMode: 'custom', backgroundImage: 'placeholder-managed-image'
   })
 })
 

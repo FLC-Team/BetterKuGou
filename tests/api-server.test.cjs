@@ -3,7 +3,7 @@ const assert = require('node:assert/strict')
 const http = require('node:http')
 const { spawn } = require('node:child_process')
 const path = require('node:path')
-const { constructServer } = require('../KuGouMusicApi/server')
+const { constructServer, startService } = require('../KuGouMusicApi/server')
 const apiCache = require('../KuGouMusicApi/util/apicache')
 
 async function createServer(t, handler, route = '/test') {
@@ -155,4 +155,38 @@ test('API startup reports a bind failure and exits with a failure code', async t
   assert.equal(result.code, 1)
   assert.match(result.output, /API startup/)
   assert.match(result.output, /EADDRINUSE/)
+})
+
+test('desktop API startup retries a real bind conflict until the previous listener releases the port', async t => {
+  const previous = http.createServer()
+  await new Promise(resolve => previous.listen(0, '127.0.0.1', resolve))
+  t.after(async () => {
+    if (previous.listening) await new Promise(resolve => previous.close(resolve))
+  })
+  const port = previous.address().port
+  const env = { PORT: process.env.PORT, HOST: process.env.HOST }
+  t.after(() => {
+    for (const [key, value] of Object.entries(env)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  })
+  process.env.PORT = String(port)
+  process.env.HOST = '127.0.0.1'
+  let sawConflict = false
+  const app = await startService({
+    retryBind: true,
+    onBindConflict() {
+      sawConflict = true
+      previous.close()
+    }
+  })
+  t.after(async () => {
+    app.service.closeAllConnections()
+    await new Promise(resolve => app.service.close(resolve))
+  })
+  assert.equal(sawConflict, true)
+  const response = await fetch(`http://127.0.0.1:${port}/`)
+  await response.text()
+  assert.equal(response.status, 200)
 })

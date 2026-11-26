@@ -8,6 +8,8 @@
 
 `windows-install-hooks.nsh` 在 builder 的辅助安装段替换默认解包和旧版卸载调用，`windows-install-section.nsh` 执行检查、严格 ZIP 解包、替换、登记和收尾。`windows-file-helper.nsh` 在安装、卸载共用跨登录会话的文件锁，经固定系统 PowerShell 调用 `windows-files.ps1`，通过 Unicode 文件传回路径和错误。此链路依赖锁定的 builder 模板在旧卸载前展开 `customCheckAppRunning`。
 
+`linux-after-install.tpl` 供 DEB/RPM 使用，由包管理器以 root 执行。只配置固定安装目录及 `chrome-sandbox` 的 root 属主和 0755/4755 权限，不以 root 的 user namespace 探针推断桌面用户权限；拒绝符号链接安装目录/沙箱和无关命令覆盖，不递归改用户目录或关闭 Chromium 沙箱。桌面用户正常启动应用，不使用 sudo。
+
 `linux-after-remove.tpl` 供 DEB/RPM 使用。实际卸载时按注册的 `/opt` 程序目标清理命令链接，包管理器升级过程中跳过移除。
 
 ## 直接子目录
@@ -48,7 +50,7 @@ Windows 基准 760 × 500，按系统 DPI 缩放。224px 品牌栏与右侧内�
 
 所有操作按钮使用原生 Win32 Button 承载统一的扁平圆角位图，按主操作、次操作与轻按钮区分层级，仅用窗口区域裁去外框，保留可访问名称、键盘、按压与内部焦点提示；禁用主按钮使用独立配色，高对比度保留系统原生按钮。进度保留真实 NSIS 进度控件与错误详情，不使用模拟百分比；执行时隐藏底部操作，失败后恢复关闭入口。详情列表在内容区内单独布局，并用 ListView 原生颜色消息适配主题。进度装饰进入完成页时销毁，位图与字体在退出时释放。
 
-macOS 保留 Finder 拖放；DMG 背景说明首次安装与退出后替换。Linux 保留系统包管理器和 AppImage 替换方式。
+macOS 保留 Finder 拖放；DMG 背景说明首次安装与退出后替换。Linux 保留系统包管理器和 AppImage 替换方式。DEB 的 `afterPack` 钩子使用 `dpkg-shlibdeps` 从 Electron 主程序、原生音频宿主与顶层内置动态库推导实际最低运行库版本，并补充 GTK/NSS 等基础依赖；内置动态库归属自身包，不抑制未知系统依赖错误。RPM 从同一组 ELF 精确提取 SONAME 和符号版本要求，排除随包提供的库，不扫描 backend 的脚本解释器。系统包管理器据此拒绝缺失或过旧依赖；AppImage 不经过该安装钩子，仍依赖目标系统运行环境。
 
 ## 构建
 

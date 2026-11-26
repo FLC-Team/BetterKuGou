@@ -118,13 +118,13 @@
           </div>
 
           <div class="col-title">
-            <ArtworkCover :src="song.cover || ''" class="song-cover" />
+            <ArtworkCover :src="song.cover || ''" viewport class="song-cover" />
             <div class="song-info">
               <div class="song-title-line">
-                <button type="button" class="song-name" @click.stop="searchSong(song)" @dblclick.stop :title="getSongName(song)">
+                <SongTitle class="song-name" :song="song" @search="searchSong" @play="playSong" :title="getSongName(song)">
                   {{ getSongName(song) }}
                   <span v-if="song.relate_goods && song.relate_goods.some(g => g.level >= 5)" class="quality-badge">SQ</span>
-                </button>
+                </SongTitle>
                 <SongBadges :song="song" />
                 <span v-if="offlineSongHashes.has(String(song.hash || '').toLowerCase())" class="offline-song-badge" title="已保留音频，可离线播放">已缓存</span>
               </div>
@@ -143,7 +143,7 @@
                   <path d="M719.4 499.1l-296.1-215A15.9 15.9 0 00398 297v430c0 13.1 14.8 20.5 25.3 12.9l296.1-215a15.9 15.9 0 000-25.8z"/>
                 </svg>
               </button>
-              <LibraryActions :song="song" />
+              <LibraryActions :song="song" :play-next="playNext" />
             </div>
         </div>
         </template>

@@ -55,7 +55,7 @@ function createRank(t, respond) {
   const metadata = loadModule('src/utils/songMetadata.js', {}, ['getSongArtists', 'getSongBadges'])
   const failures = []
   const sandbox = {
-    ArtworkCover: {}, SongBadges: {}, ArtistLinks: {}, LibraryActions: {}, ...metadata,
+    ArtworkCover: {}, SongBadges: {}, SongTitle: {}, ArtistLinks: {}, LibraryActions: {}, ...metadata,
     getRankSongs: api.getRankSongs,
     logger: { ...quietLogger, error: (...args) => failures.push(args) }
   }
@@ -124,12 +124,10 @@ test('Top500 loads every page in rank order and keeps playable metadata through 
   assert.equal(all[1][499].timelen, 180624)
   page.rank.settings.playback.enqueueFullPlaylist = true
   page.rank.handlePlay(page.rank.songs[499])
-  const reordered = page.emitted.at(-1)[1]
-  assert.equal(reordered.length, 500)
-  assert.equal(reordered[0].hash, 'hash-499')
-  assert.equal(reordered[1].hash, 'hash-0')
-  assert.equal(reordered[499].hash, 'hash-498')
-  assert.equal(page.rank.songs[0].hash, 'hash-0', 'queue reordering cannot reorder the chart')
+  const [event, queue, startIndex] = page.emitted.at(-1)
+  assert.equal(event, 'play-all')
+  assert.deepEqual(Array.from(queue, song => song.hash), source.map(song => song.audio_info.hash_128))
+  assert.equal(startIndex, 499)
 })
 
 test('rank normalization supports deprecated audio fields and already-flat songs without changing units', t => {

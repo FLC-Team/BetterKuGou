@@ -23,7 +23,7 @@ function fixture(packaged = false, controls = {}) {
     acquireDownloadSource(value) { calls.push(['lease',value]); return { path: '/private/cache.mp3', release() {} } },
     readLyrics() { return { decodeContent: '[00:01.00]cached' } }
   }
-  const app = Object.assign(new EventEmitter(), { isPackaged: packaged, commandLine: { appendSwitch() {} }, whenReady: () => new Promise(() => {}), getPath: () => '/user-data', getAppPath: () => '/app', getVersion: () => '1.0.0' })
+  const app = Object.assign(new EventEmitter(), { isPackaged: packaged, requestSingleInstanceLock: () => true, commandLine: { appendSwitch() {} }, whenReady: () => new Promise(() => {}), getPath: () => '/user-data', getAppPath: () => '/app', getVersion: () => '1.0.0' })
   class Window extends EventEmitter {
     constructor() { super(); this.sent=[]; this.webContents=Object.assign(new EventEmitter(), { mainFrame:{},openDevTools(){},send:(...args)=>this.sent.push(args) }); windows.push(this) }
     loadURL() { return Promise.resolve() }

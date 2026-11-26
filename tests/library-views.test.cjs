@@ -13,7 +13,7 @@ const logger = { trace() {}, info() {}, warn() {}, error() {} }
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
 
 function fixture(file, globals = {}, props = {}) {
-  const sandbox = vm.createContext({ logger, AbortController, setTimeout, clearTimeout, ArtworkCover: {}, ArtistLinks: {}, SongBadges: {},
+  const sandbox = vm.createContext({ logger, AbortController, setTimeout, clearTimeout, ArtworkCover: {}, ArtistLinks: {}, SongBadges: {}, SongTitle: {},
     LibrarySongs: {}, LibraryActions: {}, DownloadsView: {}, WindowedList: {}, ContextMenu: {}, UserMenu: {},
     minimizeIcon: '', maximizeIcon: '', restoreIcon: '', closeIcon: '', nextplayIcon: '',
     contextMenuManager: { closeActiveMenu() {}, registerMenu() {}, unregisterMenu() {} },
@@ -277,6 +277,21 @@ test('titlebar suggestions ignore late requests, stop during IME, and preserve c
   view.chooseSuggestion('A complete keyword')
   assert.deepEqual(plain(emitted), [['update:modelValue', 'A complete keyword'], ['search', 'A complete keyword']])
   assert.equal(view.showSearchHints, false)
+})
+
+test('titlebar history precedes unique hot words and keyboard reuse or clearing keeps the controlled search contract', () => {
+  const recent = ['Recent', 'Shared']
+  const { view, emitted } = fixture('src/components/layout/TitleBar.vue', {}, { modelValue: '', searchHistory: recent })
+  view.hotKeywords = ['Shared', 'Hot']
+  assert.deepEqual(plain(view.suggestionOptions), ['Recent', 'Shared', 'Hot'])
+  view.showSearchHints = true
+  view.handleSearchKey({ key: 'ArrowDown', target: {}, preventDefault() {} })
+  view.handleSearchKey({ key: 'Enter', target: {}, preventDefault() {} })
+  assert.deepEqual(plain(emitted), [['update:modelValue', 'Recent'], ['search', 'Recent']])
+  view.clearHistory()
+  assert.deepEqual(plain(emitted.at(-1)), ['clear-search-history'])
+  assert.deepEqual(recent, ['Recent', 'Shared'], 'the titlebar never mutates parent-owned history')
+  assert.equal(view.activeSuggestion, -1)
 })
 
 test('hot search and default words are independent, keyboard selection uses visible results, and dismissing invalidates responses', async () => {

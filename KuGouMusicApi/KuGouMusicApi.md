@@ -14,7 +14,7 @@
 
 ## 重要文件
 
-- `app.js`：服务启动入口；启动失败输出异常上下文并设置失败退出码。
+- `app.js`：服务启动入口。桌面启动时检查 Electron 父进程存活，通过 Utility Process 消息上报绑定及冲突状态。启动失败输出异常上下文并设置失败退出码。
 - `index.js`：引用应用入口，供上游开发配置使用。
 - `main.js`：程序调用入口，按模块文件导出接口函数，并暴露服务及请求能力。
 - `server.js`：Express 构建、动态路由、参数适配、公开请求缓存、脱敏日志和 HTTP 监听。
@@ -29,7 +29,7 @@
 - `getModulesDefinitions()`：枚举模块 `.js` 文件，默认将下划线替换为路由斜杠，支持显式路由映射。
 - `constructServer(moduleDefs)`：构建 Express 中间件和路由；可注入模块定义以验证参数、缓存和响应行为。
 - `getSafeRequestUrl()`：直接解析原始 URL，对敏感查询字段脱敏，避免提前解码改变参数边界。
-- `startService()`：读取 `PORT`、`HOST` 并等待监听成功，返回带 `service` HTTP Server 句柄的应用；监听失败拒绝 Promise。
+- `startService()`：读取 `PORT`、`HOST` 并等待监听成功，返回带 `service` HTTP Server 句柄的应用。桌面入口对 `EADDRINUSE` 有界重试，独立运行及其他监听错误立即拒绝 Promise。
 
 HTTP 请求 → CORS、Cookie 和请求体解析 → 公开请求缓存 → 模块路由参数适配 → 上游请求工具 → 返回模块状态码、响应体、头及 Cookie。
 
@@ -42,6 +42,7 @@ HTTP 请求 → CORS、Cookie 和请求体解析 → 公开请求缓存 → 模�
 - 成功请求的诊断日志只在 `DEBUG` 开启时输出；错误日志保留路由、状态、错误码及脱敏后的标准异常类型、信息、堆栈和原因，不展开请求配置或认证响应。
 - Token、密码、验证码、二维码 key、Cookie 及用户标识等查询字段脱敏，响应仍保持上游协议。
 - 桌面应用固定监听 `localhost:6500`；独立服务的环境变量默认值不替代 Electron 的明确启动参数。
+- `/user/update` 由对应模块按上游独立用户服务协议提交四项资料，复用现有 RSA 与签名工具，身份验证和字段校验在上游调用前完成；保留 HTTP 端点及 MIT 来源说明，不尝试跳过 TLS 验证或猜测其他写入地址。
 - 桌面安装包的 `resources/backend` 只收录后端运行入口、路由与工具、公开静态页面、依赖和许可证。打包规则排除本机 `.env`、npm 配置及常见密钥文件。
 
 ## 验证与运行

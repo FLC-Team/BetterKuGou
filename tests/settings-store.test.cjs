@@ -172,6 +172,7 @@ test('fullscreen appearance migrates, validates imports and keeps the two image 
   await store.initSettingsStore(app)
   const defaults = store.getSettings().fullscreenLyrics
   assert.equal(defaults.position, 'right')
+  assert.equal(defaults.alignment, 'center')
   assert.equal(defaults.karaokeEnabled, true)
   assert.equal(defaults.backgroundMode, 'frosted')
 
@@ -179,15 +180,15 @@ test('fullscreen appearance migrates, validates imports and keeps the two image 
   const lyricImage = 'b'.repeat(64)
   await store.setSettings({ custom: { backgroundImage: mainImage }, playback: { fullscreenLyrics: false },
     fullscreenLyrics: { backgroundImage: lyricImage, backgroundMode: 'custom', blurEnabled: false, blurPercent: 79 } })
-  await store.setSettings({ fullscreenLyrics: { showControls: false, fontFamily: ' Microsoft YaHei ' } })
+  await store.setSettings({ fullscreenLyrics: { showControls: false, fontFamily: ' Microsoft YaHei ', alignment: 'left' } })
   const persisted = JSON.parse(files.get(settingsPath))
   assert.equal(persisted.playback.fullscreenLyrics, false)
   assert.equal(persisted.custom.backgroundImage, mainImage)
-  assert.deepEqual(persisted.fullscreenLyrics, { ...defaults, showControls: false, fontFamily: 'Microsoft YaHei',
+  assert.deepEqual(persisted.fullscreenLyrics, { ...defaults, showControls: false, fontFamily: 'Microsoft YaHei', alignment: 'left',
     backgroundMode: 'custom', backgroundImage: lyricImage, blurEnabled: false, blurPercent: 79 })
 
   const invalid = { fontSize: 500, lineSpacing: -1, blurPercent: '90', karaokeEnabled: 'false', backgroundMode: 'other',
-    backgroundMotion: 'quicksand', backgroundImage: 'file:///wallpaper.webp' }
+    backgroundMotion: 'quicksand', backgroundImage: 'file:///wallpaper.webp', alignment: 'justify' }
   await store.overwriteSettings({ custom: { backgroundImage: '../../wallpaper.webp' }, fullscreenLyrics: invalid })
   const settings = store.getSettings()
   assert.equal(settings.custom.backgroundImage, '')

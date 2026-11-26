@@ -61,7 +61,7 @@
             <ArtworkCover :src="song.imgurl || song.album_img || ''" class="song-cover" />
             <div class="song-info">
               <div class="song-title-line">
-                <button type="button" class="song-name" @click.stop="$emit('search', song)" @dblclick.stop :title="song.songname || song.filename || '未知歌曲'">{{ song.songname || song.filename }}</button>
+                <SongTitle class="song-name" :song="song" @search="$emit('search', $event)" @play="handlePlay" :title="song.songname || song.filename || '未知歌曲'">{{ song.songname || song.filename }}</SongTitle>
                 <SongBadges :song="song" />
               </div>
               <ArtistLinks class="artist-link mobile-artist" :song="song" @select="$emit('navigate', 'artist', $event)" />
@@ -93,6 +93,7 @@
 <script>
 import ArtworkCover from '../components/common/ArtworkCover.vue'
 import SongBadges from '../components/common/SongBadges.vue'
+import SongTitle from '../components/common/SongTitle.vue'
 import ArtistLinks from '../components/common/ArtistLinks.vue'
 import LibraryActions from '../components/common/LibraryActions.vue'
 import { logger } from '../utils/logger.js'
@@ -104,7 +105,7 @@ import { getSongArtists } from '../utils/songMetadata.js'
 import { useSettingsStore } from '../stores/settingsStore.js'
 
 export default {
-  components: { ArtworkCover, SongBadges, ArtistLinks, LibraryActions },
+  components: { ArtworkCover, SongBadges, SongTitle, ArtistLinks, LibraryActions },
   name: 'RankDetailView',
   inject: { library: { from: 'musicLibrary', default: null } },
   props: {
@@ -247,33 +248,13 @@ export default {
       this.$emit('navigate', 'home')
     },
     
+    /** 从选中的榜单名次开始听，后续仍按榜单顺序播放。 */
     handlePlay(song) {
-      logger.trace('RankDetailView', '[RankDetail] handlePlay调用:', song)
-      logger.trace('RankDetailView', '[RankDetail] 设置 - enqueueFullPlaylist:', this.settings?.playback?.enqueueFullPlaylist)
-      
-      // 规范化歌曲数据字段
-      const normalizedSong = this.normalizeRankSong(song)
-      
-      // 检查是否开启了"自动将全部歌单歌曲加入播放列表"功能
-      if (this.settings?.playback?.enqueueFullPlaylist && this.songs.length > 0) {
-        logger.trace('RankDetailView', '[RankDetail] 自动加入全部歌曲到播放列表')
-        const songIndex = this.songs.findIndex(s => s.hash === song.hash)
-        
-        if (songIndex !== -1) {
-          const normalizedSongs = this.songs.map(s => this.normalizeRankSong(s))
-          
-          const reorderedList = [
-            normalizedSongs[songIndex],
-            ...normalizedSongs.slice(0, songIndex),
-            ...normalizedSongs.slice(songIndex + 1)
-          ]
-          this.$emit('play-all', reorderedList)
-        } else {
-          const normalizedSongs = this.songs.map(s => this.normalizeRankSong(s))
-          this.$emit('play-all', normalizedSongs)
-        }
+      const index = this.settings?.playback?.enqueueFullPlaylist ? this.songs.indexOf(song) : -1
+      if (index >= 0) {
+        this.$emit('play-all', this.songs.map(this.normalizeRankSong), index)
       } else {
-        this.$emit('play', normalizedSong)
+        this.$emit('play', this.normalizeRankSong(song))
       }
     },
     

@@ -26,7 +26,7 @@ function fixture(packaged = false, controls = {}) {
     async stop() { calls.push(['stop']) }
   }
   const app = Object.assign(new EventEmitter(), {
-    isPackaged: packaged, commandLine: { appendSwitch() {} }, whenReady: () => new Promise(() => {}),
+    isPackaged: packaged, requestSingleInstanceLock: () => true, commandLine: { appendSwitch() {} }, whenReady: () => new Promise(() => {}),
     getPath: () => '/user-data', getAppPath: () => '/app', getVersion: () => '1.0.0'
   })
   class Window extends EventEmitter {

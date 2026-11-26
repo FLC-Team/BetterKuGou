@@ -12,12 +12,9 @@
         <path class="volume-mute" :class="{ 'is-visible': muted }" d="m16 9 6 6m0-6-6 6" />
       </svg>
     </button>
-    <span class="volume-range" :class="{ 'is-muted': muted }" :style="{ '--volume-fill': volume + '%' }">
-      <span class="volume-track" aria-hidden="true"><span class="volume-fill"></span></span>
-      <input type="range" class="volume-slider" min="0" max="100" step="1" :value="volume"
-             aria-label="音量" :aria-valuetext="`${volume}%${muted ? '（已静音）' : ''}`"
-             title="拖动调节音量，右键输入数值" @input="$emit('change', Number($event.target.value))" />
-    </span>
+    <AnimatedSlider class="volume-slider" :class="{ 'is-muted': muted }" :model-value="volume"
+      aria-label="音量" :aria-valuetext="`${volume}%${muted ? '（已静音）' : ''}`"
+      title="拖动调节音量，右键输入数值" @update:model-value="$emit('change', $event)" />
     <button ref="valueButton" type="button" class="volume-value" @click.stop="openEditor"
             aria-haspopup="dialog" :aria-expanded="editorOpen" :aria-label="`输入音量，当前 ${muted ? 0 : volume}%`"
             title="输入音量（也可右键）">{{ muted ? 0 : Math.round(volume) }}%</button>
@@ -45,9 +42,11 @@
 
 <script>
 import contextMenuManager from '../../utils/contextMenuManager.js'
+import AnimatedSlider from '../common/AnimatedSlider.vue'
 
 export default {
   name: 'VolumeControl',
+  components: { AnimatedSlider },
   props: {
     volume: { type: Number, default: 80 },
     isMuted: { type: Boolean, default: false },
@@ -134,26 +133,20 @@ export default {
 .volume-value { min-width: 36px; font-size: 11px; font-variant-numeric: tabular-nums; }
 .volume-button:hover, .volume-value:hover { background: var(--bg-hover); color: var(--color-text); }
 .volume-button:active, .volume-value:active { scale: .94; }
-.volume-button:focus-visible, .volume-value:focus-visible, .volume-slider:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.volume-button:focus-visible, .volume-value:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
 /* 喇叭主体保持同一节点和位置；快速跨档只反转声波过渡，不叠放整张图标。 */
 .volume-icon { display: block; overflow: visible; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .volume-wave, .volume-mute { opacity: 0; transform: scale(.8); transform-origin: 12px 12px; transition: opacity .16s ease, transform .18s ease; }
 .volume-wave.is-visible, .volume-mute.is-visible { opacity: 1; transform: scale(1); }
-.volume-range { position: relative; display: var(--volume-slider-display, block); width: var(--volume-slider-width, 80px); height: 24px; flex-shrink: 0; }
-.volume-track { position: absolute; top: 10px; left: 6px; right: 6px; height: 4px; border-radius: 2px; background: var(--volume-track-color); pointer-events: none; }
-/* 填充与原生滑块共用有效行程，拖动直接跟手，静音仅降低填充亮度。 */
-.volume-fill { display: block; width: var(--volume-fill); height: 100%; border-radius: inherit; background: var(--volume-fill-color); transition: opacity .16s ease; }
-.volume-range.is-muted .volume-fill { opacity: .35; }
-.volume-slider { position: relative; display: block; width: 100%; height: 24px; margin: 0; padding: 0; appearance: none; background: transparent; border: 0; border-radius: 2px; cursor: pointer; accent-color: var(--volume-fill-color); }
-.volume-slider::-webkit-slider-runnable-track { height: 4px; background: transparent; }
-.volume-slider::-webkit-slider-thumb { appearance: none; width: 12px; height: 12px; margin-top: -4px; border-radius: 50%; background: var(--volume-fill-color); transition: scale .16s ease, box-shadow .16s ease; }
-.volume-slider::-moz-range-track { height: 4px; background: transparent; }
-.volume-slider::-moz-range-progress { background: transparent; }
-.volume-slider::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: var(--volume-fill-color); transition: scale .16s ease, box-shadow .16s ease; }
-.volume-slider:is(:hover, :focus-visible)::-webkit-slider-thumb { scale: 1.15; }
-.volume-slider:is(:hover, :focus-visible)::-moz-range-thumb { scale: 1.15; }
-.volume-slider:active::-webkit-slider-thumb { scale: 1.25; }
-.volume-slider:active::-moz-range-thumb { scale: 1.25; }
+.volume-control .volume-slider {
+  --slider-hit-height: 30px;
+  --slider-fill: var(--volume-fill-color);
+  --slider-track: var(--volume-track-color);
+  display: var(--volume-slider-display, block);
+  width: var(--volume-slider-width, 80px);
+  flex-shrink: 0;
+}
+.volume-slider.is-muted { --slider-fill: color-mix(in srgb, var(--volume-fill-color) 35%, var(--volume-track-color)); }
 .volume-control-lyric { color: var(--lyric-text-secondary); --volume-slider-width: 62px; --volume-track-color: var(--lyric-track); --volume-fill-color: var(--lyric-text); }
 .volume-control-lyric .volume-button:hover, .volume-control-lyric .volume-value:hover { color: var(--lyric-text); background: var(--lyric-hover); }
 .volume-editor { position: fixed; z-index: 11000; box-sizing: border-box; width: 220px; max-width: calc(100vw - 16px); padding: 14px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-background-light); color: var(--color-text); box-shadow: var(--shadow-playlist); font-size: 13px; -webkit-app-region: no-drag; }
@@ -171,7 +164,5 @@ export default {
 .volume-editor-leave-active { pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
   .volume-control *, .volume-control *::before, .volume-editor, .volume-editor * { transition: none !important; }
-  .volume-slider::-webkit-slider-thumb { transition: none !important; scale: 1 !important; }
-  .volume-slider::-moz-range-thumb { transition: none !important; scale: 1 !important; }
 }
 </style>

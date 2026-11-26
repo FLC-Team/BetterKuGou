@@ -5,6 +5,7 @@ const vm = require('node:vm')
 const test = require('node:test')
 const vue = require('vue')
 const { registerAppNotice } = require('./helpers/noticeHarness.cjs')
+const { loadAnimatedSlider } = require('./helpers/animatedSliderHarness.cjs')
 const { parse, compileTemplate } = require('@vue/compiler-sfc')
 
 const root = path.resolve(__dirname, '..')
@@ -43,7 +44,7 @@ function mountControl(t, overrides = {}) {
   }
   const body = node('body')
   document.body = body
-  const sandbox = vm.createContext({ module: { exports: {} }, document, window,
+  const sandbox = vm.createContext({ module: { exports: {} }, document, window, AnimatedSlider: loadAnimatedSlider(),
     sound0Icon: 'mute.svg', sound1Icon: 'low.svg', sound2Icon: 'medium.svg', sound3Icon: 'high.svg' })
   vm.runInContext(fs.readFileSync(path.join(root, 'src/utils/contextMenuManager.js'), 'utf8')
     .replace('export default new ContextMenuManager()', 'globalThis.contextMenuManager = new ContextMenuManager()'), sandbox)

@@ -58,15 +58,13 @@
         </div>
 
         <div v-if="showPlaybackControls" class="playback-panel">
-          <input
+          <AnimatedSlider
             class="lyric-progress"
-            type="range"
-            min="0"
+            variant="seek"
             :max="duration > 0 ? duration : 0"
             step="0.1"
-            :value="displayPlayTime"
+            :model-value="displayPlayTime"
             :disabled="!seekEnabled || !Number.isFinite(duration) || duration <= 0"
-            :style="{ '--progress': progressPercentage + '%' }"
             aria-label="歌曲进度"
             :aria-valuetext="`${formatTime(displayPlayTime)} / ${formatTime(duration)}`"
             @input="previewSeek"
@@ -197,7 +195,8 @@
             :role="isLyricLineInteractive(index) ? 'button' : undefined"
             :tabindex="isLyricLineInteractive(index) ? 0 : undefined"
             :aria-label="isLyricLineInteractive(index) ? `跳转至 ${formatTime(line.time)}，${line.text}` : undefined"
-            @click.stop="activateLyricLine(index, $event, lyricContentKey)"
+            @click.stop="recordLyricClick(index, $event, lyricContentKey)"
+            @dblclick.stop="activateLyricLine(index, $event, lyricContentKey)"
             @keydown.enter.stop.prevent="activateLyricLine(index, $event, lyricContentKey)"
             @keydown.space.stop.prevent="activateLyricLine(index, $event, lyricContentKey)"
             @focus="focusLyricLine(index, lyricContentKey)"

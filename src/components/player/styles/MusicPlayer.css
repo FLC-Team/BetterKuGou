@@ -132,106 +132,20 @@
 
 /* ============ 默认样式（原有样式）============ */
 
-/* 进度条 */
 .progress-bar-container {
-  height: 4px;
-  background: var(--bg-hover);
-  cursor: pointer;
   position: relative;
-  border-radius: 2px;
-  padding: 6px 0; /* 增加上下内边距，避免滑块被裁剪 */
-  margin: -6px 0; /* 负外边距补偿，保持整体高度不变 */
+  height: 4px;
 }
-
 .progress-bar {
+  --slider-hit-height: 24px;
+  --slider-track: var(--color-border);
   position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  left: 0;
-  width: 100%;
-  height: 4px;
-  -webkit-appearance: none;
-  appearance: none;
-  background: transparent;
-  cursor: pointer;
-  margin: 0;
-  padding: 0;
-  outline: none;
+  z-index: 1;
+  inset: 50% 0 auto;
+  translate: 0 -50%;
 }
-
-/* Webkit/Blink 浏览器样式 */
-.progress-bar::-webkit-slider-runnable-track {
-  width: 100%;
-  height: 4px;
-  background: linear-gradient(
-    to right,
-    var(--color-primary) 0%,
-    var(--color-primary) var(--progress, 0%),
-    var(--bg-hover) var(--progress, 0%),
-    var(--bg-hover) 100%
-  );
-  border-radius: 2px;
-  border: none;
-}
-
-.progress-bar::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 12px;
-  height: 12px;
-  background: var(--color-text);
-  border-radius: 50%;
-  cursor: pointer;
-  margin-top: -4px;
-  box-shadow: var(--shadow-slider);
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-
-.progress-bar:hover::-webkit-slider-thumb {
-  opacity: 1;
-}
-
-.progress-bar-container:hover .progress-bar::-webkit-slider-runnable-track {
-  background: linear-gradient(
-    to right,
-    var(--color-primary-hover) 0%,
-    var(--color-primary-hover) var(--progress, 0%),
-    var(--bg-hover) var(--progress, 0%),
-    var(--bg-hover) 100%
-  );
-}
-
-/* Firefox 浏览器样式 */
-.progress-bar::-moz-range-track {
-  width: 100%;
-  height: 4px;
-  background: var(--bg-hover);
-  border-radius: 2px;
-  border: none;
-}
-
-.progress-bar::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  background: var(--color-text);
-  border-radius: 50%;
-  cursor: pointer;
-  border: none;
-  box-shadow: var(--shadow-slider);
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-
-.progress-bar:hover::-moz-range-thumb {
-  opacity: 1;
-}
-
-.progress-bar::-moz-range-progress {
-  background: var(--color-primary);
-  height: 4px;
-  border-radius: 2px;
-}
+.player-style-netease .progress-bar-container { height: 18px; }
+.player-style-netease .progress-bar { --slider-hit-height: 18px; }
 
 /* 播放器主体 */
 .player-main {

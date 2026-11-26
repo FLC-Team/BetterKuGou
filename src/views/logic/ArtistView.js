@@ -1,14 +1,15 @@
 
 import ArtworkCover from '../../components/common/ArtworkCover.vue'
 import SongBadges from '../../components/common/SongBadges.vue'
+import SongTitle from '../../components/common/SongTitle.vue'
 import LibraryActions from '../../components/common/LibraryActions.vue'
 import ArtistLinks from '../../components/common/ArtistLinks.vue'
-import { getSongArtists } from '../../utils/songMetadata.js'
+import { getSongArtists, getSongDurationMs } from '../../utils/songMetadata.js'
 import { logger } from '../../utils/logger.js'
 import { getArtistDetail, getArtistAudios, getArtistAlbums, followArtist, unfollowArtist, findArtistByName, getImagesByHash, getAlbumInfo } from '../../api/music.js'
 
 export default {
-  components: { ArtworkCover, SongBadges, ArtistLinks, LibraryActions },
+  components: { ArtworkCover, SongBadges, SongTitle, ArtistLinks, LibraryActions },
   name: 'ArtistView',
   props: {
     artistId: { type: [String, Number], default: null },
@@ -392,7 +393,7 @@ export default {
         const rawName = it.audio_name || it.song_name || it.name || it.filename || it.remark
         const name = rawName || (typeof it.filename === 'string' ? it.filename.split(' - ').slice(1).join(' - ') : '未知歌曲')
         const albuminfo = it.album_info || it.albuminfo || (it.album_name ? { name: it.album_name } : null)
-        const timelen = (it.timelength || it.timelen || it.Duration || it.duration || 0) * (it.Duration || it.duration ? 1000 : 1)
+        const timelen = getSongDurationMs(it)
         
         let normalized = {
           ...it,
